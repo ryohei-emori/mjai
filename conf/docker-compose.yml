@@ -1,0 +1,82 @@
+services:
+  # バックエンド (FastAPI)
+  backend:
+    build: 
+      context: ../backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ENVIRONMENT=development
+      - FRONTEND_NGROK_URL=${FRONTEND_NGROK_URL}
+      - BACKEND_NGROK_URL=${BACKEND_NGROK_URL}
+    volumes:
+      - ../backend:/app
+      - ../backend/db:/app/db
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ngrok (複数トンネル) - backendの後に起動
+  ngrok:
+    image: ngrok/ngrok:latest
+    ports:
+      - "4040:4040"
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    volumes:
+      - ./ngrok-docker.yml:/etc/ngrok.yml
+    command: start --authtoken ${NGROK_AUTHTOKEN} --config /etc/ngrok.yml frontend backend
+    networks:
+      - app-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # フロントエンド (Next.js) - ngrokの後に起動
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+      - ./.env:/app/conf/.env
+    networks:
+      - app-network
+    depends_on:
+      - ngrok
+    restart: unless-stopped
+
+  # 環境変数更新サービス
+  env-updater:
+    image: curlimages/curl:latest
+    volumes:
+      - ./update-env.sh:/update-env.sh
+      - ./.env:/.env
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    command: >
+      sh -c "
+        chmod +x /update-env.sh &&
+        sleep 10 &&
+        /update-env.sh
+      "
+    networks:
+      - app-network
+    depends_on:
+      - ngrok
+    restart: "no"
+
+volumes:
+  db_data:
+
+networks:
+  app-network:
+    driver: bridge 
