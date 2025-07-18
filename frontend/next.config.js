@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 
 // conf/.envから環境変数を直接読み込み（Dockerコンテナ内のパス）
-const envPath = path.join(__dirname, 'conf/.env');
+const envPath = path.join(__dirname, '..', 'conf/.env');
 let envVars = {};
 
 console.log('=== Next.js Config Debug ===');
@@ -94,6 +94,7 @@ const nextConfig = {
     BACKEND_NGROK_URL: envVars.BACKEND_NGROK_URL || 'http://localhost:8000',
     FRONTEND_NGROK_URL: envVars.FRONTEND_NGROK_URL || 'http://localhost:3000',
     NEXT_PUBLIC_API_BASE_URL: envVars.BACKEND_NGROK_URL || 'http://localhost:8000',
+    NEXT_PUBLIC_BACKEND_NGROK_URL: envVars.BACKEND_NGROK_URL || 'http://localhost:8000',
   },
   
   // 開発環境でのCORS設定 - 環境変数から動的に生成

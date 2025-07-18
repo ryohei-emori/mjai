@@ -60,12 +60,13 @@ type Session = {
   savedData: SavedData[]
 }
 
-const FRONTEND_MODE = process.env.NEXT_PUBLIC_FRONTEND_MODE || "real";
+const FRONTEND_MODE = process.env.NEXT_PUBLIC_FRONTEND_MODE || "real"
 
 export default function TextCorrectionApp() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true) // 新しく追加
   const [isProcessing, setIsProcessing] = useState(false)
   const [customCorrection, setCustomCorrection] = useState({ original: "", reason: "" })
   const [showCustomForm, setShowCustomForm] = useState(false)
@@ -76,7 +77,8 @@ export default function TextCorrectionApp() {
     {
       id: "1",
       original: "我并不想回复",
-      reason: "ようがない并非不想的含义，这里可以再看一下这个文法的含义\nようがない：〜できない / 〜したくても手段がない\n不可能であることを強調して言う時に使う。",
+      reason:
+        "ようがない并非不想的含义，这里可以再看一下这个文法的含义\nようがない：〜できない / 〜したくても手段がない\n不可能であることを強調して言う時に使う。",
       selected: false,
     },
     {
@@ -113,26 +115,26 @@ export default function TextCorrectionApp() {
   // セッション一覧をAPIから取得
   const loadSessions = async () => {
     try {
-      console.log('Loading sessions...');
-      const sessionsData = await sessionAPI.getSessions();
-      console.log('Sessions data received:', sessionsData);
-      
+      console.log("Loading sessions...")
+      const sessionsData = await sessionAPI.getSessions()
+      console.log("Sessions data received:", sessionsData)
+
       // APIから取得したデータをフロントエンドのSession型に変換
-      const convertedSessions: Session[] = [];
-      
+      const convertedSessions: Session[] = []
+
       for (const s of sessionsData) {
-        console.log('Processing session:', s.sessionId);
+        console.log("Processing session:", s.sessionId)
         // 各セッションの履歴を取得
-        const historiesData = await historyAPI.getHistories(s.sessionId);
-        console.log('Histories for session', s.sessionId, ':', historiesData);
-        const savedData: SavedData[] = [];
-        
+        const historiesData = await historyAPI.getHistories(s.sessionId)
+        console.log("Histories for session", s.sessionId, ":", historiesData)
+        const savedData: SavedData[] = []
+
         for (const history of historiesData) {
-          console.log('Processing history:', history.historyId);
+          console.log("Processing history:", history.historyId)
           // 各履歴の提案を取得
-          const proposalsData = await proposalAPI.getProposals(history.historyId);
-          console.log('Proposals for history', history.historyId, ':', proposalsData);
-          
+          const proposalsData = await proposalAPI.getProposals(history.historyId)
+          console.log("Proposals for history", history.historyId, ":", proposalsData)
+
           // 提案データをCorrectionSuggestion形式に変換
           const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal: any) => ({
             id: proposal.proposalId,
@@ -141,12 +143,12 @@ export default function TextCorrectionApp() {
             selected: proposal.isSelected === 1,
             selectedOrder: proposal.selectedOrder || undefined,
             userModifiedReason: proposal.isModified === 1 ? proposal.modifiedReason : undefined,
-            isCustom: proposal.isCustom === 1
-          }));
-          
+            isCustom: proposal.isCustom === 1,
+          }))
+
           // 選択された提案のみを抽出
-          const selectedCorrections = aiSuggestions.filter(s => s.selected);
-          
+          const selectedCorrections = aiSuggestions.filter((s) => s.selected)
+
           savedData.push({
             originalText: history.originalText,
             instructionPrompt: history.instructionPrompt || "",
@@ -155,38 +157,38 @@ export default function TextCorrectionApp() {
             selectedCorrections,
             overallComment: history.combinedComment || "",
             combinedComment: history.combinedComment || "",
-            timestamp: new Date(history.timestamp)
-          });
+            timestamp: new Date(history.timestamp),
+          })
         }
-        
+
         convertedSessions.push({
           id: s.sessionId,
-          name: s.name || 'セッション',
+          name: s.name || "セッション",
           createdAt: new Date(s.createdAt),
-          originalText: '',
-          targetText: '',
+          originalText: "",
+          targetText: "",
           suggestions: [],
-          overallComment: '',
-          savedData
-        });
+          overallComment: "",
+          savedData,
+        })
       }
-      
-      console.log('Converted sessions:', convertedSessions);
-      setSessions(convertedSessions);
+
+      console.log("Converted sessions:", convertedSessions)
+      setSessions(convertedSessions)
     } catch (error) {
-      console.error('Failed to load sessions:', error);
+      console.error("Failed to load sessions:", error)
       toast({
         title: "エラー",
         description: "セッションの読み込みに失敗しました",
         variant: "destructive",
-      });
+      })
     }
-  };
+  }
 
   // セッション作成をAPIに保存
   const createNewSession = async () => {
     try {
-      const newSessionData = await sessionAPI.createSession(`セッション ${sessions.length + 1}`);
+      const newSessionData = await sessionAPI.createSession(`セッション ${sessions.length + 1}`)
       const newSession: Session = {
         id: newSessionData.sessionId,
         name: newSessionData.name,
@@ -196,63 +198,94 @@ export default function TextCorrectionApp() {
         suggestions: [],
         overallComment: "",
         savedData: [],
-      };
-      setSessions((prev) => [newSession, ...prev]);
-      setCurrentSessionId(newSession.id);
-      setSidebarOpen(false);
-      setSelectionCounter(0);
+      }
+      setSessions((prev) => [newSession, ...prev])
+      setCurrentSessionId(newSession.id)
+      setSidebarOpen(false)
+      setSelectionCounter(0)
     } catch (error) {
-      console.error('Failed to create session:', error);
+      console.error("Failed to create session:", error)
       toast({
         title: "エラー",
         description: "セッションの作成に失敗しました",
         variant: "destructive",
-      });
+      })
     }
-  };
+  }
 
   // セッション削除をAPIに実行
   const deleteSession = async (sessionId: string) => {
     try {
-      await sessionAPI.deleteSession(sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      await sessionAPI.deleteSession(sessionId)
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
       if (currentSessionId === sessionId) {
-        const remainingSessions = sessions.filter((s) => s.id !== sessionId);
-        setCurrentSessionId(remainingSessions.length > 0 ? remainingSessions[0].id : null);
+        const remainingSessions = sessions.filter((s) => s.id !== sessionId)
+        setCurrentSessionId(remainingSessions.length > 0 ? remainingSessions[0].id : null)
       }
     } catch (error) {
-      console.error('Failed to delete session:', error);
+      console.error("Failed to delete session:", error)
       toast({
         title: "エラー",
         description: "セッションの削除に失敗しました",
         variant: "destructive",
-      });
+      })
     }
-  };
+  }
 
   // セッション更新をAPIに実行
   const updateCurrentSession = (updates: Partial<Session>) => {
-    if (!currentSessionId) return;
+    if (!currentSessionId) return
     setSessions((prev) =>
       prev.map((session) => (session.id === currentSessionId ? { ...session, ...updates } : session)),
-    );
-  };
+    )
+  }
 
-  // AI提案生成をAPIから取得
+  // AI提案生成をAPIから取得（既存の選択状態を保持）
   const generateAISuggestions = async () => {
-    if (!currentSession?.targetText.trim()) return;
+    if (!currentSession?.targetText.trim()) return
 
-    setIsProcessing(true);
+    setIsProcessing(true)
+
+    // 既存の選択状態とカスタム修正を保存
+    const existingSelections = new Map()
+    const existingCustomCorrections: CorrectionSuggestion[] = []
+
+    if (currentSession.suggestions.length > 0) {
+      currentSession.suggestions.forEach((suggestion) => {
+        if (suggestion.isCustom) {
+          existingCustomCorrections.push(suggestion)
+        } else if (suggestion.selected || suggestion.userModifiedReason) {
+          existingSelections.set(suggestion.original, {
+            selected: suggestion.selected,
+            selectedOrder: suggestion.selectedOrder,
+            userModifiedReason: suggestion.userModifiedReason,
+          })
+        }
+      })
+    }
 
     if (FRONTEND_MODE === "mock") {
+      // 既存の選択状態を復元
+      const restoredSuggestions = mockSuggestions.map((s) => {
+        const existing = existingSelections.get(s.original)
+        return existing ? { ...s, ...existing } : { ...s, selected: false, selectedOrder: undefined }
+      })
+
+      // カスタム修正を追加
+      const allSuggestions = [...restoredSuggestions, ...existingCustomCorrections]
+
       updateCurrentSession({
-        suggestions: mockSuggestions.map((s) => ({ ...s, selected: false, selectedOrder: undefined })),
+        suggestions: allSuggestions,
         overallComment: mockOverallComment,
-      });
-      setShowCustomForm(true);
-      setSelectionCounter(0);
-      setIsProcessing(false);
-      return;
+      })
+      setShowCustomForm(true)
+
+      // 選択カウンターを復元
+      const selectedCount = allSuggestions.filter((s) => s.selected).length
+      setSelectionCounter(selectedCount)
+
+      setIsProcessing(false)
+      return
     }
 
     try {
@@ -261,25 +294,37 @@ export default function TextCorrectionApp() {
         targetText: currentSession.targetText,
         instructionPrompt: "CCTalkからの添削指示",
         sessionId: currentSession.id,
-        engine: "gemini"
-      });
+        engine: "gemini",
+      })
+
+      // 既存の選択状態を復元
+      const restoredSuggestions = data.suggestions.map((s: any) => {
+        const existing = existingSelections.get(s.original)
+        return existing ? { ...s, ...existing } : { ...s, selected: false, selectedOrder: undefined }
+      })
+
+      // カスタム修正を追加
+      const allSuggestions = [...restoredSuggestions, ...existingCustomCorrections]
 
       updateCurrentSession({
-        suggestions: data.suggestions.map((s: any) => ({ ...s, selected: false, selectedOrder: undefined })),
+        suggestions: allSuggestions,
         overallComment: data.overallComment,
-      });
-      setShowCustomForm(true);
-      setSelectionCounter(0);
+      })
+      setShowCustomForm(true)
+
+      // 選択カウンターを復元
+      const selectedCount = allSuggestions.filter((s) => s.selected).length
+      setSelectionCounter(selectedCount)
     } catch (e) {
       toast({
         title: "APIエラー",
         description: "AI提案の取得に失敗しました",
         variant: "destructive",
-      });
+      })
     } finally {
-      setIsProcessing(false);
+      setIsProcessing(false)
     }
-  };
+  }
 
   const toggleSuggestionSelection = (suggestionId: string) => {
     if (!currentSession) return
@@ -379,19 +424,19 @@ export default function TextCorrectionApp() {
 
   // 履歴をAPIに保存
   const saveCorrections = async () => {
-    if (!currentSession) return;
+    if (!currentSession) return
 
     const selectedSuggestions = currentSession.suggestions
       .filter((s) => s.selected)
-      .sort((a, b) => (a.selectedOrder || 0) - (b.selectedOrder || 0));
+      .sort((a, b) => (a.selectedOrder || 0) - (b.selectedOrder || 0))
 
     if (selectedSuggestions.length < 3) {
       toast({
         title: "選択不足",
         description: "3つ以上の修正内容を選択してください",
         variant: "destructive",
-      });
-      return;
+      })
+      return
     }
 
     try {
@@ -402,18 +447,18 @@ export default function TextCorrectionApp() {
         targetText: currentSession.targetText,
         instructionPrompt: "CCTalkからの添削指示",
         combinedComment: currentSession.overallComment,
-        selectedProposalIds: JSON.stringify(selectedSuggestions.map(s => s.id)),
-        customProposals: JSON.stringify(selectedSuggestions.filter(s => s.isCustom))
-      };
+        selectedProposalIds: JSON.stringify(selectedSuggestions.map((s) => s.id)),
+        customProposals: JSON.stringify(selectedSuggestions.filter((s) => s.isCustom)),
+      }
 
       // 履歴をAPIに保存
-      const savedHistory = await historyAPI.createHistory(historyData);
+      const savedHistory = await historyAPI.createHistory(historyData)
 
       // すべての提案をAPIに保存（選択されたものも選択されていないものも）
       for (const suggestion of currentSession.suggestions) {
         const proposalData = {
           historyId: savedHistory.historyId,
-          type: (suggestion.isCustom ? 'Custom' : 'AI') as 'AI' | 'Custom',
+          type: (suggestion.isCustom ? "Custom" : "AI") as "AI" | "Custom",
           originalAfterText: suggestion.original,
           originalReason: suggestion.reason,
           modifiedAfterText: suggestion.userModifiedReason ? suggestion.original : suggestion.original,
@@ -421,21 +466,21 @@ export default function TextCorrectionApp() {
           isSelected: suggestion.selected ? 1 : 0,
           isModified: suggestion.userModifiedReason ? 1 : 0,
           isCustom: suggestion.isCustom ? 1 : 0,
-          selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined
-        };
-        await proposalAPI.createProposal(proposalData);
+          selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
+        }
+        await proposalAPI.createProposal(proposalData)
       }
 
       // クリップボードにコピー
       const numberedCorrections = selectedSuggestions
         .map((suggestion, index) => {
-          const reasonText = suggestion.userModifiedReason || suggestion.reason;
-          return `${index + 1}.${suggestion.original}\n${reasonText}`;
+          const reasonText = suggestion.userModifiedReason || suggestion.reason
+          return `${index + 1}.${suggestion.original}\n${reasonText}`
         })
-        .join("\n\n");
+        .join("\n\n")
 
-      const combinedComment = `${numberedCorrections}\n\n${currentSession.overallComment}`;
-      await copyToClipboard(combinedComment);
+      const combinedComment = `${numberedCorrections}\n\n${currentSession.overallComment}`
+      await copyToClipboard(combinedComment)
 
       // フロントエンドの状態を更新
       const savedData: SavedData = {
@@ -447,62 +492,82 @@ export default function TextCorrectionApp() {
         overallComment: currentSession.overallComment,
         combinedComment,
         timestamp: new Date(),
-      };
+      }
 
       updateCurrentSession({
         savedData: [...currentSession.savedData, savedData],
         targetText: "",
         suggestions: [],
         overallComment: "",
-      });
+      })
 
-      setShowCustomForm(false);
-      setCustomCorrection({ original: "", reason: "" });
-      setSelectionCounter(0);
+      setShowCustomForm(false)
+      setCustomCorrection({ original: "", reason: "" })
+      setSelectionCounter(0)
 
       toast({
         title: "保存完了",
         description: "修正内容が保存され、クリップボードにコピーされました",
-      });
+      })
     } catch (error) {
-      console.error('Failed to save corrections:', error);
+      console.error("Failed to save corrections:", error)
       toast({
         title: "エラー",
         description: "修正内容の保存に失敗しました",
         variant: "destructive",
-      });
+      })
     }
-  };
+  }
 
   // 履歴をAPIから復元
   const restoreFromHistory = (savedData: SavedData) => {
-    if (!currentSession) return;
+    if (!currentSession) return
 
     updateCurrentSession({
       originalText: savedData.originalText,
       targetText: savedData.targetText,
-      suggestions: savedData.aiSuggestions.map((s) => ({ 
-        ...s, 
-        selected: s.selected || false, 
-        selectedOrder: s.selectedOrder 
+      suggestions: savedData.aiSuggestions.map((s) => ({
+        ...s,
+        selected: s.selected || false,
+        selectedOrder: s.selectedOrder,
       })),
       overallComment: savedData.overallComment,
-    });
+    })
 
     // 選択カウンターを復元
-    const selectedCount = savedData.aiSuggestions.filter(s => s.selected).length;
-    setSelectionCounter(selectedCount);
+    const selectedCount = savedData.aiSuggestions.filter((s) => s.selected).length
+    setSelectionCounter(selectedCount)
 
-    setShowCustomForm(true);
+    setShowCustomForm(true)
 
     toast({
       title: "履歴を復元しました",
       description: "選択した履歴データが現在のセッションに復元されました",
-    });
-  };
+    })
+  }
 
   const selectedCount = currentSession?.suggestions.filter((s) => s.selected).length || 0
   const canSave = selectedCount >= 3
+
+  const SidebarHeader = ({ isDesktop = false }: { isDesktop?: boolean }) => (
+    <div className="p-4 border-b">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-gray-900">
+          {desktopSidebarOpen || !isDesktop ? "CCTalk 添削システム" : "CCTalk"}
+        </h1>
+        {isDesktop && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setDesktopSidebarOpen(!desktopSidebarOpen)}
+            className="h-8 w-8 p-0"
+          >
+            <Menu className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
+    </div>
+  )
 
   const SidebarContent = () => (
     <div className="h-full flex flex-col">
@@ -567,15 +632,15 @@ export default function TextCorrectionApp() {
 
   // 初期化時にセッションを読み込み
   useEffect(() => {
-    loadSessions();
-  }, []);
+    loadSessions()
+  }, [])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* Mobile Sidebar */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetTrigger asChild>
-          <Button variant="outline" size="sm" className="fixed top-4 left-4 z-50 lg:hidden bg-transparent">
+          <Button variant="outline" size="sm" className="fixed top-4 left-4 z-50 lg:hidden bg-white shadow-md">
             <Menu className="w-4 h-4" />
           </Button>
         </SheetTrigger>
@@ -588,18 +653,30 @@ export default function TextCorrectionApp() {
       </Sheet>
 
       <div className="flex h-screen">
+        {/* Desktop collapsed sidebar menu button */}
+        {!desktopSidebarOpen && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setDesktopSidebarOpen(true)}
+            className="fixed top-4 left-4 z-50 hidden lg:block bg-white shadow-md"
+          >
+            <Menu className="w-4 h-4" />
+          </Button>
+        )}
+
         {/* Desktop Sidebar */}
-        <div className="hidden lg:block w-80 bg-white border-r shadow-sm">
-          <div className="p-4 border-b">
-            <h1 className="text-lg font-bold text-gray-900">CCTalk 添削システム</h1>
+        {desktopSidebarOpen && (
+          <div className="hidden lg:block w-80 bg-white border-r shadow-sm transition-all duration-300">
+            <SidebarHeader isDesktop={true} />
+            <SidebarContent />
           </div>
-          <SidebarContent />
-        </div>
+        )}
 
         {/* Main Content */}
         <div className="flex-1 overflow-auto">
           <div className="p-4 lg:p-8">
-            <div className="max-w-4xl mx-auto">
+            <div className="max-w-7xl mx-auto">
               {/* Header for mobile */}
               <div className="lg:hidden mb-6 pt-12">
                 <h1 className="text-2xl font-bold text-gray-900">CCTalk 添削システム</h1>
@@ -631,236 +708,249 @@ export default function TextCorrectionApp() {
                     )}
                   </div>
 
-                  {/* Original Text Input */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">原文テキスト</CardTitle>
-                      <CardDescription>CCTalkから原文テキストをコピー&ペーストしてください</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <Textarea
-                        placeholder="原文テキストをここに貼り付けてください..."
-                        value={currentSession.originalText}
-                        onChange={(e) => updateCurrentSession({ originalText: e.target.value })}
-                        className="min-h-[120px]"
-                      />
-                    </CardContent>
-                  </Card>
+                  {/* Two Column Layout for Text Areas and Suggestions */}
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    {/* Left Column - Fixed Text Areas */}
+                    <div className="space-y-6 xl:sticky xl:top-6 xl:h-fit">
+                      {/* Original Text Input */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-lg">原文テキスト</CardTitle>
+                          <CardDescription>CCTalkから原文テキストをコピー&ペーストしてください</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <Textarea
+                            placeholder="原文テキストをここに貼り付けてください..."
+                            value={currentSession.originalText}
+                            onChange={(e) => updateCurrentSession({ originalText: e.target.value })}
+                            className="min-h-[200px] text-base leading-relaxed"
+                          />
+                        </CardContent>
+                      </Card>
 
-                  {/* Target Text Input */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">添削対象テキスト</CardTitle>
-                      <CardDescription>添削したいテキストをコピー&ペーストしてください</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <Textarea
-                        placeholder="添削対象テキストをここに貼り付けてください..."
-                        value={currentSession.targetText}
-                        onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
-                        className="min-h-[120px]"
-                      />
-                      <Button
-                        onClick={generateAISuggestions}
-                        disabled={!currentSession.targetText.trim() || isProcessing}
-                        className="w-full"
-                      >
-                        {isProcessing ? (
-                          <>
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            AI分析中...
-                          </>
-                        ) : (
-                          <>
-                            <Bot className="w-4 h-4 mr-2" />
-                            AI提案を生成
-                          </>
-                        )}
-                      </Button>
-                    </CardContent>
-                  </Card>
+                      {/* Target Text Input */}
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="text-lg">添削対象テキスト</CardTitle>
+                          <CardDescription>添削したいテキストをコピー&ペーストしてください</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <Textarea
+                            placeholder="添削対象テキストをここに貼り付けてください..."
+                            value={currentSession.targetText}
+                            onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
+                            className="min-h-[250px] text-base leading-relaxed"
+                          />
+                          <Button
+                            onClick={generateAISuggestions}
+                            disabled={!currentSession.targetText.trim() || isProcessing}
+                            className="w-full"
+                          >
+                            {isProcessing ? (
+                              <>
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                AI分析中...
+                              </>
+                            ) : (
+                              <>
+                                <Bot className="w-4 h-4 mr-2" />
+                                AI提案を生成
+                              </>
+                            )}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    </div>
 
-                  {/* AI Suggestions */}
-                  {currentSession.suggestions.length > 0 && (
-                    <Card>
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2">
-                          <Bot className="w-5 h-5 text-blue-600" />
-                          AI修正提案
-                        </CardTitle>
-                        <CardDescription>
-                          以下の提案から3つ以上選択してください。修正内容とコメントは編集可能です。
-                        </CardDescription>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge variant={canSave ? "default" : "secondary"}>選択済み: {selectedCount}/5+</Badge>
-                          {canSave && (
-                            <Badge variant="outline" className="text-green-600">
-                              保存可能
-                            </Badge>
-                          )}
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        {currentSession.suggestions.map((suggestion) => (
-                          <div key={suggestion.id} className="border rounded-lg p-4 space-y-3">
-                            <div className="flex items-start gap-4">
-                              <div className="flex flex-col items-center gap-2">
-                                <Checkbox
-                                  checked={suggestion.selected}
-                                  onCheckedChange={() => toggleSuggestionSelection(suggestion.id)}
-                                  className="h-5 w-5"
-                                />
-                                {suggestion.selected && suggestion.selectedOrder && (
-                                  <Badge variant="outline" className="text-xs px-1 py-0">
-                                    {suggestion.selectedOrder}
-                                  </Badge>
-                                )}
+                    {/* Right Column - Suggestions and Actions */}
+                    <div className="space-y-6">
+                      {/* AI Suggestions */}
+                      {currentSession.suggestions.length > 0 && (
+                        <Card>
+                          <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                              <Bot className="w-5 h-5 text-blue-600" />
+                              AI修正提案
+                            </CardTitle>
+                            <CardDescription>
+                              以下の提案から3つ以上選択してください。修正内容とコメントは編集可能です。
+                            </CardDescription>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Badge variant={canSave ? "default" : "secondary"}>選択済み: {selectedCount}/5+</Badge>
+                              {canSave && (
+                                <Badge variant="outline" className="text-green-600">
+                                  保存可能
+                                </Badge>
+                              )}
+                            </div>
+                          </CardHeader>
+                          <CardContent className="space-y-4">
+                            {currentSession.suggestions.map((suggestion) => (
+                              <div key={suggestion.id} className="border rounded-lg p-4 space-y-3">
+                                <div className="flex items-start gap-4">
+                                  <div className="flex flex-col items-center gap-2">
+                                    <Checkbox
+                                      checked={suggestion.selected}
+                                      onCheckedChange={() => toggleSuggestionSelection(suggestion.id)}
+                                      className="h-5 w-5"
+                                    />
+                                    {suggestion.selected && suggestion.selectedOrder && (
+                                      <Badge variant="outline" className="text-xs px-1 py-0">
+                                        {suggestion.selectedOrder}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 space-y-3">
+                                    {suggestion.isCustom && (
+                                      <Badge variant="outline" className="text-purple-600 border-purple-200">
+                                        カスタム修正
+                                      </Badge>
+                                    )}
+                                    <div className="grid grid-cols-1 gap-4">
+                                      <div>
+                                        <Label className="text-sm font-medium text-red-600">指摘箇所</Label>
+                                        <p className="bg-red-50 p-3 rounded border text-sm mt-1 leading-relaxed">
+                                          {suggestion.original}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <div className="bg-blue-50 p-3 rounded">
+                                      <Label className="text-sm font-medium text-blue-600">修正コメント</Label>
+                                      {suggestion.selected ? (
+                                        <Textarea
+                                          value={suggestion.userModifiedReason || suggestion.reason}
+                                          onChange={(e) => updateSuggestionReason(suggestion.id, e.target.value)}
+                                          className="text-sm min-h-[80px] mt-1 bg-white"
+                                        />
+                                      ) : (
+                                        <p className="text-sm text-blue-800 mt-1 leading-relaxed">
+                                          {suggestion.reason}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex-1 space-y-3">
-                                {suggestion.isCustom && (
-                                  <Badge variant="outline" className="text-purple-600 border-purple-200">
-                                    カスタム修正
-                                  </Badge>
-                                )}
+                            ))}
+
+                            {/* Custom Correction Form */}
+                            {showCustomForm && (
+                              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 space-y-4 bg-gray-50">
+                                <div className="flex items-center gap-2">
+                                  <Plus className="w-4 h-4 text-gray-600" />
+                                  <Label className="text-sm font-medium text-gray-700">修正内容を追加</Label>
+                                </div>
                                 <div className="grid grid-cols-1 gap-4">
                                   <div>
-                                    <Label className="text-sm font-medium text-red-600">指摘箇所</Label>
-                                    <p className="bg-red-50 p-3 rounded border text-sm mt-1 leading-relaxed">
-                                      {suggestion.original}
+                                    <Label htmlFor="custom-original" className="text-sm font-medium text-red-600">
+                                      修正前のテキスト
+                                    </Label>
+                                    <Input
+                                      id="custom-original"
+                                      value={customCorrection.original}
+                                      onChange={(e) =>
+                                        setCustomCorrection((prev) => ({ ...prev, original: e.target.value }))
+                                      }
+                                      placeholder="修正前のテキストを入力"
+                                      className="mt-1"
+                                    />
+                                  </div>
+                                </div>
+                                <div>
+                                  <Label htmlFor="custom-reason" className="text-sm font-medium text-blue-600">
+                                    修正コメント
+                                  </Label>
+                                  <Textarea
+                                    id="custom-reason"
+                                    value={customCorrection.reason}
+                                    onChange={(e) =>
+                                      setCustomCorrection((prev) => ({ ...prev, reason: e.target.value }))
+                                    }
+                                    placeholder="修正コメントを入力"
+                                    className="min-h-[80px] mt-1"
+                                  />
+                                </div>
+                                <Button onClick={addCustomCorrection} size="sm" className="w-full">
+                                  <Plus className="w-4 h-4 mr-2" />
+                                  修正内容を追加
+                                </Button>
+                              </div>
+                            )}
+
+                            {/* Overall Comment */}
+                            {currentSession.overallComment && (
+                              <div className="border rounded-lg p-4 bg-yellow-50">
+                                <div className="flex items-center gap-2 mb-3">
+                                  <MessageSquare className="w-4 h-4 text-yellow-600" />
+                                  <Label className="text-sm font-medium text-yellow-700">全体総括コメント</Label>
+                                </div>
+                                <Textarea
+                                  value={currentSession.overallComment}
+                                  onChange={(e) => updateCurrentSession({ overallComment: e.target.value })}
+                                  className="min-h-[100px] bg-white"
+                                  placeholder="全体的な総括コメントを入力してください..."
+                                />
+                              </div>
+                            )}
+
+                            <Separator />
+
+                            <Button onClick={saveCorrections} disabled={!canSave} className="w-full" size="lg">
+                              <Copy className="w-4 h-4 mr-2" />
+                              確定してコピー・保存 ({selectedCount}/3)
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      )}
+
+                      {/* Saved Data History */}
+                      {currentSession.savedData.length > 0 && (
+                        <Card>
+                          <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                              <CheckCircle className="w-5 h-5 text-green-600" />
+                              保存履歴
+                            </CardTitle>
+                            <CardDescription>このセッションで保存された添削データ</CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="space-y-3">
+                              {currentSession.savedData.map((data, index) => (
+                                <div key={index} className="border rounded-lg p-4 space-y-3">
+                                  <div className="flex justify-between items-start">
+                                    <div>
+                                      <h4 className="font-medium text-sm">添削データ #{index + 1}</h4>
+                                      <p className="text-xs text-gray-500">{data.timestamp.toLocaleString()}</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <Button variant="outline" size="sm" onClick={() => restoreFromHistory(data)}>
+                                        <RotateCcw className="w-3 h-3 mr-1" />
+                                        復元
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => copyToClipboard(data.combinedComment)}
+                                      >
+                                        <Copy className="w-3 h-3 mr-1" />
+                                        再コピー
+                                      </Button>
+                                    </div>
+                                  </div>
+                                  <div className="text-sm text-gray-600 space-y-1">
+                                    <p>選択された修正: {data.selectedCorrections.length}件</p>
+                                    <p className="text-xs text-gray-500 truncate">
+                                      添削対象: {data.targetText.substring(0, 50)}...
                                     </p>
                                   </div>
                                 </div>
-                                <div className="bg-blue-50 p-3 rounded">
-                                  <Label className="text-sm font-medium text-blue-600">修正コメント</Label>
-                                  {suggestion.selected ? (
-                                    <Textarea
-                                      value={suggestion.userModifiedReason || suggestion.reason}
-                                      onChange={(e) => updateSuggestionReason(suggestion.id, e.target.value)}
-                                      className="text-sm min-h-[60px] mt-1 bg-white"
-                                    />
-                                  ) : (
-                                    <p className="text-sm text-blue-800 mt-1 leading-relaxed">{suggestion.reason}</p>
-                                  )}
-                                </div>
-                              </div>
+                              ))}
                             </div>
-                          </div>
-                        ))}
-
-                        {/* Custom Correction Form */}
-                        {showCustomForm && (
-                          <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 space-y-4 bg-gray-50">
-                            <div className="flex items-center gap-2">
-                              <Plus className="w-4 h-4 text-gray-600" />
-                              <Label className="text-sm font-medium text-gray-700">修正内容を追加</Label>
-                            </div>
-                            <div className="grid grid-cols-1 gap-4">
-                              <div>
-                                <Label htmlFor="custom-original" className="text-sm font-medium text-red-600">
-                                  修正前のテキスト
-                                </Label>
-                                <Input
-                                  id="custom-original"
-                                  value={customCorrection.original}
-                                  onChange={(e) =>
-                                    setCustomCorrection((prev) => ({ ...prev, original: e.target.value }))
-                                  }
-                                  placeholder="修正前のテキストを入力"
-                                  className="mt-1"
-                                />
-                              </div>
-                            </div>
-                            <div>
-                              <Label htmlFor="custom-reason" className="text-sm font-medium text-blue-600">
-                                修正コメント
-                              </Label>
-                              <Textarea
-                                id="custom-reason"
-                                value={customCorrection.reason}
-                                onChange={(e) => setCustomCorrection((prev) => ({ ...prev, reason: e.target.value }))}
-                                placeholder="修正コメントを入力"
-                                className="min-h-[60px] mt-1"
-                              />
-                            </div>
-                            <Button onClick={addCustomCorrection} size="sm" className="w-full">
-                              <Plus className="w-4 h-4 mr-2" />
-                              修正内容を追加
-                            </Button>
-                          </div>
-                        )}
-
-                        {/* Overall Comment */}
-                        {currentSession.overallComment && (
-                          <div className="border rounded-lg p-4 bg-yellow-50">
-                            <div className="flex items-center gap-2 mb-3">
-                              <MessageSquare className="w-4 h-4 text-yellow-600" />
-                              <Label className="text-sm font-medium text-yellow-700">全体総括コメント</Label>
-                            </div>
-                            <Textarea
-                              value={currentSession.overallComment}
-                              onChange={(e) => updateCurrentSession({ overallComment: e.target.value })}
-                              className="min-h-[80px] bg-white"
-                              placeholder="全体的な総括コメントを入力してください..."
-                            />
-                          </div>
-                        )}
-
-                        <Separator />
-
-                        <Button onClick={saveCorrections} disabled={!canSave} className="w-full" size="lg">
-                          <Copy className="w-4 h-4 mr-2" />
-                          確定してコピー・保存 ({selectedCount}/3)
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  {/* Saved Data History */}
-                  {currentSession.savedData.length > 0 && (
-                    <Card>
-                      <CardHeader>
-                        <CardTitle className="flex items-center gap-2">
-                          <CheckCircle className="w-5 h-5 text-green-600" />
-                          保存履歴
-                        </CardTitle>
-                        <CardDescription>このセッションで保存された添削データ</CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="space-y-3">
-                          {currentSession.savedData.map((data, index) => (
-                            <div key={index} className="border rounded-lg p-4 space-y-3">
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <h4 className="font-medium text-sm">添削データ #{index + 1}</h4>
-                                  <p className="text-xs text-gray-500">{data.timestamp.toLocaleString()}</p>
-                                </div>
-                                <div className="flex gap-2">
-                                  <Button variant="outline" size="sm" onClick={() => restoreFromHistory(data)}>
-                                    <RotateCcw className="w-3 h-3 mr-1" />
-                                    復元
-                                  </Button>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => copyToClipboard(data.combinedComment)}
-                                  >
-                                    <Copy className="w-3 h-3 mr-1" />
-                                    再コピー
-                                  </Button>
-                                </div>
-                              </div>
-                              <div className="text-sm text-gray-600 space-y-1">
-                                <p>選択された修正: {data.selectedCorrections.length}件</p>
-                                <p className="text-xs text-gray-500 truncate">
-                                  添削対象: {data.targetText.substring(0, 50)}...
-                                </p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
+                          </CardContent>
+                        </Card>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
