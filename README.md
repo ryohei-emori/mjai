@@ -38,6 +38,20 @@ docker-compose up -d
 
 > URLs are automatically reflected in `conf/.env` as `FRONTEND_NGROK_URL` and `BACKEND_NGROK_URL`.
 
+### 5. Rebuilding the Frontend after Environment Changes
+If you update environment variables (such as ngrok URLs or API keys) in `conf/.env`, you must rebuild the frontend for the changes to take effect.
+
+**To rebuild and restart the frontend:**
+
+```bash
+cd conf
+docker-compose build frontend
+docker-compose up -d frontend
+```
+
+- This ensures that all `NEXT_PUBLIC_` environment variables are correctly embedded in the frontend build.
+- For local development with `npm run dev`, restart the dev server after changing `.env`.
+
 ---
 
 ## Main Features

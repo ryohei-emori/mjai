@@ -46,7 +46,7 @@ services:
     volumes:
       - ../frontend:/app
       - /app/node_modules
-      - ./.env:/app/conf/.env
+      - ../conf/.env:/app/.env
     networks:
       - app-network
     depends_on:

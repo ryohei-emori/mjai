@@ -187,3 +187,7 @@ models/
 # OS
 .DS_Store
 Thumbs.db 
+
+# jar files
+*.jar
+.git.bfg-report/

@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 
 // conf/.envから環境変数を直接読み込み（Dockerコンテナ内のパス）
-const envPath = path.join(__dirname, '..', 'conf/.env');
+const envPath = '/app/.env';
 let envVars = {};
 
 console.log('=== Next.js Config Debug ===');

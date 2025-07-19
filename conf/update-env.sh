@@ -49,11 +49,21 @@ main() {
     else
         echo "BACKEND_NGROK_URL=${backend_url}" >> .env
     fi
+    if grep -q "^NEXT_PUBLIC_BACKEND_NGROK_URL=" .env; then
+        sed -i '' "s|^NEXT_PUBLIC_BACKEND_NGROK_URL=.*|NEXT_PUBLIC_BACKEND_NGROK_URL=${backend_url}|" .env
+    else
+        echo "NEXT_PUBLIC_BACKEND_NGROK_URL=${backend_url}" >> .env
+    fi
     
     if grep -q "^FRONTEND_NGROK_URL=" .env; then
         sed -i '' "s|^FRONTEND_NGROK_URL=.*|FRONTEND_NGROK_URL=${frontend_url}|" .env
     else
         echo "FRONTEND_NGROK_URL=${frontend_url}" >> .env
+    fi
+    if grep -q "^NEXT_PUBLIC_FRONTEND_NGROK_URL=" .env; then
+        sed -i '' "s|^NEXT_PUBLIC_FRONTEND_NGROK_URL=.*|NEXT_PUBLIC_FRONTEND_NGROK_URL=${frontend_url}|" .env
+    else
+        echo "NEXT_PUBLIC_FRONTEND_NGROK_URL=${frontend_url}" >> .env
     fi
 
     # NEXT_PUBLIC_API_BASE_URLもバックエンドURLで上書き
