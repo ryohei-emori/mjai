@@ -1,0 +1,19 @@
+# Ignore Python cache and venv
+__pycache__/
+.pytest_cache/
+venv/
+
+# Ignore database files
+*.db.local
+
+# Ignore model weights and large files
+models/
+s
+# Ignore test files
+app/test_*.py
+
+# Ignore local config
+.env
+
+# Ignore anything not needed for build
+# (add more as needed)
