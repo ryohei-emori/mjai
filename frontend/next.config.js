@@ -88,6 +88,9 @@ function getCorsOrigins() {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Fly.io対応の設定
+  output: 'standalone',
+  
   // 環境変数設定 - クライアントサイドでも利用可能
   env: {
     // バックエンドAPIのベースURL（conf/.envから直接読み込み）

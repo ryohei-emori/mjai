@@ -86,7 +86,6 @@ mjai/
 │   │   └── init_db.py               # Database initialization
 │   ├── requirements.txt             # Python dependencies
 │   ├── Dockerfile                   # Backend container config
-│   ├── run_cloud.sh                 # Cloud deployment script
 │   └── README.md                    # Backend documentation
 ├── frontend/                        # Next.js Frontend (React/TypeScript)
 │   ├── src/                         # Source code
@@ -111,7 +110,7 @@ mjai/
 │   ├── docker-compose.yml           # Multi-service orchestration
 │   ├── .env.example                 # Environment variables template
 │   ├── .env                         # Environment variables (create from example)
-│   ├── ngrok-docker.yml             # ngrok configuration
+│   ├── ngrok.yml             # ngrok configuration
 │   ├── update-env.sh                # Environment updater script
 │   └── start.sh                     # Quick start script
 ├── venv/                            # Python virtual environment (local dev)
