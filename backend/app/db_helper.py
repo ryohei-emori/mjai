@@ -29,11 +29,21 @@ def get_sqlite_db():
     finally:
         conn.close()
 
-# セッション一覧取得
+# セッション一覧取得（API契約に合わせてカラム名をキャメルケースで返す）
 async def fetch_sessions():
     async with get_db() as conn:
         rows = await conn.fetch(
-            'SELECT * FROM sessions ORDER BY updated_at DESC'
+            '''
+            SELECT 
+              session_id AS "sessionId",
+              created_at AS "createdAt",
+              updated_at AS "updatedAt",
+              name AS "name",
+              correction_count AS "correctionCount",
+              is_open AS "isOpen"
+            FROM sessions
+            ORDER BY updated_at DESC
+            '''
         )
         return [dict(row) for row in rows]
 
@@ -42,46 +52,43 @@ async def insert_session(session):
     async with get_db() as conn:
         await conn.execute(
             '''
-            INSERT INTO sessions (session_id, created_at, updated_at, name, correction_count, is_open) 
+            INSERT INTO sessions (session_id, created_at, updated_at, name, correction_count, is_open)
             VALUES ($1, $2, $3, $4, $5, $6)
             ''',
-            session['session_id'],
-            session['created_at'],
-            session['updated_at'],
+            session['sessionId'],
+            session['createdAt'],
+            session['updatedAt'],
             session.get('name'),
-            session.get('correction_count', 0),
-            session.get('is_open', True)
+            session.get('correctionCount', 0),
+            bool(session.get('isOpen', True))
         )
 
 # セッション削除
 async def delete_session(session_id):
     async with get_db() as conn:
-        # セッションに関連する履歴を取得
-        histories = await fetch_histories_by_session(session_id)
-        
-        # 各履歴に関連する提案を削除
-        for history in histories:
-            await conn.execute('DELETE FROM ai_proposals WHERE history_id = $1', history['history_id'])
-        
-        # 履歴を削除
-        await conn.execute('DELETE FROM correction_histories WHERE session_id = $1', session_id)
-        
-        # セッションを削除
+        # 外部キー ON DELETE CASCADE を利用
         await conn.execute('DELETE FROM sessions WHERE session_id = $1', session_id)
 
 # セッション更新
 async def update_session(session_id, updates):
     async with get_db() as conn:
-        # 更新可能なフィールドをチェック
-        allowed_fields = ['name', 'correction_count', 'is_open', 'updated_at']
+        # camelCase → snake_case へマッピング
+        field_map = {
+            'name': 'name',
+            'correctionCount': 'correction_count',
+            'isOpen': 'is_open',
+            'updatedAt': 'updated_at',
+        }
         update_fields = []
         update_values = []
-        
-        for field, value in updates.items():
-            if field in allowed_fields:
-                update_fields.append(f'{field} = ${len(update_values) + 1}')
+        for camel, value in updates.items():
+            snake = field_map.get(camel)
+            if snake is not None:
+                update_fields.append(f'{snake} = ${len(update_values) + 1}')
+                # boolean 正規化
+                if snake in ('is_open',):
+                    value = bool(value)
                 update_values.append(value)
-        
         if update_fields:
             update_values.append(session_id)
             query = f'UPDATE sessions SET {", ".join(update_fields)} WHERE session_id = ${len(update_values)}'
@@ -91,14 +98,39 @@ async def update_session(session_id, updates):
 async def fetch_session(session_id):
     async with get_db() as conn:
         row = await conn.fetchrow(
-            'SELECT * FROM sessions WHERE session_id = $1', session_id
+            '''
+            SELECT 
+              session_id AS "sessionId",
+              created_at AS "createdAt",
+              updated_at AS "updatedAt",
+              name AS "name",
+              correction_count AS "correctionCount",
+              is_open AS "isOpen"
+            FROM sessions WHERE session_id = $1
+            ''',
+            session_id
         )
         return dict(row) if row else None
 
 async def fetch_histories_by_session(session_id):
     async with get_db() as conn:
         rows = await conn.fetch(
-            'SELECT * FROM correction_histories WHERE session_id = $1 ORDER BY timestamp DESC', session_id
+            '''
+            SELECT 
+              history_id AS "historyId",
+              session_id AS "sessionId",
+              timestamp AS "timestamp",
+              original_text AS "originalText",
+              instruction_prompt AS "instructionPrompt",
+              target_text AS "targetText",
+              combined_comment AS "combinedComment",
+              selected_proposal_ids AS "selectedProposalIds",
+              custom_proposals AS "customProposals"
+            FROM correction_histories
+            WHERE session_id = $1
+            ORDER BY timestamp DESC
+            ''',
+            session_id
         )
         return [dict(row) for row in rows]
 
@@ -106,25 +138,45 @@ async def insert_history(history):
     async with get_db() as conn:
         await conn.execute(
             '''
-            INSERT INTO correction_histories (history_id, session_id, timestamp, original_text, instruction_prompt, target_text, combined_comment, selected_proposal_ids, custom_proposals) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO correction_histories (
+              history_id, session_id, timestamp, original_text, instruction_prompt,
+              target_text, combined_comment, selected_proposal_ids, custom_proposals
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             ''',
-            history['history_id'],
-            history['session_id'],
+            history['historyId'],
+            history['sessionId'],
             history['timestamp'],
-            history['original_text'],
-            history.get('instruction_prompt'),
-            history.get('target_text'),
-            history.get('combined_comment'),
-            history.get('selected_proposal_ids'),
-            history.get('custom_proposals')
+            history['originalText'],
+            history.get('instructionPrompt'),
+            history.get('targetText'),
+            history.get('combinedComment'),
+            history.get('selectedProposalIds'),
+            history.get('customProposals')
         )
 
 # 既存のSQLite関数をPostgreSQL用に変換
 async def fetch_proposals_by_history(history_id):
     async with get_db() as conn:
         rows = await conn.fetch(
-            'SELECT * FROM ai_proposals WHERE history_id = $1 ORDER BY created_at DESC', history_id
+            '''
+            SELECT 
+              proposal_id AS "proposalId",
+              history_id AS "historyId",
+              type AS "type",
+              original_after_text AS "originalAfterText",
+              original_reason AS "originalReason",
+              modified_after_text AS "modifiedAfterText",
+              modified_reason AS "modifiedReason",
+              (is_selected)::int AS "isSelected",
+              (is_modified)::int AS "isModified",
+              (is_custom)::int AS "isCustom",
+              selected_order AS "selectedOrder",
+              created_at AS "createdAt"
+            FROM ai_proposals
+            WHERE history_id = $1
+            ORDER BY created_at DESC
+            ''',
+            history_id
         )
         return [dict(row) for row in rows]
 
@@ -132,14 +184,23 @@ async def insert_proposal(proposal):
     async with get_db() as conn:
         await conn.execute(
             '''
-            INSERT INTO ai_proposals (proposal_id, history_id, proposal_text, confidence_score, created_at) 
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO ai_proposals (
+              proposal_id, history_id, type, original_after_text, original_reason,
+              modified_after_text, modified_reason, is_selected, is_modified, is_custom, selected_order, created_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             ''',
-            proposal['proposal_id'],
-            proposal['history_id'],
-            proposal['proposal_text'],
-            proposal.get('confidence_score'),
-            proposal.get('created_at')
+            proposal['proposalId'],
+            proposal['historyId'],
+            proposal['type'],
+            proposal['originalAfterText'],
+            proposal.get('originalReason'),
+            proposal.get('modifiedAfterText'),
+            proposal.get('modifiedReason'),
+            int(proposal.get('isSelected', 0)) == 1,
+            int(proposal.get('isModified', 0)) == 1,
+            int(proposal.get('isCustom', 0)) == 1,
+            proposal.get('selectedOrder'),
+            None
         )
 
 # SQLite用の関数

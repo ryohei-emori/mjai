@@ -198,8 +198,7 @@ router = APIRouter()
 
 @router.get("/sessions")
 async def get_sessions():
-    # 現状はSQLiteを優先利用（PostgreSQLパスは今後の移行で対応）
-    return fetch_sessions_sqlite()
+    return await fetch_sessions()
 
 @router.post("/sessions")
 async def create_session(payload: dict):
@@ -212,12 +211,12 @@ async def create_session(payload: dict):
         'correctionCount': 0,
         'isOpen': 1
     }
-    insert_session_sqlite(session)
+    await insert_session(session)
     return session
 
 @router.get("/sessions/{session_id}/histories")
 async def get_histories(session_id: str):
-    return fetch_histories_by_session_sqlite(session_id)
+    return await fetch_histories_by_session(session_id)
 
 @router.post("/histories")
 async def create_history(payload: dict = Body(...)):
@@ -235,12 +234,12 @@ async def create_history(payload: dict = Body(...)):
         'selectedProposalIds': payload.get('selectedProposalIds'),
         'customProposals': payload.get('customProposals')
     }
-    insert_history_sqlite(history)
+    await insert_history(history)
     return history
 
 @router.get("/histories/{history_id}/proposals")
 async def get_proposals(history_id: str):
-    return fetch_proposals_by_history_sqlite(history_id)
+    return await fetch_proposals_by_history(history_id)
 
 @router.post("/proposals")
 async def create_proposal(payload: dict = Body(...)):
@@ -258,13 +257,13 @@ async def create_proposal(payload: dict = Body(...)):
         'isCustom': payload.get('isCustom', 0),
         'selectedOrder': payload.get('selectedOrder')
     }
-    insert_proposal_sqlite(proposal)
+    await insert_proposal(proposal)
     return proposal
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     try:
-        delete_session_sqlite(session_id)
+        await db_delete_session(session_id)
         return {"message": "Session deleted", "sessionId": session_id}
     except Exception as e:
         return {"error": f"Failed to delete session: {str(e)}", "sessionId": session_id}
@@ -272,7 +271,7 @@ async def delete_session(session_id: str):
 @router.put("/sessions/{session_id}")
 async def update_session(session_id: str, payload: dict = Body(...)):
     try:
-        update_session_sqlite(session_id, payload)
+        await db_update_session(session_id, payload)
         return {"message": "Session updated", "sessionId": session_id, **payload}
     except Exception as e:
         return {"error": f"Failed to update session: {str(e)}", "sessionId": session_id}
@@ -280,7 +279,7 @@ async def update_session(session_id: str, payload: dict = Body(...)):
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     try:
-        session = fetch_session_sqlite(session_id)
+        session = await db_fetch_session(session_id)
         if session:
             return session
         else:
