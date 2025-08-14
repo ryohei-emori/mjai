@@ -1,7 +1,9 @@
 import os
 import asyncpg
+import sqlite3
 from typing import List, Dict, Optional
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 # Supabase接続設定
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -13,6 +15,19 @@ async def get_db():
         yield conn
     finally:
         await conn.close()
+
+# DBファイルを backend/db/app.db に移動
+# backend/app/db_helper.py から backend/db/app.db への相対パス
+DB_PATH = Path(__file__).resolve().parent.parent / 'db' / 'app.db'
+
+@contextmanager
+def get_sqlite_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 # セッション一覧取得
 async def fetch_sessions():
@@ -125,4 +140,114 @@ async def insert_proposal(proposal):
             proposal['proposal_text'],
             proposal.get('confidence_score'),
             proposal.get('created_at')
-        ) 
+        )
+
+# SQLite用の関数
+def fetch_sessions_sqlite():
+    with get_sqlite_db() as conn:
+        cur = conn.execute('SELECT * FROM Sessions ORDER BY updatedAt DESC')
+        return [dict(row) for row in cur.fetchall()]
+
+def insert_session_sqlite(session):
+    with get_sqlite_db() as conn:
+        conn.execute(
+            'INSERT INTO Sessions (sessionId, createdAt, updatedAt, name, correctionCount, isOpen) VALUES (?, ?, ?, ?, ?, ?)',
+            (
+                session['sessionId'],
+                session['createdAt'],
+                session['updatedAt'],
+                session.get('name'),
+                session.get('correctionCount', 0),
+                session.get('isOpen', 1)
+            )
+        )
+        conn.commit()
+
+def delete_session_sqlite(session_id):
+    with get_sqlite_db() as conn:
+        # セッションに関連する履歴を取得
+        histories = fetch_histories_by_session_sqlite(session_id)
+        
+        # 各履歴に関連する提案を削除
+        for history in histories:
+            conn.execute('DELETE FROM AIProposals WHERE historyId = ?', (history['historyId'],))
+        
+        # 履歴を削除
+        conn.execute('DELETE FROM CorrectionHistories WHERE sessionId = ?', (session_id,))
+        
+        # セッションを削除
+        conn.execute('DELETE FROM Sessions WHERE sessionId = ?', (session_id,))
+        
+        conn.commit()
+
+def update_session_sqlite(session_id, updates):
+    with get_sqlite_db() as conn:
+        # 更新可能なフィールドをチェック
+        allowed_fields = ['name', 'correctionCount', 'isOpen', 'updatedAt']
+        update_fields = []
+        update_values = []
+        
+        for field, value in updates.items():
+            if field in allowed_fields:
+                update_fields.append(f'{field} = ?')
+                update_values.append(value)
+        
+        if update_fields:
+            update_values.append(session_id)
+            query = f'UPDATE Sessions SET {", ".join(update_fields)} WHERE sessionId = ?'
+            conn.execute(query, update_values)
+            conn.commit()
+
+def fetch_session_sqlite(session_id):
+    with get_sqlite_db() as conn:
+        cur = conn.execute('SELECT * FROM Sessions WHERE sessionId = ?', (session_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+def fetch_histories_by_session_sqlite(session_id):
+    with get_sqlite_db() as conn:
+        cur = conn.execute('SELECT * FROM CorrectionHistories WHERE sessionId = ? ORDER BY timestamp DESC', (session_id,))
+        return [dict(row) for row in cur.fetchall()]
+
+def insert_history_sqlite(history):
+    with get_sqlite_db() as conn:
+        conn.execute(
+            'INSERT INTO CorrectionHistories (historyId, sessionId, timestamp, originalText, instructionPrompt, targetText, combinedComment, selectedProposalIds, customProposals) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                history['historyId'],
+                history['sessionId'],
+                history['timestamp'],
+                history['originalText'],
+                history.get('instructionPrompt'),
+                history['targetText'],
+                history.get('combinedComment'),
+                history.get('selectedProposalIds'),
+                history.get('customProposals')
+            )
+        )
+        conn.commit()
+
+def fetch_proposals_by_history_sqlite(history_id):
+    with get_sqlite_db() as conn:
+        cur = conn.execute('SELECT * FROM AIProposals WHERE historyId = ? ORDER BY selectedOrder ASC', (history_id,))
+        return [dict(row) for row in cur.fetchall()]
+
+def insert_proposal_sqlite(proposal):
+    with get_sqlite_db() as conn:
+        conn.execute(
+            'INSERT INTO AIProposals (proposalId, historyId, type, originalAfterText, originalReason, modifiedAfterText, modifiedReason, isSelected, isModified, isCustom, selectedOrder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                proposal['proposalId'],
+                proposal['historyId'],
+                proposal['type'],
+                proposal['originalAfterText'],
+                proposal.get('originalReason'),
+                proposal.get('modifiedAfterText'),
+                proposal.get('modifiedReason'),
+                proposal['isSelected'],
+                proposal['isModified'],
+                proposal.get('isCustom', 0),
+                proposal.get('selectedOrder')
+            )
+        )
+        conn.commit()

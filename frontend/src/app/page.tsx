@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useCallback } from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -113,7 +113,7 @@ export default function TextCorrectionApp() {
   const currentSession = sessions.find((s) => s.id === currentSessionId)
 
   // セッション一覧をAPIから取得
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async () => {
     try {
       console.log("Loading sessions...")
       const sessionsData = await sessionAPI.getSessions()
@@ -136,7 +136,16 @@ export default function TextCorrectionApp() {
           console.log("Proposals for history", history.historyId, ":", proposalsData)
 
           // 提案データをCorrectionSuggestion形式に変換
-          const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal: any) => ({
+          const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal: {
+            proposalId: string;
+            originalAfterText: string;
+            originalReason?: string;
+            isSelected: number;
+            selectedOrder?: number;
+            isModified: number;
+            modifiedReason?: string;
+            isCustom: number;
+          }) => ({
             id: proposal.proposalId,
             original: proposal.originalAfterText,
             reason: proposal.originalReason || "",
@@ -183,7 +192,7 @@ export default function TextCorrectionApp() {
         variant: "destructive",
       })
     }
-  }
+  }, [])
 
   // セッション作成をAPIに保存
   const createNewSession = async () => {
@@ -298,7 +307,7 @@ export default function TextCorrectionApp() {
       })
 
       // 既存の選択状態を復元
-      const restoredSuggestions = data.suggestions.map((s: any) => {
+      const restoredSuggestions = data.suggestions.map((s: CorrectionSuggestion) => {
         const existing = existingSelections.get(s.original)
         return existing ? { ...s, ...existing } : { ...s, selected: false, selectedOrder: undefined }
       })
@@ -315,7 +324,7 @@ export default function TextCorrectionApp() {
       // 選択カウンターを復元
       const selectedCount = allSuggestions.filter((s) => s.selected).length
       setSelectionCounter(selectedCount)
-    } catch (e) {
+    } catch {
       toast({
         title: "APIエラー",
         description: "AI提案の取得に失敗しました",
@@ -413,7 +422,7 @@ export default function TextCorrectionApp() {
         title: "コピー完了",
         description: "修正内容がクリップボードにコピーされました",
       })
-    } catch (err) {
+    } catch {
       toast({
         title: "コピー失敗",
         description: "クリップボードへのコピーに失敗しました",
@@ -630,10 +639,10 @@ export default function TextCorrectionApp() {
     </div>
   )
 
-  // 初期化時にセッションを読み込み
+  // セッション一覧を初期化時に読み込み
   useEffect(() => {
     loadSessions()
-  }, [])
+  }, [loadSessions])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -653,18 +662,6 @@ export default function TextCorrectionApp() {
       </Sheet>
 
       <div className="flex h-screen">
-        {/* Desktop collapsed sidebar menu button */}
-        {!desktopSidebarOpen && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setDesktopSidebarOpen(true)}
-            className="fixed top-4 left-4 z-50 hidden lg:block bg-white shadow-md"
-          >
-            <Menu className="w-4 h-4" />
-          </Button>
-        )}
-
         {/* Desktop Sidebar */}
         {desktopSidebarOpen && (
           <div className="hidden lg:block w-80 bg-white border-r shadow-sm transition-all duration-300">
@@ -930,18 +927,12 @@ export default function TextCorrectionApp() {
                                       <Button
                                         variant="outline"
                                         size="sm"
-                                        onClick={() => copyToClipboard(data.combinedComment)}
+                                        onClick={() => console.log("削除機能未実装")}
                                       >
-                                        <Copy className="w-3 h-3 mr-1" />
-                                        再コピー
+                                        <Trash2 className="w-3 h-3 mr-1" />
+                                        削除
                                       </Button>
                                     </div>
-                                  </div>
-                                  <div className="text-sm text-gray-600 space-y-1">
-                                    <p>選択された修正: {data.selectedCorrections.length}件</p>
-                                    <p className="text-xs text-gray-500 truncate">
-                                      添削対象: {data.targetText.substring(0, 50)}...
-                                    </p>
                                   </div>
                                 </div>
                               ))}

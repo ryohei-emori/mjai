@@ -87,7 +87,7 @@ export const sessionAPI = {
   },
 
   // セッション更新
-  updateSession: async (sessionId: string, updates: any) => {
+  updateSession: async (sessionId: string, updates: Record<string, unknown>) => {
     return await apiFetch(`/sessions/${sessionId}`, {
       method: 'PUT',
       body: JSON.stringify(updates)
