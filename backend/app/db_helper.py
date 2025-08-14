@@ -1,10 +1,14 @@
 import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
+import os
 
-# DBファイルを backend/db/app.db に移動
-# backend/app/db_helper.py から backend/db/app.db への相対パス
-DB_PATH = Path(__file__).resolve().parent.parent / 'db' / 'app.db'
+# 環境変数からアプリケーションルートを取得
+app_root = os.environ.get("APP_ROOT", "/app")
+db_path = os.path.join(app_root, "db", "app.db")
+
+# DBファイルパスを環境変数から取得
+DB_PATH = Path(db_path)
 
 @contextmanager
 def get_db():

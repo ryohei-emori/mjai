@@ -5,8 +5,12 @@ from app.main import app
 from pathlib import Path
 from dotenv import load_dotenv
 
+# 環境変数からアプリケーションルートを取得
+app_root = os.environ.get("APP_ROOT", "/app")
+conf_path = os.path.join(app_root, "..", "conf", ".env")
+
 # conf/.envから環境変数を読み込み
-load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / "conf" / ".env")
+load_dotenv(dotenv_path=conf_path)
 
 
 @pytest.fixture(autouse=True)

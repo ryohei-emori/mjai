@@ -10,8 +10,12 @@ from fastapi import Request
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
+# 環境変数からアプリケーションルートを取得
+app_root = os.environ.get("APP_ROOT", "/app")
+conf_path = os.path.join(app_root, "..", "conf", ".env")
+
 # conf/.envから環境変数を読み込み
-load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / "conf" / ".env", override=False)
+load_dotenv(dotenv_path=conf_path, override=False)
 
 from .db_helper import (
     fetch_sessions, insert_session, 

@@ -1,9 +1,15 @@
 import sqlite3
 from pathlib import Path
+import os
 
-# DBファイルとスキーマファイルのパスを修正
-DB_PATH = Path(__file__).parent / 'app.db'
-SCHEMA_PATH = Path(__file__).parent / 'schema.sql'
+# 環境変数からアプリケーションルートを取得
+app_root = os.environ.get("APP_ROOT", "/app")
+db_path = os.path.join(app_root, "db", "app.db")
+schema_path = os.path.join(app_root, "db", "schema.sql")
+
+# DBファイルとスキーマファイルのパスを環境変数から取得
+DB_PATH = Path(db_path)
+SCHEMA_PATH = Path(schema_path)
 
 def init_db():
     """データベースを初期化する"""
