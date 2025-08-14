@@ -4,5 +4,5 @@ tunnels:
     addr: backend:8000
     proto: http
   frontend:
-    addr: frontend:3000
+    addr: frontend:8080
     proto: http 

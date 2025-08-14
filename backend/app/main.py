@@ -12,18 +12,32 @@ from dotenv import load_dotenv
 
 # 環境変数からアプリケーションルートを取得
 app_root = os.environ.get("APP_ROOT", "/app")
-conf_path = os.path.join(app_root, "..", "conf", ".env")
 
-# conf/.envから環境変数を読み込み（PYTHONPATH=.により相対パスでアクセス可能）
-load_dotenv(dotenv_path=conf_path, override=False)
+# .env の探索候補
+_env_candidates = [
+    os.path.join(app_root, "..", "conf", ".env"),  # /conf/.env を想定
+    os.path.join(app_root, ".env"),                   # /app/.env マウント
+    "/conf/.env",                                     # 直接マウント
+]
+for _path in _env_candidates:
+    if os.path.exists(_path):
+        load_dotenv(dotenv_path=_path, override=False)
+        break
 
 from .db_helper import (
+    # PostgreSQL 用（未マイグレーション完全化）
     fetch_sessions, insert_session, 
     delete_session as db_delete_session, 
     update_session as db_update_session, 
     fetch_session as db_fetch_session,
     fetch_histories_by_session, insert_history,
-    fetch_proposals_by_history, insert_proposal
+    fetch_proposals_by_history, insert_proposal,
+    # SQLite 用（現在のスキーマと整合）
+    fetch_sessions_sqlite, insert_session_sqlite,
+    delete_session_sqlite, update_session_sqlite,
+    fetch_session_sqlite, fetch_histories_by_session_sqlite,
+    insert_history_sqlite, fetch_proposals_by_history_sqlite,
+    insert_proposal_sqlite
 )
 from uuid import uuid4
 from datetime import datetime
@@ -37,14 +51,17 @@ def get_cors_origins():
     cors_origins = [
         "http://localhost:3000",
         "http://localhost:3001",
+        "http://localhost:8080",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
+        "http://127.0.0.1:8080",
         "http://192.168.0.34:3000",
         "http://192.168.0.34:3001",
         "http://172.22.178.95:3000",
         "http://172.22.178.95:3001",
         "http://0.0.0.0:3000",
         "http://0.0.0.0:3001",
+        "http://0.0.0.0:8080",
     ]
     
     print("=== Backend CORS Debug ===")
@@ -91,7 +108,8 @@ app = FastAPI()
 # CORSミドルウェアを追加
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,  # 環境変数から取得したオリジンを使用
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https://[a-z0-9.-]+\\.ngrok-free\\.app$|^https://[a-z0-9.-]+\\.ngrok\\.io$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -179,11 +197,12 @@ session_memories: Dict[str, List[str]] = {}
 router = APIRouter()
 
 @router.get("/sessions")
-def get_sessions():
-    return fetch_sessions()
+async def get_sessions():
+    # 現状はSQLiteを優先利用（PostgreSQLパスは今後の移行で対応）
+    return fetch_sessions_sqlite()
 
 @router.post("/sessions")
-def create_session(payload: dict):
+async def create_session(payload: dict):
     now = datetime.now().isoformat(sep=' ', timespec='milliseconds')
     session = {
         'sessionId': str(uuid4()),
@@ -193,15 +212,15 @@ def create_session(payload: dict):
         'correctionCount': 0,
         'isOpen': 1
     }
-    insert_session(session)
+    insert_session_sqlite(session)
     return session
 
 @router.get("/sessions/{session_id}/histories")
-def get_histories(session_id: str):
-    return fetch_histories_by_session(session_id)
+async def get_histories(session_id: str):
+    return fetch_histories_by_session_sqlite(session_id)
 
 @router.post("/histories")
-def create_history(payload: dict = Body(...)):
+async def create_history(payload: dict = Body(...)):
     from uuid import uuid4
     from datetime import datetime
     now = datetime.now().isoformat(sep=' ', timespec='milliseconds')
@@ -216,15 +235,15 @@ def create_history(payload: dict = Body(...)):
         'selectedProposalIds': payload.get('selectedProposalIds'),
         'customProposals': payload.get('customProposals')
     }
-    insert_history(history)
+    insert_history_sqlite(history)
     return history
 
 @router.get("/histories/{history_id}/proposals")
-def get_proposals(history_id: str):
-    return fetch_proposals_by_history(history_id)
+async def get_proposals(history_id: str):
+    return fetch_proposals_by_history_sqlite(history_id)
 
 @router.post("/proposals")
-def create_proposal(payload: dict = Body(...)):
+async def create_proposal(payload: dict = Body(...)):
     from uuid import uuid4
     proposal = {
         'proposalId': payload.get('proposalId', str(uuid4())),
@@ -239,29 +258,29 @@ def create_proposal(payload: dict = Body(...)):
         'isCustom': payload.get('isCustom', 0),
         'selectedOrder': payload.get('selectedOrder')
     }
-    insert_proposal(proposal)
+    insert_proposal_sqlite(proposal)
     return proposal
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str):
+async def delete_session(session_id: str):
     try:
-        db_delete_session(session_id)
+        delete_session_sqlite(session_id)
         return {"message": "Session deleted", "sessionId": session_id}
     except Exception as e:
         return {"error": f"Failed to delete session: {str(e)}", "sessionId": session_id}
 
 @router.put("/sessions/{session_id}")
-def update_session(session_id: str, payload: dict = Body(...)):
+async def update_session(session_id: str, payload: dict = Body(...)):
     try:
-        db_update_session(session_id, payload)
+        update_session_sqlite(session_id, payload)
         return {"message": "Session updated", "sessionId": session_id, **payload}
     except Exception as e:
         return {"error": f"Failed to update session: {str(e)}", "sessionId": session_id}
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: str):
+async def get_session(session_id: str):
     try:
-        session = db_fetch_session(session_id)
+        session = fetch_session_sqlite(session_id)
         if session:
             return session
         else:
