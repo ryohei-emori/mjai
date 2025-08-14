@@ -38,26 +38,11 @@ def main():
     # モデル選択肢
     models = {
         "1": {
-            "name": "Qwen/Qwen2.5-7B-Instruct",
-            "local_path": "models/qwen2.5-7b-instruct",
-            "description": "Qwen2.5 7B Instruct (推奨: バランスが良い)"
-        },
-        "2": {
-            "name": "Qwen/Qwen2.5-14B-Instruct", 
-            "local_path": "models/qwen2.5-14b-instruct",
-            "description": "Qwen2.5 14B Instruct (より高性能、メモリ使用量増加)"
-        },
-        "3": {
-            "name": "Qwen/Qwen2.5-32B-Instruct",
-            "local_path": "models/qwen2.5-32b-instruct", 
-            "description": "Qwen2.5 32B Instruct (最高性能、大量メモリ必要)"
-        },
-        "4": {
             "name": "meta-llama/Meta-Llama-3.1-8B-Instruct",
             "local_path": "models/llama-3.1-8b-instruct",
             "description": "Llama 3.1 8B Instruct (代替選択肢)"
         },
-        "5": {
+        "2": {
             "name": "elyza/ELYZA-japanese-Llama-3.1-8B-Instruct",
             "local_path": "models/elyza-japanese-llama-3.1-8b-instruct",
             "description": "ELYZA Japanese Llama 3.1 8B Instruct (日本語特化)"
@@ -70,7 +55,7 @@ def main():
     for key, model in models.items():
         print(f"{key}. {model['description']}")
     
-    choice = input("\n選択 (1-5): ").strip()
+    choice = input("\n選択 (1-2): ").strip()
     
     if choice not in models:
         print("❌ 無効な選択です")
@@ -94,7 +79,7 @@ def main():
     if success:
         print(f"\n✅ ダウンロード完了!")
         print(f"環境変数を設定してください:")
-        print(f"export QWEN_MODEL_PATH='{selected_model['local_path']}'")
+        print(f"export MODEL_PATH='{selected_model['local_path']}'")
         print(f"export BACKEND_MODE='real'")
     else:
         print("\n❌ ダウンロードに失敗しました")

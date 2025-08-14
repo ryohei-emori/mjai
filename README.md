@@ -74,7 +74,6 @@ mjai/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py              # Base LLM provider class
 │   │   │   ├── gemini.py            # Gemini API provider
-│   │   │   ├── qwen.py              # Qwen local LLM provider
 │   │   │   └── openai.py            # OpenAI provider (example)
 │   │   └── models/                  # Pydantic models
 │   │       ├── __init__.py

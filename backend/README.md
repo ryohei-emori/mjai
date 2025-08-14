@@ -63,10 +63,10 @@ app/llm/
    - Requires `GEMINI_API_KEY`
    - Automatic JSON response parsing
 
-2. **Qwen Local** (Optional)
-   - Local inference, privacy-focused
-   - Requires model download
-   - Higher resource usage
+2. **OpenAI API** (Optional)
+   - Cloud-based, high performance
+   - Requires `OPENAI_API_KEY`
+   - Automatic JSON response parsing
 
 3. **Mock Mode** (Development)
    - No external dependencies
@@ -173,7 +173,6 @@ backend/
 │   │   ├── __init__.py
 │   │   ├── base.py             # Base LLM provider class
 │   │   ├── gemini.py           # Gemini API provider
-│   │   ├── qwen.py             # Qwen local LLM provider
 │   │   └── openai.py           # OpenAI provider (example)
 │   └── models/                 # Pydantic models
 │       ├── __init__.py
@@ -184,7 +183,6 @@ backend/
 │   ├── app.db                  # SQLite database (persistent)
 │   ├── schema.sql              # Database schema
 │   └── init_db.py              # Database initialization
-├── models/                     # Local LLM models (if using Qwen)
 ├── requirements.txt            # Python dependencies
 ├── Dockerfile                  # Container configuration
 ├── run_cloud.sh               # Cloud deployment script
