@@ -9,8 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # アプリケーションコードのコピー
 COPY . .
 
-# PYTHONPATHを設定して、アプリケーションのルートディレクトリを追加
-ENV PYTHONPATH=/app
+# PYTHONPATHを設定して、カレントディレクトリをPythonパスに追加
+ENV PYTHONPATH=.
 
 # ポートの公開
 EXPOSE 8000

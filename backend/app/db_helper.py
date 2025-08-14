@@ -3,12 +3,8 @@ from pathlib import Path
 from contextlib import contextmanager
 import os
 
-# 環境変数からアプリケーションルートを取得
-app_root = os.environ.get("APP_ROOT", "/app")
-db_path = os.path.join(app_root, "db", "app.db")
-
-# DBファイルパスを環境変数から取得
-DB_PATH = Path(db_path)
+# DBファイルパスを相対パスで設定（PYTHONPATH=.により相対パスでアクセス可能）
+DB_PATH = Path("db/app.db")
 
 @contextmanager
 def get_db():

@@ -11,8 +11,8 @@ services:
       - ENVIRONMENT=development
       - FRONTEND_NGROK_URL=${FRONTEND_NGROK_URL}
       - BACKEND_NGROK_URL=${BACKEND_NGROK_URL}
-      - PYTHONPATH=/app
-      - APP_ROOT=/app
+      - PYTHONPATH=.
+      - APP_ROOT=.
     volumes:
       - ../backend:/app
       - ../backend/db:/app/db
