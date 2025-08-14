@@ -162,33 +162,6 @@ POST /suggestions
 }
 ```
 
-## Project Structure
-
-```
-backend/
-├── app/                         # Main application code
-│   ├── main.py                 # FastAPI app entry point
-│   ├── db_helper.py            # Database operations
-│   ├── llm/                    # LLM provider abstraction
-│   │   ├── __init__.py
-│   │   ├── base.py             # Base LLM provider class
-│   │   ├── gemini.py           # Gemini API provider
-│   │   └── openai.py           # OpenAI provider (example)
-│   └── models/                 # Pydantic models
-│       ├── __init__.py
-│       ├── session.py          # Session models
-│       ├── history.py          # History models
-│       └── proposal.py         # Proposal models
-├── db/                         # Database files
-│   ├── app.db                  # SQLite database (persistent)
-│   ├── schema.sql              # Database schema
-│   └── init_db.py              # Database initialization
-├── requirements.txt            # Python dependencies
-├── Dockerfile                  # Container configuration
-├── run_cloud.sh               # Cloud deployment script
-└── README.md                  # This file
-```
-
 ## Environment Variables
 
 Required environment variables (set in `conf/.env`):
