@@ -4,7 +4,7 @@
 
 ## デプロイ構成
 
-- **フロントエンド**: [Flow.io](https://flow.io) (Vercel代替)
+- **フロントエンド**: [Fly.io](https://fly.io) (Vercel代替)
 - **バックエンド**: [Render](https://render.com)
 - **データベース**: [Supabase](https://supabase.com)
 
@@ -13,7 +13,7 @@
 - GitHubアカウント
 - Supabaseアカウント
 - Renderアカウント
-- Flow.ioアカウント
+- fly.ioアカウント
 - 環境変数管理の理解
 
 ## 1. データベースの移行 (SQLite → Supabase)
@@ -155,7 +155,7 @@ GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 
 # 環境設定
 ENVIRONMENT=production
-FRONTEND_URL=https://[YOUR-FLOW-APP].flow.io
+FRONTEND_URL=https://[YOUR-FLOW-APP].fly.io
 ```
 
 ### 2.3 CORS設定の更新
@@ -167,7 +167,7 @@ FRONTEND_URL=https://[YOUR-FLOW-APP].flow.io
 if os.environ.get("ENVIRONMENT", "development") == "production":
     cors_origins = [
         os.environ.get("FRONTEND_URL"),
-        "https://*.flow.io"
+        "https://*.fly.io"
     ]
 else:
     cors_origins = get_cors_origins()
@@ -253,7 +253,7 @@ Renderのダッシュボードで以下の環境変数を設定：
 DATABASE_URL=postgresql://postgres:[PASSWORD]@[PROJECT-REF].supabase.co:5432/postgres
 GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 ENVIRONMENT=production
-FRONTEND_URL=https://[YOUR-FLOW-APP].flow.io
+FRONTEND_URL=https://[YOUR-FLOW-APP].fly.io
 ```
 
 ### 4.4 デプロイ設定ファイル
@@ -278,11 +278,11 @@ services:
         sync: false
 ```
 
-## 5. Flow.ioへのフロントエンドデプロイ
+## 5. fly.ioへのフロントエンドデプロイ
 
-### 5.1 Flow.ioプロジェクトの作成
+### 5.1 fly.ioプロジェクトの作成
 
-1. [Flow.io](https://flow.io)にアクセスしてアカウントを作成
+1. [fly.io](https://fly.io)にアクセスしてアカウントを作成
 2. "New Project" → "Import from Git" を選択
 3. GitHubリポジトリを接続
 
@@ -297,7 +297,7 @@ services:
 
 ### 5.3 環境変数の設定
 
-Flow.ioのダッシュボードで以下の環境変数を設定：
+fly.ioのダッシュボードで以下の環境変数を設定：
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://[YOUR-PROJECT-REF].supabase.co
@@ -308,7 +308,7 @@ NEXT_PUBLIC_GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 
 ### 5.4 カスタムドメインの設定（オプション）
 
-1. Flow.ioのダッシュボードで "Settings" → "Domains" に移動
+1. fly.ioのダッシュボードで "Settings" → "Domains" に移動
 2. カスタムドメインを追加
 3. DNSレコードを設定
 
@@ -323,7 +323,7 @@ NEXT_PUBLIC_GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 ### 6.2 ログの確認
 
 - **Render**: ダッシュボードの "Logs" タブ
-- **Flow.io**: ダッシュボードの "Deployments" → "View Logs"
+- **fly.io**: ダッシュボードの "Deployments" → "View Logs"
 
 ### 6.3 パフォーマンステスト
 
@@ -374,7 +374,7 @@ NEXT_PUBLIC_GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 # Render
 # ダッシュボードのLogsタブで確認
 
-# Flow.io
+# fly.io
 # ダッシュボードのDeploymentsで確認
 ```
 
@@ -383,7 +383,7 @@ NEXT_PUBLIC_GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 ### 9.1 無料プランの制限
 
 - **Render**: 月間750時間（無料）
-- **Flow.io**: 月間100GB転送（無料）
+- **fly.io**: 月間100GB転送（無料）
 - **Supabase**: 月間500MB、2プロジェクト（無料）
 
 ### 9.2 有料プランへの移行
@@ -391,7 +391,7 @@ NEXT_PUBLIC_GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 必要に応じて有料プランに移行：
 
 - **Render**: $7/月から
-- **Flow.io**: $20/月から
+- **fly.io**: $20/月から
 - **Supabase**: $25/月から
 
 ## 10. 今後の拡張性
@@ -412,7 +412,7 @@ NEXT_PUBLIC_GEMINI_API_KEY=[YOUR-GEMINI-API-KEY]
 
 ## まとめ
 
-この手順書に従って、MJAIアプリケーションをFlow.io、Render、Supabaseにデプロイすることで、常時アクセス可能なWebアプリケーションを構築できます。
+この手順書に従って、MJAIアプリケーションをfly.io、Render、Supabaseにデプロイすることで、常時アクセス可能なWebアプリケーションを構築できます。
 
 各ステップで問題が発生した場合は、各サービスのドキュメントを参照するか、ログを確認してトラブルシューティングを行ってください。
 
