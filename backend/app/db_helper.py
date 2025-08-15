@@ -33,7 +33,18 @@ def get_sqlite_db():
 async def fetch_sessions():
     async with get_db() as conn:
         rows = await conn.fetch(
-            'SELECT * FROM sessions ORDER BY updated_at DESC'
+            '''
+            SELECT 
+                s.session_id AS "sessionId", 
+                s.name, 
+                s.created_at AS "createdAt", 
+                s.updated_at AS "updatedAt",
+                COUNT(h.history_id) AS "correctionCount"
+            FROM sessions s
+            LEFT JOIN correction_histories h ON s.session_id = h.session_id
+            GROUP BY s.session_id, s.name, s.created_at, s.updated_at
+            ORDER BY s.updated_at DESC
+            '''
         )
         return [dict(row) for row in rows]
 
@@ -104,6 +115,7 @@ async def fetch_histories_by_session(session_id):
 
 async def insert_history(history):
     async with get_db() as conn:
+        print(f"[insert_history] session_id: {history.get('session_id')} type: {type(history.get('session_id'))}")
         await conn.execute(
             '''
             INSERT INTO correction_histories (history_id, session_id, timestamp, original_text, instruction_prompt, target_text, combined_comment, selected_proposal_ids, custom_proposals) 
@@ -145,7 +157,19 @@ async def insert_proposal(proposal):
 # SQLite用の関数
 def fetch_sessions_sqlite():
     with get_sqlite_db() as conn:
-        cur = conn.execute('SELECT * FROM Sessions ORDER BY updatedAt DESC')
+        cur = conn.execute('''
+            SELECT 
+                s.sessionId AS sessionId,
+                s.name,
+                s.createdAt AS createdAt,
+                s.updatedAt AS updatedAt,
+                COUNT(h.historyId) AS correctionCount,
+                s.isOpen
+            FROM Sessions s
+            LEFT JOIN CorrectionHistories h ON s.sessionId = h.sessionId
+            GROUP BY s.sessionId, s.name, s.createdAt, s.updatedAt, s.isOpen
+            ORDER BY s.updatedAt DESC
+        ''')
         return [dict(row) for row in cur.fetchall()]
 
 def insert_session_sqlite(session):
@@ -210,19 +234,22 @@ def fetch_histories_by_session_sqlite(session_id):
         return [dict(row) for row in cur.fetchall()]
 
 def insert_history_sqlite(history):
+    import json
+    # SQLite用はキャメルケースでアクセス
+    print(f"[insert_history_sqlite] session_id: {history.get('sessionId')} type: {type(history.get('sessionId'))}")
     with get_sqlite_db() as conn:
         conn.execute(
             'INSERT INTO CorrectionHistories (historyId, sessionId, timestamp, originalText, instructionPrompt, targetText, combinedComment, selectedProposalIds, customProposals) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (
-                history['historyId'],
-                history['sessionId'],
-                history['timestamp'],
-                history['originalText'],
+                history.get('historyId'),
+                history.get('sessionId'),
+                history.get('timestamp'),
+                history.get('originalText'),
                 history.get('instructionPrompt'),
-                history['targetText'],
+                history.get('targetText'),
                 history.get('combinedComment'),
-                history.get('selectedProposalIds'),
-                history.get('customProposals')
+                json.dumps(history.get('selectedProposalIds')) if history.get('selectedProposalIds') is not None else None,
+                json.dumps(history.get('customProposals')) if history.get('customProposals') is not None else None
             )
         )
         conn.commit()

@@ -53,11 +53,31 @@ type Session = {
   id: string
   name: string
   createdAt: Date
+  correctionCount: number
   originalText: string
   targetText: string
   suggestions: CorrectionSuggestion[]
   overallComment: string
   savedData: SavedData[]
+}
+
+// APIレスポンスの型を定義
+type SessionAPIResponse = {
+  sessionId: string;
+  name: string;
+  createdAt: string;
+  correctionCount: number;
+};
+
+type ProposalAPIResponse = {
+  proposalId: string
+  originalAfterText: string
+  originalReason?: string
+  isSelected: number
+  selectedOrder?: number
+  isModified: number
+  modifiedReason?: string
+  isCustom: number
 }
 
 const FRONTEND_MODE = process.env.NEXT_PUBLIC_FRONTEND_MODE || "real"
@@ -116,83 +136,69 @@ export default function TextCorrectionApp() {
   const loadSessions = useCallback(async () => {
     try {
       console.log("Loading sessions...")
-      const sessionsData = await sessionAPI.getSessions()
+      const sessionsData: SessionAPIResponse[] = await sessionAPI.getSessions()
       console.log("Sessions data received:", sessionsData)
 
       // APIから取得したデータをフロントエンドのSession型に変換
-      const convertedSessions: Session[] = []
+      const convertedSessions: Session[] = sessionsData.map((s) => ({
+        id: s.sessionId,
+        name: s.name,
+        createdAt: new Date(s.createdAt),
+        correctionCount: s.correctionCount, // 保存済み件数を追加
+        originalText: "",
+        targetText: "",
+        suggestions: [],
+        overallComment: "",
+        savedData: [],
+      }))
 
-      for (const s of sessionsData) {
-        console.log("Processing session:", s.sessionId)
-        // 各セッションの履歴を取得
-        const historiesData = await historyAPI.getHistories(s.sessionId)
-        console.log("Histories for session", s.sessionId, ":", historiesData)
-        const savedData: SavedData[] = []
+      setSessions(convertedSessions)
+    } catch (error) {
+      console.error("Error loading sessions:", error)
+    }
+  }, [])
 
-        for (const history of historiesData) {
-          console.log("Processing history:", history.historyId)
-          // 各履歴の提案を取得
-          const proposalsData = await proposalAPI.getProposals(history.historyId)
-          console.log("Proposals for history", history.historyId, ":", proposalsData)
+  // セッション詳細をオンデマンドで取得
+  const loadSessionDetails = async (sessionId: string) => {
+    try {
+      console.log("Loading session details for:", sessionId)
+      const historiesData = await historyAPI.getHistories(sessionId)
+      console.log("Histories for session", sessionId, ":", historiesData)
 
-          // 提案データをCorrectionSuggestion形式に変換
-          const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal: {
-            proposalId: string;
-            originalAfterText: string;
-            originalReason?: string;
-            isSelected: number;
-            selectedOrder?: number;
-            isModified: number;
-            modifiedReason?: string;
-            isCustom: number;
-          }) => ({
-            id: proposal.proposalId,
-            original: proposal.originalAfterText,
-            reason: proposal.originalReason || "",
-            selected: proposal.isSelected === 1,
-            selectedOrder: proposal.selectedOrder || undefined,
-            userModifiedReason: proposal.isModified === 1 ? proposal.modifiedReason : undefined,
-            isCustom: proposal.isCustom === 1,
-          }))
+      const savedData: SavedData[] = []
+      for (const history of historiesData) {
+        const proposalsData: ProposalAPIResponse[] = await proposalAPI.getProposals(history.historyId)
+        const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal) => ({
+          id: proposal.proposalId,
+          original: proposal.originalAfterText,
+          reason: proposal.originalReason || "",
+          selected: proposal.isSelected === 1,
+          selectedOrder: proposal.selectedOrder,
+          userModifiedReason: proposal.modifiedReason,
+          isCustom: proposal.isCustom === 1,
+        }))
 
-          // 選択された提案のみを抽出
-          const selectedCorrections = aiSuggestions.filter((s) => s.selected)
-
-          savedData.push({
-            originalText: history.originalText,
-            instructionPrompt: history.instructionPrompt || "",
-            targetText: history.targetText,
-            aiSuggestions,
-            selectedCorrections,
-            overallComment: history.combinedComment || "",
-            combinedComment: history.combinedComment || "",
-            timestamp: new Date(history.timestamp),
-          })
-        }
-
-        convertedSessions.push({
-          id: s.sessionId,
-          name: s.name || "セッション",
-          createdAt: new Date(s.createdAt),
-          originalText: "",
-          targetText: "",
-          suggestions: [],
-          overallComment: "",
-          savedData,
+        savedData.push({
+          originalText: history.originalText,
+          instructionPrompt: history.instructionPrompt,
+          targetText: history.targetText,
+          aiSuggestions,
+          selectedCorrections: aiSuggestions.filter((s) => s.selected),
+          overallComment: history.combinedComment,
+          combinedComment: history.combinedComment,
+          timestamp: new Date(history.timestamp),
         })
       }
 
-      console.log("Converted sessions:", convertedSessions)
-      setSessions(convertedSessions)
+      setSessions((prevSessions) =>
+        prevSessions.map((s) =>
+          s.id === sessionId ? { ...s, savedData } : s
+        ),
+      )
     } catch (error) {
-      console.error("Failed to load sessions:", error)
-      toast({
-        title: "エラー",
-        description: "セッションの読み込みに失敗しました",
-        variant: "destructive",
-      })
+      console.error("Error loading session details:", error)
     }
-  }, [])
+  }
 
   // セッション作成をAPIに保存
   const createNewSession = async () => {
@@ -202,6 +208,7 @@ export default function TextCorrectionApp() {
         id: newSessionData.sessionId,
         name: newSessionData.name,
         createdAt: new Date(newSessionData.createdAt),
+        correctionCount: 0, // 新しいセッションのため0件で初期化
         originalText: "",
         targetText: "",
         suggestions: [],
@@ -578,52 +585,61 @@ export default function TextCorrectionApp() {
     </div>
   )
 
-  const SidebarContent = () => (
-    <div className="h-full flex flex-col">
-      <div className="p-4 border-b">
-        <Button onClick={createNewSession} className="w-full" size="sm">
-          <Plus className="w-4 h-4 mr-2" />
-          新しいセッション
-        </Button>
+  const SidebarContent = ({ collapsed = false }: { collapsed?: boolean }) => (
+    <div className={`h-full flex flex-col ${collapsed ? 'items-center w-16' : ''}`}>
+      <div className={`p-4 border-b ${collapsed ? 'px-2' : ''}`}>
+        {!collapsed && (
+          <Button onClick={createNewSession} className="w-full" size="sm">
+            <Plus className="w-4 h-4 mr-2" />
+            新しいセッション
+          </Button>
+        )}
+        {collapsed && (
+          <Button onClick={createNewSession} size="icon" className="w-8 h-8">
+            <Plus className="w-4 h-4" />
+          </Button>
+        )}
       </div>
-
-      <ScrollArea className="flex-1 p-4">
+      <ScrollArea className={`flex-1 ${collapsed ? 'px-1' : 'p-4'}`}>
         <div className="space-y-2">
           {sessions.map((session) => (
             <div
               key={session.id}
               className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
                 currentSessionId === session.id ? "bg-blue-50 border-blue-200" : "hover:bg-gray-50"
-              }`}
+              } ${collapsed ? 'p-1' : ''}`}
               onClick={() => {
                 setCurrentSessionId(session.id)
                 setSidebarOpen(false)
+                loadSessionDetails(session.id)
               }}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-medium text-sm truncate">{session.name}</h3>
-                  <div className="flex items-center gap-2 mt-1">
+                  <h3 className={`font-medium text-sm truncate ${collapsed ? 'hidden' : ''}`}>{session.name}</h3>
+                  <div className={`flex items-center gap-2 mt-1 ${collapsed ? 'justify-center' : ''}`}>
                     <Calendar className="w-3 h-3 text-gray-400" />
-                    <span className="text-xs text-gray-500">{session.createdAt.toLocaleDateString()}</span>
+                    {!collapsed && (
+                      <span className="text-xs text-gray-500">{session.createdAt.toLocaleDateString()}</span>
+                    )}
                   </div>
-                  {session.savedData.length > 0 && (
-                    <Badge variant="secondary" className="mt-2 text-xs">
-                      保存済み: {session.savedData.length}件
-                    </Badge>
-                  )}
+                  <Badge variant="secondary" className={`mt-2 ${collapsed ? 'mx-auto block' : ''}`}>
+                    保存済み: {session.correctionCount}件
+                  </Badge>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    deleteSession(session.id)
-                  }}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </Button>
+                {!collapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      deleteSession(session.id)
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                )}
               </div>
             </div>
           ))}
@@ -662,6 +678,18 @@ export default function TextCorrectionApp() {
       </Sheet>
 
       <div className="flex h-screen">
+        {/* Desktop collapsed sidebar menu button */}
+        {!desktopSidebarOpen && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setDesktopSidebarOpen(true)}
+            className="fixed top-4 left-4 z-50 hidden lg:block bg-white shadow-md"
+          >
+            <Menu className="w-4 h-4" />
+          </Button>
+        )}
+
         {/* Desktop Sidebar */}
         {desktopSidebarOpen && (
           <div className="hidden lg:block w-80 bg-white border-r shadow-sm transition-all duration-300">

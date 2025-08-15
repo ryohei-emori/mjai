@@ -247,17 +247,35 @@ async def create_history(payload: dict = Body(...)):
     from uuid import uuid4
     from datetime import datetime
     now = datetime.now().isoformat(sep=' ', timespec='milliseconds')
-    history = {
-        'historyId': payload.get('historyId', str(uuid4())),
-        'sessionId': payload['sessionId'],
-        'timestamp': now,
-        'originalText': payload['originalText'],
-        'instructionPrompt': payload.get('instructionPrompt'),
-        'targetText': payload['targetText'],
-        'combinedComment': payload.get('combinedComment'),
-        'selectedProposalIds': payload.get('selectedProposalIds'),
-        'customProposals': payload.get('customProposals')
-    }
+    try:
+        # snake_case & camelCase両対応
+        history = {
+            'history_id': payload.get('historyId', str(uuid4())),
+            'session_id': payload.get('sessionId'),
+            'timestamp': now,
+            'original_text': payload.get('originalText'),
+            'instruction_prompt': payload.get('instructionPrompt'),
+            'target_text': payload.get('targetText'),
+            'combined_comment': payload.get('combinedComment'),
+            'selected_proposal_ids': payload.get('selectedProposalIds'),
+            'custom_proposals': payload.get('customProposals'),
+            # SQLite用camelCase
+            'historyId': payload.get('historyId', str(uuid4())),
+            'sessionId': payload.get('sessionId'),
+            'originalText': payload.get('originalText'),
+            'instructionPrompt': payload.get('instructionPrompt'),
+            'targetText': payload.get('targetText'),
+            'combinedComment': payload.get('combinedComment'),
+            'selectedProposalIds': payload.get('selectedProposalIds'),
+            'customProposals': payload.get('customProposals')
+        }
+        # 必須項目チェック
+        if not history['session_id'] or not history['original_text'] or not history['target_text']:
+            print(f"[create_history] Missing required field in payload: {payload}")
+            return {"error": "Missing required field in payload", "payload": payload}
+    except Exception as e:
+        print(f"[create_history] Exception: {e}, payload: {payload}")
+        return {"error": str(e), "payload": payload}
     try:
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await insert_history(history)
@@ -352,12 +370,22 @@ async def get_session(session_id: str):
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             session = await db_fetch_session(session_id)
             if session:
-                return session
-            # セッションが見つからない場合はSQLiteを試す
+                # 必要なデータのみ返す
+                return {
+                    "sessionId": session["sessionId"],
+                    "name": session["name"],
+                    "createdAt": session["createdAt"],
+                    "correctionCount": session.get("correctionCount", 0)
+                }
         # フォールバック：SQLite
         session = fetch_session_sqlite(session_id)
         if session:
-            return session
+            return {
+                "sessionId": session["sessionId"],
+                "name": session["name"],
+                "createdAt": session["createdAt"],
+                "correctionCount": session.get("correctionCount", 0)
+            }
         return {"error": "Session not found", "sessionId": session_id}
     except Exception as e:
         print(f"Error fetching session: {e}")
@@ -365,7 +393,12 @@ async def get_session(session_id: str):
         try:
             session = fetch_session_sqlite(session_id)
             if session:
-                return session
+                return {
+                    "sessionId": session["sessionId"],
+                    "name": session["name"],
+                    "createdAt": session["createdAt"],
+                    "correctionCount": session.get("correctionCount", 0)
+                }
             return {"error": "Session not found", "sessionId": session_id}
         except Exception as e2:
             return {"error": f"Failed to get session: {str(e2)}", "sessionId": session_id}
@@ -455,7 +488,7 @@ def generate_suggestions(req: SuggestionRequest, request: Request):
             CorrectionSuggestion(
                 id="2",
                 original="どんな担任にあったか",
-                reason="担任指的是学校的老师哦\n担任：学校で，教師があるクラス・教科などを受け持つこと。また，その教師。"
+                reason="担任指的是学校の老师哦\n担任：学校で，教師があるクラス・教科などを受け持つこと。また，その教師。"
             ),
             CorrectionSuggestion(
                 id="3",
@@ -474,4 +507,4 @@ def generate_suggestions(req: SuggestionRequest, request: Request):
             ),
         ]
         mock_overall_comment = "译文整体的流畅性和对原意翻译处理和展现比较不错，可以再看一下以上几点，注意积累一下ようがない和担任的含义，加油～"
-        return SuggestionResponse(suggestions=mock_suggestions, overallComment=mock_overall_comment, sessionId=session_id) 
+        return SuggestionResponse(suggestions=mock_suggestions, overallComment=mock_overall_comment, sessionId=session_id)

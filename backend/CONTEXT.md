@@ -272,3 +272,62 @@ The backend is containerized and deployed via Docker Compose. For production:
 2. Add tests for new endpoints
 3. Update API documentation
 4. Ensure Docker compatibility
+
+## Fetching Improvements
+
+### Current Issue
+Currently, the frontend fetches all sessions when accessing the initial page. This results in high communication overhead and increased loading times, especially when the number of sessions grows.
+
+### Proposed Solutions
+1. **Pagination**:
+   - Implement pagination for session fetching to limit the number of sessions retrieved in a single request.
+   - Example: Fetch 10 sessions per page and provide navigation for additional pages.
+
+2. **Lazy Loading**:
+   - Load session data incrementally as the user scrolls or interacts with the page.
+   - This approach reduces the initial payload size and improves perceived performance.
+
+3. **Caching**:
+   - Cache session data on the frontend to avoid redundant API calls for previously fetched sessions.
+   - Use a library like `react-query` or `redux` for state management and caching.
+
+4. **Selective Fetching**:
+   - Fetch only the most recent or relevant sessions initially.
+   - Provide a search or filter option for users to retrieve specific sessions on demand.
+
+5. **Backend Optimization**:
+   - Optimize the `/sessions` endpoint to support selective data retrieval, such as fetching only session metadata (e.g., `sessionId`, `name`, `createdAt`) instead of full details.
+
+### Expected Benefits
+- Reduced communication overhead.
+- Faster initial page load times.
+- Improved user experience with responsive and efficient data fetching.
+
+### Next Steps
+- Discuss and finalize the preferred solution(s) with the team.
+- Update the API and frontend implementation accordingly.
+- Test the changes to ensure performance improvements and functionality.
+
+### Implementation Plan
+
+Based on the proposed solutions, we have decided to prioritize **Backend Optimization** for session fetching. This approach will involve the following steps:
+
+1. **Optimize the `/sessions` Endpoint**:
+   - Modify the endpoint to return only essential session metadata (e.g., `sessionId`, `name`, `createdAt`).
+   - Ensure the endpoint supports additional query parameters for selective data retrieval (e.g., filtering by date or status).
+
+2. **Update API Documentation**:
+   - Reflect the changes in the API documentation to guide frontend integration.
+
+3. **Frontend Integration**:
+   - Update the frontend to utilize the optimized endpoint.
+   - Implement selective fetching logic to request additional session details only when needed.
+
+4. **Testing**:
+   - Conduct performance testing to measure improvements in response times and data transfer.
+   - Ensure the changes do not break existing functionality.
+
+5. **Deployment**:
+   - Roll out the changes in a staged manner to monitor real-world performance.
+
+This implementation is expected to significantly reduce communication overhead and improve the user experience.
