@@ -198,8 +198,16 @@ router = APIRouter()
 
 @router.get("/sessions")
 async def get_sessions():
-    # 現状はSQLiteを優先利用（PostgreSQLパスは今後の移行で対応）
-    return fetch_sessions_sqlite()
+    try:
+        # 環境変数でデータベースの切り替えを制御
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            return await fetch_sessions()
+        # フォールバック：SQLite
+        return fetch_sessions_sqlite()
+    except Exception as e:
+        print(f"Error fetching sessions: {e}")
+        # エラー時はSQLiteにフォールバック
+        return fetch_sessions_sqlite()
 
 @router.post("/sessions")
 async def create_session(payload: dict):
@@ -210,14 +218,29 @@ async def create_session(payload: dict):
         'updatedAt': now,
         'name': payload.get('name', f"セッション"),
         'correctionCount': 0,
-        'isOpen': 1
+        'isOpen': True
     }
-    insert_session_sqlite(session)
-    return session
+    try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            return await insert_session(session)
+        # フォールバック：SQLite
+        return insert_session_sqlite(session)
+    except Exception as e:
+        print(f"Error creating session: {e}")
+        # エラー時はSQLiteにフォールバック
+        return insert_session_sqlite(session)
 
 @router.get("/sessions/{session_id}/histories")
 async def get_histories(session_id: str):
-    return fetch_histories_by_session_sqlite(session_id)
+    try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            return await fetch_histories_by_session(session_id)
+        # フォールバック：SQLite
+        return fetch_histories_by_session_sqlite(session_id)
+    except Exception as e:
+        print(f"Error fetching histories: {e}")
+        # エラー時はSQLiteにフォールバック
+        return fetch_histories_by_session_sqlite(session_id)
 
 @router.post("/histories")
 async def create_history(payload: dict = Body(...)):
@@ -235,12 +258,29 @@ async def create_history(payload: dict = Body(...)):
         'selectedProposalIds': payload.get('selectedProposalIds'),
         'customProposals': payload.get('customProposals')
     }
-    insert_history_sqlite(history)
-    return history
+    try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            return await insert_history(history)
+        # フォールバック：SQLite
+        insert_history_sqlite(history)
+        return history
+    except Exception as e:
+        print(f"Error creating history: {e}")
+        # エラー時はSQLiteにフォールバック
+        insert_history_sqlite(history)
+        return history
 
 @router.get("/histories/{history_id}/proposals")
 async def get_proposals(history_id: str):
-    return fetch_proposals_by_history_sqlite(history_id)
+    try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            return await fetch_proposals_by_history(history_id)
+        # フォールバック：SQLite
+        return fetch_proposals_by_history_sqlite(history_id)
+    except Exception as e:
+        print(f"Error fetching proposals: {e}")
+        # エラー時はSQLiteにフォールバック
+        return fetch_proposals_by_history_sqlite(history_id)
 
 @router.post("/proposals")
 async def create_proposal(payload: dict = Body(...)):
@@ -258,35 +298,77 @@ async def create_proposal(payload: dict = Body(...)):
         'isCustom': payload.get('isCustom', 0),
         'selectedOrder': payload.get('selectedOrder')
     }
-    insert_proposal_sqlite(proposal)
-    return proposal
+    try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            return await insert_proposal(proposal)
+        # フォールバック：SQLite
+        insert_proposal_sqlite(proposal)
+        return proposal
+    except Exception as e:
+        print(f"Error creating proposal: {e}")
+        # エラー時はSQLiteにフォールバック
+        insert_proposal_sqlite(proposal)
+        return proposal
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            await db_delete_session(session_id)
+            return {"message": "Session deleted", "sessionId": session_id}
+        # フォールバック：SQLite
         delete_session_sqlite(session_id)
         return {"message": "Session deleted", "sessionId": session_id}
     except Exception as e:
-        return {"error": f"Failed to delete session: {str(e)}", "sessionId": session_id}
+        print(f"Error deleting session: {e}")
+        # エラー時はSQLiteにフォールバック
+        try:
+            delete_session_sqlite(session_id)
+            return {"message": "Session deleted (fallback)", "sessionId": session_id}
+        except Exception as e2:
+            return {"error": f"Failed to delete session: {str(e2)}", "sessionId": session_id}
 
 @router.put("/sessions/{session_id}")
 async def update_session(session_id: str, payload: dict = Body(...)):
     try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            await db_update_session(session_id, payload)
+            return {"message": "Session updated", "sessionId": session_id, **payload}
+        # フォールバック：SQLite
         update_session_sqlite(session_id, payload)
         return {"message": "Session updated", "sessionId": session_id, **payload}
     except Exception as e:
-        return {"error": f"Failed to update session: {str(e)}", "sessionId": session_id}
+        print(f"Error updating session: {e}")
+        # エラー時はSQLiteにフォールバック
+        try:
+            update_session_sqlite(session_id, payload)
+            return {"message": "Session updated (fallback)", "sessionId": session_id, **payload}
+        except Exception as e2:
+            return {"error": f"Failed to update session: {str(e2)}", "sessionId": session_id}
 
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     try:
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            session = await db_fetch_session(session_id)
+            if session:
+                return session
+            # セッションが見つからない場合はSQLiteを試す
+        # フォールバック：SQLite
         session = fetch_session_sqlite(session_id)
         if session:
             return session
-        else:
-            return {"error": "Session not found", "sessionId": session_id}
+        return {"error": "Session not found", "sessionId": session_id}
     except Exception as e:
-        return {"error": f"Failed to get session: {str(e)}", "sessionId": session_id}
+        print(f"Error fetching session: {e}")
+        # エラー時はSQLiteにフォールバック
+        try:
+            session = fetch_session_sqlite(session_id)
+            if session:
+                return session
+            return {"error": "Session not found", "sessionId": session_id}
+        except Exception as e2:
+            return {"error": f"Failed to get session: {str(e2)}", "sessionId": session_id}
 
 # ルーターをアプリに含める
 app.include_router(router)

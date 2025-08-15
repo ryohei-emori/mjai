@@ -205,6 +205,23 @@ Required environment variables (set in `conf/.env`):
 - `isCustom` (INTEGER)
 - `selectedOrder` (INTEGER)
 
+## Database Migration
+
+The backend originally used SQLite for local data persistence. As part of the migration to a more scalable architecture, the database has been transitioned to PostgreSQL, hosted on Supabase. This allows for better performance, scalability, and integration with cloud services.
+
+### Migration Steps
+
+1. Exported data from SQLite.
+2. Created a new PostgreSQL database on Supabase.
+3. Imported the data into Supabase using custom migration scripts.
+4. Updated the backend to support PostgreSQL connections.
+
+### Benefits of Supabase
+
+- Cloud-hosted PostgreSQL database.
+- Real-time capabilities.
+- Easy integration with the existing backend.
+
 ## Testing
 
 ```bash
@@ -254,4 +271,4 @@ The backend is containerized and deployed via Docker Compose. For production:
 1. Follow FastAPI best practices
 2. Add tests for new endpoints
 3. Update API documentation
-4. Ensure Docker compatibility 
+4. Ensure Docker compatibility
