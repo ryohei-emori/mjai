@@ -202,12 +202,16 @@ async def get_sessions():
         # 環境変数でデータベースの切り替えを制御
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await fetch_sessions()
-        # フォールバック：SQLite
+        # フォールバック：SQLite（明示的にfalseのときのみ）
         return fetch_sessions_sqlite()
     except Exception as e:
-        print(f"Error fetching sessions: {e}")
-        # エラー時はSQLiteにフォールバック
-        return fetch_sessions_sqlite()
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            # フォールバック禁止: Supabase失敗時はエラーを返す
+            print(f"[ERROR] Supabase fetch_sessions failed: {e}")
+            raise
+        else:
+            print(f"[WARN] fetch_sessions failed, fallback to SQLite: {e}")
+            return fetch_sessions_sqlite()
 
 @router.post("/sessions")
 async def create_session(payload: dict):
@@ -223,24 +227,30 @@ async def create_session(payload: dict):
     try:
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await insert_session(session)
-        # フォールバック：SQLite
-        return insert_session_sqlite(session)
+        insert_session_sqlite(session)
+        return session
     except Exception as e:
-        print(f"Error creating session: {e}")
-        # エラー時はSQLiteにフォールバック
-        return insert_session_sqlite(session)
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase insert_session failed: {e}")
+            raise
+        else:
+            print(f"[WARN] insert_session failed, fallback to SQLite: {e}")
+            insert_session_sqlite(session)
+            return session
 
 @router.get("/sessions/{session_id}/histories")
 async def get_histories(session_id: str):
     try:
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await fetch_histories_by_session(session_id)
-        # フォールバック：SQLite
         return fetch_histories_by_session_sqlite(session_id)
     except Exception as e:
-        print(f"Error fetching histories: {e}")
-        # エラー時はSQLiteにフォールバック
-        return fetch_histories_by_session_sqlite(session_id)
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase fetch_histories failed: {e}")
+            raise
+        else:
+            print(f"[WARN] fetch_histories failed, fallback to SQLite: {e}")
+            return fetch_histories_by_session_sqlite(session_id)
 
 @router.post("/histories")
 async def create_history(payload: dict = Body(...)):
@@ -279,26 +289,28 @@ async def create_history(payload: dict = Body(...)):
     try:
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await insert_history(history)
-        # フォールバック：SQLite
-        insert_history_sqlite(history)
-        return history
+        return insert_history_sqlite(history) or history
     except Exception as e:
-        print(f"Error creating history: {e}")
-        # エラー時はSQLiteにフォールバック
-        insert_history_sqlite(history)
-        return history
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase insert_history failed: {e}")
+            raise
+        else:
+            print(f"[WARN] insert_history failed, fallback to SQLite: {e}")
+            return insert_history_sqlite(history) or history
 
 @router.get("/histories/{history_id}/proposals")
 async def get_proposals(history_id: str):
     try:
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await fetch_proposals_by_history(history_id)
-        # フォールバック：SQLite
         return fetch_proposals_by_history_sqlite(history_id)
     except Exception as e:
-        print(f"Error fetching proposals: {e}")
-        # エラー時はSQLiteにフォールバック
-        return fetch_proposals_by_history_sqlite(history_id)
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase fetch_proposals failed: {e}")
+            raise
+        else:
+            print(f"[WARN] fetch_proposals failed, fallback to SQLite: {e}")
+            return fetch_proposals_by_history_sqlite(history_id)
 
 @router.post("/proposals")
 async def create_proposal(payload: dict = Body(...)):
@@ -319,14 +331,14 @@ async def create_proposal(payload: dict = Body(...)):
     try:
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             return await insert_proposal(proposal)
-        # フォールバック：SQLite
-        insert_proposal_sqlite(proposal)
-        return proposal
+        return insert_proposal_sqlite(proposal) or proposal
     except Exception as e:
-        print(f"Error creating proposal: {e}")
-        # エラー時はSQLiteにフォールバック
-        insert_proposal_sqlite(proposal)
-        return proposal
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase insert_proposal failed: {e}")
+            raise
+        else:
+            print(f"[WARN] insert_proposal failed, fallback to SQLite: {e}")
+            return insert_proposal_sqlite(proposal) or proposal
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
@@ -334,17 +346,19 @@ async def delete_session(session_id: str):
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             await db_delete_session(session_id)
             return {"message": "Session deleted", "sessionId": session_id}
-        # フォールバック：SQLite
         delete_session_sqlite(session_id)
         return {"message": "Session deleted", "sessionId": session_id}
     except Exception as e:
-        print(f"Error deleting session: {e}")
-        # エラー時はSQLiteにフォールバック
-        try:
-            delete_session_sqlite(session_id)
-            return {"message": "Session deleted (fallback)", "sessionId": session_id}
-        except Exception as e2:
-            return {"error": f"Failed to delete session: {str(e2)}", "sessionId": session_id}
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase delete_session failed: {e}")
+            raise
+        else:
+            print(f"[WARN] delete_session failed, fallback to SQLite: {e}")
+            try:
+                delete_session_sqlite(session_id)
+                return {"message": "Session deleted (fallback)", "sessionId": session_id}
+            except Exception as e2:
+                return {"error": f"Failed to delete session: {str(e2)}", "sessionId": session_id}
 
 @router.put("/sessions/{session_id}")
 async def update_session(session_id: str, payload: dict = Body(...)):
@@ -352,17 +366,19 @@ async def update_session(session_id: str, payload: dict = Body(...)):
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             await db_update_session(session_id, payload)
             return {"message": "Session updated", "sessionId": session_id, **payload}
-        # フォールバック：SQLite
         update_session_sqlite(session_id, payload)
         return {"message": "Session updated", "sessionId": session_id, **payload}
     except Exception as e:
-        print(f"Error updating session: {e}")
-        # エラー時はSQLiteにフォールバック
-        try:
-            update_session_sqlite(session_id, payload)
-            return {"message": "Session updated (fallback)", "sessionId": session_id, **payload}
-        except Exception as e2:
-            return {"error": f"Failed to update session: {str(e2)}", "sessionId": session_id}
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase update_session failed: {e}")
+            raise
+        else:
+            print(f"[WARN] update_session failed, fallback to SQLite: {e}")
+            try:
+                update_session_sqlite(session_id, payload)
+                return {"message": "Session updated (fallback)", "sessionId": session_id, **payload}
+            except Exception as e2:
+                return {"error": f"Failed to update session: {str(e2)}", "sessionId": session_id}
 
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
@@ -370,14 +386,13 @@ async def get_session(session_id: str):
         if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
             session = await db_fetch_session(session_id)
             if session:
-                # 必要なデータのみ返す
                 return {
                     "sessionId": session["sessionId"],
                     "name": session["name"],
                     "createdAt": session["createdAt"],
                     "correctionCount": session.get("correctionCount", 0)
                 }
-        # フォールバック：SQLite
+            return {"error": "Session not found", "sessionId": session_id}
         session = fetch_session_sqlite(session_id)
         if session:
             return {
@@ -388,27 +403,30 @@ async def get_session(session_id: str):
             }
         return {"error": "Session not found", "sessionId": session_id}
     except Exception as e:
-        print(f"Error fetching session: {e}")
-        # エラー時はSQLiteにフォールバック
-        try:
-            session = fetch_session_sqlite(session_id)
-            if session:
-                return {
-                    "sessionId": session["sessionId"],
-                    "name": session["name"],
-                    "createdAt": session["createdAt"],
-                    "correctionCount": session.get("correctionCount", 0)
-                }
-            return {"error": "Session not found", "sessionId": session_id}
-        except Exception as e2:
-            return {"error": f"Failed to get session: {str(e2)}", "sessionId": session_id}
+        if os.environ.get("USE_POSTGRESQL", "true").lower() == "true":
+            print(f"[ERROR] Supabase get_session failed: {e}")
+            raise
+        else:
+            print(f"[WARN] get_session failed, fallback to SQLite: {e}")
+            try:
+                session = fetch_session_sqlite(session_id)
+                if session:
+                    return {
+                        "sessionId": session["sessionId"],
+                        "name": session["name"],
+                        "createdAt": session["createdAt"],
+                        "correctionCount": session.get("correctionCount", 0)
+                    }
+                return {"error": "Session not found", "sessionId": session_id}
+            except Exception as e2:
+                return {"error": f"Failed to get session: {str(e2)}", "sessionId": session_id}
 
 # ルーターをアプリに含める
 app.include_router(router)
 
 # Gemini API設定
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 def generate_gemini_suggestions(original, target, instruction=None):
