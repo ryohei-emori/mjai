@@ -1,71 +1,54 @@
+# Stage 1: base image
 FROM node:20-alpine AS base
 
-# Install dependencies only when needed
+# Stage 2: dependencies installation
 FROM base AS deps
-# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
-
-# Install dependencies based on the preferred package manager
 COPY package.json package-lock.json* ./
-RUN npm ci --only=production
+RUN npm ci
 
-# Rebuild the source code only when needed
+# Stage 3: build
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Next.js collects completely anonymous telemetry data about general usage.
-# Learn more here: https://nextjs.org/telemetry
-# Uncomment the following line in case you want to disable telemetry during the build.
+# Disable Next.js telemetry
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Add build time environment variables
+# Add build-time environment variables
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_API_BASE_URL
 ARG NEXT_PUBLIC_BACKEND_NGROK_URL
 ARG NEXT_PUBLIC_FRONTEND_NGROK_URL
 
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
-ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
-ENV NEXT_PUBLIC_BACKEND_NGROK_URL=$NEXT_PUBLIC_BACKEND_NGROK_URL
-ENV NEXT_PUBLIC_FRONTEND_NGROK_URL=$NEXT_PUBLIC_FRONTEND_NGROK_URL
-
 RUN npm run build
 
-# Production image, copy all the files and run next
+# Stage 4: production runner
 FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
-
-# Runtime environment variables are already baked into the build
-# No need to set them again at runtime for Next.js standalone output
-# Uncomment the following line in case you want to disable telemetry during runtime.
 ENV NEXT_TELEMETRY_DISABLED=1
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+# Create a non-root user
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 --ingroup nodejs nextjs
 
+# Copy static assets and set permissions
 COPY --from=builder /app/public ./public
+RUN mkdir .next && chown nextjs:nodejs .next
 
-# Set the correct permission for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Automatically leverage output traces to reduce image size
-# https://nextjs.org/docs/advanced-features/output-file-tracing
+# Copy standalone output
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Switch to the non-root user
 USER nextjs
 
 EXPOSE 8080
-
 ENV PORT=8080
-ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"] 
