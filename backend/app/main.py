@@ -115,6 +115,12 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# ヘルスチェックエンドポイント
+@app.get("/health")
+async def health_check():
+    """コンテナのヘルスチェック用エンドポイント"""
+    return {"status": "healthy", "message": "Application is running"}
+
 # Pydanticモデルの定義
 class CorrectionSuggestion(BaseModel):
     id: str
