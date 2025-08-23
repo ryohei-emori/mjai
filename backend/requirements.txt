@@ -6,6 +6,4 @@ torch==2.8.0
 pytest==7.4.3
 httpx==0.25.2
 python-dotenv==1.0.0
-# psycopg2-binary removed to avoid local build issues on macOS; asyncpg is used for runtime
-# psycopg2-binary==2.9.9
 asyncpg==0.29.0
