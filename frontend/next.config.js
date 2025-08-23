@@ -30,6 +30,21 @@ if (fs.existsSync(envPath)) {
 
 console.log('===========================');
 
+// プレースホルダー判定
+function isPlaceholder(value) {
+  if (!value) return true;
+  const v = String(value).trim();
+  return v === 'your_supabase_url_here' || v === 'your_supabase_anon_key_here';
+}
+
+function pickEnv(key, fallback) {
+  const fromProcess = process.env[key];
+  if (fromProcess && !isPlaceholder(fromProcess)) return fromProcess;
+  const fromFile = envVars[key];
+  if (fromFile && !isPlaceholder(fromFile)) return fromFile;
+  return fallback;
+}
+
 // 環境変数からngrok URLを取得してCORS設定を動的に生成
 function getCorsOrigins() {
   const origins = [
@@ -45,8 +60,8 @@ function getCorsOrigins() {
   ];
   
   // 環境変数からngrok URLを取得してドメイン部分を抽出
-  const frontendNgrokUrl = envVars.FRONTEND_NGROK_URL;
-  const backendNgrokUrl = envVars.BACKEND_NGROK_URL;
+  const frontendNgrokUrl = pickEnv('FRONTEND_NGROK_URL');
+  const backendNgrokUrl = pickEnv('BACKEND_NGROK_URL');
   
   if (frontendNgrokUrl) {
     try {
@@ -88,13 +103,23 @@ function getCorsOrigins() {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Fly.io対応の設定
+  output: 'standalone',
+  
   // 環境変数設定 - クライアントサイドでも利用可能
   env: {
-    // バックエンドAPIのベースURL（conf/.envから直接読み込み）
-    BACKEND_NGROK_URL: envVars.BACKEND_NGROK_URL || 'http://localhost:8000',
-    FRONTEND_NGROK_URL: envVars.FRONTEND_NGROK_URL || 'http://localhost:3000',
-    NEXT_PUBLIC_API_BASE_URL: envVars.BACKEND_NGROK_URL || 'http://localhost:8000',
-    NEXT_PUBLIC_BACKEND_NGROK_URL: envVars.BACKEND_NGROK_URL || 'http://localhost:8000',
+    // バックエンドAPIのベースURL
+    BACKEND_NGROK_URL: pickEnv('BACKEND_NGROK_URL', 'http://localhost:8000'),
+    FRONTEND_NGROK_URL: pickEnv('FRONTEND_NGROK_URL', 'http://localhost:3000'),
+    NEXT_PUBLIC_API_BASE_URL:
+      pickEnv('NEXT_PUBLIC_API_BASE_URL') ||
+      pickEnv('BACKEND_NGROK_URL', 'http://localhost:8000'),
+    NEXT_PUBLIC_BACKEND_NGROK_URL:
+      pickEnv('NEXT_PUBLIC_BACKEND_NGROK_URL') ||
+      pickEnv('BACKEND_NGROK_URL', 'http://localhost:8000'),
+    // Supabase 公開変数
+    NEXT_PUBLIC_SUPABASE_URL: pickEnv('NEXT_PUBLIC_SUPABASE_URL'),
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: pickEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
   },
   
   // 開発環境でのCORS設定 - 環境変数から動的に生成

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useCallback } from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -53,11 +53,31 @@ type Session = {
   id: string
   name: string
   createdAt: Date
+  correctionCount: number
   originalText: string
   targetText: string
   suggestions: CorrectionSuggestion[]
   overallComment: string
   savedData: SavedData[]
+}
+
+// APIレスポンスの型を定義
+type SessionAPIResponse = {
+  sessionId: string;
+  name: string;
+  createdAt: string;
+  correctionCount: number;
+};
+
+type ProposalAPIResponse = {
+  proposalId: string
+  originalAfterText: string
+  originalReason?: string
+  isSelected: number
+  selectedOrder?: number
+  isModified: number
+  modifiedReason?: string
+  isCustom: number
 }
 
 const FRONTEND_MODE = process.env.NEXT_PUBLIC_FRONTEND_MODE || "real"
@@ -113,75 +133,70 @@ export default function TextCorrectionApp() {
   const currentSession = sessions.find((s) => s.id === currentSessionId)
 
   // セッション一覧をAPIから取得
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async () => {
     try {
       console.log("Loading sessions...")
-      const sessionsData = await sessionAPI.getSessions()
+      const sessionsData: SessionAPIResponse[] = await sessionAPI.getSessions()
       console.log("Sessions data received:", sessionsData)
 
       // APIから取得したデータをフロントエンドのSession型に変換
-      const convertedSessions: Session[] = []
+      const convertedSessions: Session[] = sessionsData.map((s) => ({
+        id: s.sessionId,
+        name: s.name,
+        createdAt: new Date(s.createdAt),
+        correctionCount: s.correctionCount, // 保存済み件数を追加
+        originalText: "",
+        targetText: "",
+        suggestions: [],
+        overallComment: "",
+        savedData: [],
+      }))
 
-      for (const s of sessionsData) {
-        console.log("Processing session:", s.sessionId)
-        // 各セッションの履歴を取得
-        const historiesData = await historyAPI.getHistories(s.sessionId)
-        console.log("Histories for session", s.sessionId, ":", historiesData)
-        const savedData: SavedData[] = []
+      setSessions(convertedSessions)
+    } catch (error) {
+      console.error("Error loading sessions:", error)
+    }
+  }, [])
 
-        for (const history of historiesData) {
-          console.log("Processing history:", history.historyId)
-          // 各履歴の提案を取得
-          const proposalsData = await proposalAPI.getProposals(history.historyId)
-          console.log("Proposals for history", history.historyId, ":", proposalsData)
+  // セッション詳細をオンデマンドで取得
+  const loadSessionDetails = async (sessionId: string) => {
+    try {
+      console.log("Loading session details for:", sessionId)
+      const historiesData = await historyAPI.getHistories(sessionId)
+      console.log("Histories for session", sessionId, ":", historiesData)
 
-          // 提案データをCorrectionSuggestion形式に変換
-          const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal: any) => ({
-            id: proposal.proposalId,
-            original: proposal.originalAfterText,
-            reason: proposal.originalReason || "",
-            selected: proposal.isSelected === 1,
-            selectedOrder: proposal.selectedOrder || undefined,
-            userModifiedReason: proposal.isModified === 1 ? proposal.modifiedReason : undefined,
-            isCustom: proposal.isCustom === 1,
-          }))
+      const savedData: SavedData[] = []
+      for (const history of historiesData) {
+        const proposalsData: ProposalAPIResponse[] = await proposalAPI.getProposals(history.historyId)
+        const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal) => ({
+          id: proposal.proposalId,
+          original: proposal.originalAfterText,
+          reason: proposal.originalReason || "",
+          selected: proposal.isSelected === 1,
+          selectedOrder: proposal.selectedOrder,
+          userModifiedReason: proposal.modifiedReason,
+          isCustom: proposal.isCustom === 1,
+        }))
 
-          // 選択された提案のみを抽出
-          const selectedCorrections = aiSuggestions.filter((s) => s.selected)
-
-          savedData.push({
-            originalText: history.originalText,
-            instructionPrompt: history.instructionPrompt || "",
-            targetText: history.targetText,
-            aiSuggestions,
-            selectedCorrections,
-            overallComment: history.combinedComment || "",
-            combinedComment: history.combinedComment || "",
-            timestamp: new Date(history.timestamp),
-          })
-        }
-
-        convertedSessions.push({
-          id: s.sessionId,
-          name: s.name || "セッション",
-          createdAt: new Date(s.createdAt),
-          originalText: "",
-          targetText: "",
-          suggestions: [],
-          overallComment: "",
-          savedData,
+        savedData.push({
+          originalText: history.originalText,
+          instructionPrompt: history.instructionPrompt,
+          targetText: history.targetText,
+          aiSuggestions,
+          selectedCorrections: aiSuggestions.filter((s) => s.selected),
+          overallComment: history.combinedComment,
+          combinedComment: history.combinedComment,
+          timestamp: new Date(history.timestamp),
         })
       }
 
-      console.log("Converted sessions:", convertedSessions)
-      setSessions(convertedSessions)
+      setSessions((prevSessions) =>
+        prevSessions.map((s) =>
+          s.id === sessionId ? { ...s, savedData } : s
+        ),
+      )
     } catch (error) {
-      console.error("Failed to load sessions:", error)
-      toast({
-        title: "エラー",
-        description: "セッションの読み込みに失敗しました",
-        variant: "destructive",
-      })
+      console.error("Error loading session details:", error)
     }
   }
 
@@ -193,6 +208,7 @@ export default function TextCorrectionApp() {
         id: newSessionData.sessionId,
         name: newSessionData.name,
         createdAt: new Date(newSessionData.createdAt),
+        correctionCount: 0, // 新しいセッションのため0件で初期化
         originalText: "",
         targetText: "",
         suggestions: [],
@@ -298,7 +314,7 @@ export default function TextCorrectionApp() {
       })
 
       // 既存の選択状態を復元
-      const restoredSuggestions = data.suggestions.map((s: any) => {
+      const restoredSuggestions = data.suggestions.map((s: CorrectionSuggestion) => {
         const existing = existingSelections.get(s.original)
         return existing ? { ...s, ...existing } : { ...s, selected: false, selectedOrder: undefined }
       })
@@ -315,7 +331,7 @@ export default function TextCorrectionApp() {
       // 選択カウンターを復元
       const selectedCount = allSuggestions.filter((s) => s.selected).length
       setSelectionCounter(selectedCount)
-    } catch (e) {
+    } catch {
       toast({
         title: "APIエラー",
         description: "AI提案の取得に失敗しました",
@@ -413,7 +429,7 @@ export default function TextCorrectionApp() {
         title: "コピー完了",
         description: "修正内容がクリップボードにコピーされました",
       })
-    } catch (err) {
+    } catch {
       toast({
         title: "コピー失敗",
         description: "クリップボードへのコピーに失敗しました",
@@ -569,52 +585,61 @@ export default function TextCorrectionApp() {
     </div>
   )
 
-  const SidebarContent = () => (
-    <div className="h-full flex flex-col">
-      <div className="p-4 border-b">
-        <Button onClick={createNewSession} className="w-full" size="sm">
-          <Plus className="w-4 h-4 mr-2" />
-          新しいセッション
-        </Button>
+  const SidebarContent = ({ collapsed = false }: { collapsed?: boolean }) => (
+    <div className={`h-full flex flex-col ${collapsed ? 'items-center w-16' : ''}`}>
+      <div className={`p-4 border-b ${collapsed ? 'px-2' : ''}`}>
+        {!collapsed && (
+          <Button onClick={createNewSession} className="w-full" size="sm">
+            <Plus className="w-4 h-4 mr-2" />
+            新しいセッション
+          </Button>
+        )}
+        {collapsed && (
+          <Button onClick={createNewSession} size="icon" className="w-8 h-8">
+            <Plus className="w-4 h-4" />
+          </Button>
+        )}
       </div>
-
-      <ScrollArea className="flex-1 p-4">
+      <ScrollArea className={`flex-1 ${collapsed ? 'px-1' : 'p-4'}`}>
         <div className="space-y-2">
           {sessions.map((session) => (
             <div
               key={session.id}
               className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
                 currentSessionId === session.id ? "bg-blue-50 border-blue-200" : "hover:bg-gray-50"
-              }`}
+              } ${collapsed ? 'p-1' : ''}`}
               onClick={() => {
                 setCurrentSessionId(session.id)
                 setSidebarOpen(false)
+                loadSessionDetails(session.id)
               }}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-medium text-sm truncate">{session.name}</h3>
-                  <div className="flex items-center gap-2 mt-1">
+                  <h3 className={`font-medium text-sm truncate ${collapsed ? 'hidden' : ''}`}>{session.name}</h3>
+                  <div className={`flex items-center gap-2 mt-1 ${collapsed ? 'justify-center' : ''}`}>
                     <Calendar className="w-3 h-3 text-gray-400" />
-                    <span className="text-xs text-gray-500">{session.createdAt.toLocaleDateString()}</span>
+                    {!collapsed && (
+                      <span className="text-xs text-gray-500">{session.createdAt.toLocaleDateString()}</span>
+                    )}
                   </div>
-                  {session.savedData.length > 0 && (
-                    <Badge variant="secondary" className="mt-2 text-xs">
-                      保存済み: {session.savedData.length}件
-                    </Badge>
-                  )}
+                  <Badge variant="secondary" className={`mt-2 ${collapsed ? 'mx-auto block' : ''}`}>
+                    保存済み: {session.correctionCount}件
+                  </Badge>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    deleteSession(session.id)
-                  }}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </Button>
+                {!collapsed && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      deleteSession(session.id)
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                )}
               </div>
             </div>
           ))}
@@ -630,10 +655,10 @@ export default function TextCorrectionApp() {
     </div>
   )
 
-  // 初期化時にセッションを読み込み
+  // セッション一覧を初期化時に読み込み
   useEffect(() => {
     loadSessions()
-  }, [])
+  }, [loadSessions])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -930,18 +955,12 @@ export default function TextCorrectionApp() {
                                       <Button
                                         variant="outline"
                                         size="sm"
-                                        onClick={() => copyToClipboard(data.combinedComment)}
+                                        onClick={() => console.log("削除機能未実装")}
                                       >
-                                        <Copy className="w-3 h-3 mr-1" />
-                                        再コピー
+                                        <Trash2 className="w-3 h-3 mr-1" />
+                                        削除
                                       </Button>
                                     </div>
-                                  </div>
-                                  <div className="text-sm text-gray-600 space-y-1">
-                                    <p>選択された修正: {data.selectedCorrections.length}件</p>
-                                    <p className="text-xs text-gray-500 truncate">
-                                      添削対象: {data.targetText.substring(0, 50)}...
-                                    </p>
                                   </div>
                                 </div>
                               ))}

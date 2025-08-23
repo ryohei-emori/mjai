@@ -43,7 +43,7 @@ test("API呼び出し失敗時にエラートーストが表示される", async
   // エラートーストが表示されることを確認
   await waitFor(() => {
     expect(
-      screen.getByText((content, element) =>
+      screen.getByText((content) =>
         content.includes("AI提案の取得に失敗しました")
       )
     ).toBeInTheDocument();

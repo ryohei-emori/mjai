@@ -2,6 +2,10 @@
 
 set -e
 
+# プロジェクトルートを設定
+export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+echo "📁 Project root: ${PROJECT_ROOT}"
+
 echo "🚀 Starting MJAI development environment..."
 
 # 1. すべてのサービスを停止・キャッシュ削除

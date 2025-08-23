@@ -63,10 +63,10 @@ app/llm/
    - Requires `GEMINI_API_KEY`
    - Automatic JSON response parsing
 
-2. **Qwen Local** (Optional)
-   - Local inference, privacy-focused
-   - Requires model download
-   - Higher resource usage
+2. **OpenAI API** (Optional)
+   - Cloud-based, high performance
+   - Requires `OPENAI_API_KEY`
+   - Automatic JSON response parsing
 
 3. **Mock Mode** (Development)
    - No external dependencies
@@ -162,35 +162,6 @@ POST /suggestions
 }
 ```
 
-## Project Structure
-
-```
-backend/
-├── app/                         # Main application code
-│   ├── main.py                 # FastAPI app entry point
-│   ├── db_helper.py            # Database operations
-│   ├── llm/                    # LLM provider abstraction
-│   │   ├── __init__.py
-│   │   ├── base.py             # Base LLM provider class
-│   │   ├── gemini.py           # Gemini API provider
-│   │   ├── qwen.py             # Qwen local LLM provider
-│   │   └── openai.py           # OpenAI provider (example)
-│   └── models/                 # Pydantic models
-│       ├── __init__.py
-│       ├── session.py          # Session models
-│       ├── history.py          # History models
-│       └── proposal.py         # Proposal models
-├── db/                         # Database files
-│   ├── app.db                  # SQLite database (persistent)
-│   ├── schema.sql              # Database schema
-│   └── init_db.py              # Database initialization
-├── models/                     # Local LLM models (if using Qwen)
-├── requirements.txt            # Python dependencies
-├── Dockerfile                  # Container configuration
-├── run_cloud.sh               # Cloud deployment script
-└── README.md                  # This file
-```
-
 ## Environment Variables
 
 Required environment variables (set in `conf/.env`):
@@ -233,6 +204,23 @@ Required environment variables (set in `conf/.env`):
 - `isModified` (INTEGER)
 - `isCustom` (INTEGER)
 - `selectedOrder` (INTEGER)
+
+## Database Migration
+
+The backend originally used SQLite for local data persistence. As part of the migration to a more scalable architecture, the database has been transitioned to PostgreSQL, hosted on Supabase. This allows for better performance, scalability, and integration with cloud services.
+
+### Migration Steps
+
+1. Exported data from SQLite.
+2. Created a new PostgreSQL database on Supabase.
+3. Imported the data into Supabase using custom migration scripts.
+4. Updated the backend to support PostgreSQL connections.
+
+### Benefits of Supabase
+
+- Cloud-hosted PostgreSQL database.
+- Real-time capabilities.
+- Easy integration with the existing backend.
 
 ## Testing
 
@@ -283,4 +271,63 @@ The backend is containerized and deployed via Docker Compose. For production:
 1. Follow FastAPI best practices
 2. Add tests for new endpoints
 3. Update API documentation
-4. Ensure Docker compatibility 
+4. Ensure Docker compatibility
+
+## Fetching Improvements
+
+### Current Issue
+Currently, the frontend fetches all sessions when accessing the initial page. This results in high communication overhead and increased loading times, especially when the number of sessions grows.
+
+### Proposed Solutions
+1. **Pagination**:
+   - Implement pagination for session fetching to limit the number of sessions retrieved in a single request.
+   - Example: Fetch 10 sessions per page and provide navigation for additional pages.
+
+2. **Lazy Loading**:
+   - Load session data incrementally as the user scrolls or interacts with the page.
+   - This approach reduces the initial payload size and improves perceived performance.
+
+3. **Caching**:
+   - Cache session data on the frontend to avoid redundant API calls for previously fetched sessions.
+   - Use a library like `react-query` or `redux` for state management and caching.
+
+4. **Selective Fetching**:
+   - Fetch only the most recent or relevant sessions initially.
+   - Provide a search or filter option for users to retrieve specific sessions on demand.
+
+5. **Backend Optimization**:
+   - Optimize the `/sessions` endpoint to support selective data retrieval, such as fetching only session metadata (e.g., `sessionId`, `name`, `createdAt`) instead of full details.
+
+### Expected Benefits
+- Reduced communication overhead.
+- Faster initial page load times.
+- Improved user experience with responsive and efficient data fetching.
+
+### Next Steps
+- Discuss and finalize the preferred solution(s) with the team.
+- Update the API and frontend implementation accordingly.
+- Test the changes to ensure performance improvements and functionality.
+
+### Implementation Plan
+
+Based on the proposed solutions, we have decided to prioritize **Backend Optimization** for session fetching. This approach will involve the following steps:
+
+1. **Optimize the `/sessions` Endpoint**:
+   - Modify the endpoint to return only essential session metadata (e.g., `sessionId`, `name`, `createdAt`).
+   - Ensure the endpoint supports additional query parameters for selective data retrieval (e.g., filtering by date or status).
+
+2. **Update API Documentation**:
+   - Reflect the changes in the API documentation to guide frontend integration.
+
+3. **Frontend Integration**:
+   - Update the frontend to utilize the optimized endpoint.
+   - Implement selective fetching logic to request additional session details only when needed.
+
+4. **Testing**:
+   - Conduct performance testing to measure improvements in response times and data transfer.
+   - Ensure the changes do not break existing functionality.
+
+5. **Deployment**:
+   - Roll out the changes in a staged manner to monitor real-world performance.
+
+This implementation is expected to significantly reduce communication overhead and improve the user experience.

@@ -2,7 +2,7 @@ services:
   # バックエンド (FastAPI)
   backend:
     build: 
-      context: ../backend
+      context: ${PROJECT_ROOT}/backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
@@ -11,10 +11,12 @@ services:
       - ENVIRONMENT=development
       - FRONTEND_NGROK_URL=${FRONTEND_NGROK_URL}
       - BACKEND_NGROK_URL=${BACKEND_NGROK_URL}
+      - PYTHONPATH=/app
+      - APP_ROOT=/app
     volumes:
-      - ../backend:/app
-      - ../backend/db:/app/db
-      - ../conf/.env:/app/.env # .envを明示的にマウント
+      - ${PROJECT_ROOT}/backend:/app
+      - ${PROJECT_ROOT}/backend/db:/app/db
+      - ${PROJECT_ROOT}/conf/.env:/app/.env # .envを明示的にマウント
     networks:
       - app-network
     restart: unless-stopped
@@ -26,9 +28,15 @@ services:
       - "4040:4040"
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    command: >
+      start --authtoken ${NGROK_AUTHTOKEN} 
+      --config /etc/ngrok.yml 
+      frontend backend
     volumes:
-      - ./ngrok-docker.yml:/etc/ngrok.yml
-    command: start --authtoken ${NGROK_AUTHTOKEN} --config /etc/ngrok.yml frontend backend
+      - type: bind
+        source: ${PROJECT_ROOT}/conf/ngrok.yml
+        target: /etc/ngrok.yml
+        read_only: true
     networks:
       - app-network
     depends_on:
@@ -38,16 +46,25 @@ services:
   # フロントエンド (Next.js) - ngrokの後に起動
   frontend:
     build:
-      context: ../frontend
+      context: ${PROJECT_ROOT}/frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+        NEXT_PUBLIC_BACKEND_NGROK_URL: ${NEXT_PUBLIC_BACKEND_NGROK_URL}
+        NEXT_PUBLIC_FRONTEND_NGROK_URL: ${NEXT_PUBLIC_FRONTEND_NGROK_URL}
     ports:
-      - "3000:3000"
+      - "8080:8080"
     environment:
       - NODE_ENV=development
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+      - NEXT_PUBLIC_BACKEND_NGROK_URL=${NEXT_PUBLIC_BACKEND_NGROK_URL}
+      - NEXT_PUBLIC_FRONTEND_NGROK_URL=${NEXT_PUBLIC_FRONTEND_NGROK_URL}
     volumes:
-      - ../frontend:/app
-      - /app/node_modules
-      - ../conf/.env:/app/.env
+      - ${PROJECT_ROOT}/conf/.env:/app/.env
     networks:
       - app-network
     depends_on:
@@ -58,8 +75,8 @@ services:
   env-updater:
     image: curlimages/curl:latest
     volumes:
-      - ./update-env.sh:/update-env.sh
-      - ./.env:/.env
+      - ${PROJECT_ROOT}/conf/update-env.sh:/update-env.sh
+      - ${PROJECT_ROOT}/conf/.env:/.env
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}

@@ -1,3 +1,11 @@
+// Supabase設定
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+
 // API設定
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
@@ -79,7 +87,7 @@ export const sessionAPI = {
   },
 
   // セッション更新
-  updateSession: async (sessionId: string, updates: any) => {
+  updateSession: async (sessionId: string, updates: Record<string, unknown>) => {
     return await apiFetch(`/sessions/${sessionId}`, {
       method: 'PUT',
       body: JSON.stringify(updates)
