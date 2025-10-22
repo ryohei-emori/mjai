@@ -1,7 +1,12 @@
 variable "render_api_key" {
   type        = string
-  description = "Render API key with permissions to manage services and databases"
+  description = "Render API key with permissions to manage services"
   sensitive   = true
+}
+
+variable "render_owner_id" {
+  type        = string
+  description = "Render owner ID (user or team)"
 }
 
 variable "project_name" {
@@ -34,35 +39,6 @@ variable "environment" {
   default     = "production"
 }
 
-# Supabase configuration
-variable "supabase_access_token" {
-  type        = string
-  description = "Supabase access token for management API"
-  sensitive   = true
-}
-
-variable "supabase_project_ref" {
-  type        = string
-  description = "Supabase project reference ID"
-}
-
-variable "supabase_org_id" {
-  type        = string
-  description = "Supabase organization ID"
-}
-
-variable "supabase_region" {
-  type        = string
-  description = "Supabase project region"
-  default     = "ap-northeast-1"  # Tokyo region
-}
-
-variable "supabase_db_plan" {
-  type        = string
-  description = "Supabase database plan"
-  default     = "free"  # or "pro" for production
-}
-
 variable "frontend_plan" {
   type        = string
   description = "Render plan for frontend service"
@@ -75,6 +51,12 @@ variable "backend_plan" {
   default     = "starter"
 }
 
+variable "database_url" {
+  type        = string
+  description = "Supabase database connection URL"
+  sensitive   = true
+}
+
 variable "gemini_api_key" {
   type        = string
   description = "Gemini API key for AI functionality"
@@ -84,5 +66,5 @@ variable "gemini_api_key" {
 variable "gemini_model" {
   type        = string
   description = "Gemini model identifier"
-  default     = "gemini-2.5-pro"
+  default     = "gemini-2.5-flash"
 }

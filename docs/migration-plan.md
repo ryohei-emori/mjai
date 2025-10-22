@@ -1,145 +1,251 @@
-## Migration Plan: Supabase → Render Database
+# SQLite → Supabase マイグレーション手順
 
-### 1. Preparation Steps
+## 概要
 
-1. **Backup Current Database**
+このドキュメントでは、ローカルのSQLiteデータベース（`app.db`）をSupabase（PostgreSQL）に高速で移行する方法を説明します。
+
+## 方法の選択
+
+### ❌ 直接Supabaseに挿入（遅い）
+- 各レコードを1つずつSupabaseに挿入
+- ネットワーク遅延により非常に時間がかかる
+- 2000件以上のレコードで数分〜数十分かかる
+
+### ✅ ローカルPostgreSQL経由（高速）
+- ローカルでSQLite → PostgreSQLに変換（0.1秒）
+- ダンプファイルを作成
+- ダンプをSupabaseに一括アップロード（数秒）
+- **合計時間: 数秒〜数十秒**
+
+## 前提条件
+
+1. PostgreSQLがインストールされていること
    ```bash
-   # From Supabase dashboard or using pg_dump
-   pg_dump -h [YOUR-PROJECT-REF].supabase.co -U postgres -d postgres > mjai_backup.sql
+   brew install postgresql@14
    ```
 
-2. **Update Environment Variables**
-   - Rotate and remove existing Supabase secrets from `conf/.env`
-   - Update backend environment with new Render DATABASE_URL
-
-3. **Test Migration Locally**
+2. 必要なPythonパッケージがインストールされていること
    ```bash
-   # Using existing migration script (adapted for Render)
-   cd backend
-   python db/migrate_to_supabase.py
+   pip install asyncpg python-dotenv
    ```
 
-### 2. Migration Process
-
-1. **Infrastructure Setup**
-   ```bash
-   # Initialize Terraform
-   cd terraform
-   terraform init
-   terraform plan
-   terraform apply
+3. `.env`ファイルにSupabase接続情報が設定されていること
+   ```
+   DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
    ```
 
-2. **Database Schema Migration**
-   ```sql
-   -- Run on Render Postgres DB
-   -- Create tables
-   CREATE TABLE IF NOT EXISTS sessions (
-       id SERIAL PRIMARY KEY,
-       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-       updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-       metadata JSONB DEFAULT '{}'::jsonb
-   );
+## マイグレーション手順
 
-   CREATE TABLE IF NOT EXISTS histories (
-       id SERIAL PRIMARY KEY,
-       session_id INTEGER REFERENCES sessions(id),
-       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-       role TEXT NOT NULL,
-       content TEXT NOT NULL,
-       metadata JSONB DEFAULT '{}'::jsonb
-   );
+### ステップ1: ローカルPostgreSQLサーバーを起動
 
-   CREATE TABLE IF NOT EXISTS proposals (
-       id SERIAL PRIMARY KEY,
-       history_id INTEGER REFERENCES histories(id),
-       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-       content TEXT NOT NULL,
-       metadata JSONB DEFAULT '{}'::jsonb
-   );
-   ```
+```bash
+brew services start postgresql@14
+```
 
-3. **Data Migration**
-   ```bash
-   # Option A: Using pg_restore (if using pg_dump backup)
-   pg_restore -h [RENDER-DB-HOST] -U [RENDER-DB-USER] -d [RENDER-DB-NAME] mjai_backup.sql
+起動確認:
+```bash
+pg_isready
+# /tmp:5432 - accepting connections
+```
 
-   # Option B: Using Python migration script
-   cd backend
-   DATABASE_URL=postgres://[RENDER-DB-CONNECTION-STRING] python db/migrate_to_supabase.py
-   ```
+### ステップ2: 一時データベースを作成
 
-### 3. Verification Steps
+```bash
+createdb mjai_temp
+```
 
-1. **Database Validation**
-   ```sql
-   -- Run on Render Postgres
-   SELECT COUNT(*) FROM sessions;
-   SELECT COUNT(*) FROM histories;
-   SELECT COUNT(*) FROM proposals;
-   ```
+### ステップ3: SQLiteからローカルPostgreSQLに移行
 
-2. **Application Tests**
-   ```bash
-   # Backend API tests
-   cd backend
-   pytest
+```bash
+python3 backend/db/migrate_local.py
+```
 
-   # Frontend integration
-   cd frontend
-   npm test
-   ```
+**出力例:**
+```
+Starting migration from SQLite to Local PostgreSQL...
+Counting records...
+Found 24 sessions, 291 histories, 2018 proposals
+Total records to migrate: 2333
+==================================================
 
-3. **Staging Deployment**
-   - Deploy to a staging environment on Render
-   - Verify all API endpoints
-   - Check frontend functionality
+Creating tables...
+✓ Tables created
 
-### 4. Production Cutover
+Migrating sessions...
+✓ Migrated 24 sessions in 0.0s
 
-1. **Database Switch**
-   - Update production DATABASE_URL to point to Render
-   - Verify backend connects successfully
+Migrating correction histories...
+✓ Migrated 290 histories in 0.0s
 
-2. **Frontend Update**
-   - Deploy frontend with Render backend URL
-   - Monitor error rates and API responses
+Migrating AI proposals...
+✓ Batch 1/3: 1000 proposals in 0.0s
+✓ Batch 2/3: 1000 proposals in 0.0s
+✓ Batch 3/3: 18 proposals in 0.0s
 
-3. **Cleanup**
-   - Remove Supabase configuration
-   - Archive old secrets
-   - Update documentation
+==================================================
+✓ Migration to local PostgreSQL completed!
+  Total time: 0.1s
+  Total records migrated: 2332
+==================================================
+```
 
-### 5. Rollback Plan
+### ステップ4: ダンプファイルを作成
 
-1. **Database Rollback**
-   ```bash
-   # If needed, restore from backup
-   pg_restore -h [SUPABASE-HOST] -U postgres -d postgres mjai_backup.sql
-   ```
+```bash
+pg_dump mjai_temp --no-owner --no-acl > /tmp/mjai_dump.sql
+```
 
-2. **Configuration Rollback**
-   - Revert DATABASE_URL to Supabase
-   - Revert frontend API endpoints
-   - Re-enable Supabase client if needed
+### ステップ5: Supabaseの既存データをクリア
 
-### 6. Monitoring & Verification
+```bash
+PGPASSWORD='YOUR_PASSWORD' psql \
+  -h aws-0-REGION.pooler.supabase.com \
+  -p 6543 \
+  -U postgres.PROJECT_REF \
+  -d postgres \
+  -c "DROP TABLE IF EXISTS ai_proposals CASCADE; 
+      DROP TABLE IF EXISTS correction_histories CASCADE; 
+      DROP TABLE IF EXISTS sessions CASCADE;"
+```
 
-1. **Health Checks**
-   - Monitor backend /health endpoint
-   - Watch application logs
-   - Check error rates
+### ステップ6: ダンプをSupabaseにリストア
 
-2. **Performance Metrics**
-   - Compare query latencies
-   - Monitor connection pool usage
-   - Check API response times
+```bash
+PGPASSWORD='YOUR_PASSWORD' psql \
+  -h aws-0-REGION.pooler.supabase.com \
+  -p 6543 \
+  -U postgres.PROJECT_REF \
+  -d postgres \
+  < /tmp/mjai_dump.sql
+```
 
-### Success Criteria
+### ステップ7: データを確認
 
-- ✓ All tables and data migrated successfully
-- ✓ Application tests passing
-- ✓ Frontend able to perform all operations
-- ✓ No data loss or corruption
-- ✓ Performance metrics within acceptable range
-- ✓ Zero downtime during cutover (or minimal planned downtime)
+```bash
+PGPASSWORD='YOUR_PASSWORD' psql \
+  -h aws-0-REGION.pooler.supabase.com \
+  -p 6543 \
+  -U postgres.PROJECT_REF \
+  -d postgres \
+  -c "SELECT 'sessions' as table_name, COUNT(*) as count FROM public.sessions 
+      UNION ALL 
+      SELECT 'correction_histories', COUNT(*) FROM public.correction_histories 
+      UNION ALL 
+      SELECT 'ai_proposals', COUNT(*) FROM public.ai_proposals;"
+```
+
+**期待される出力:**
+```
+      table_name      | count 
+----------------------+-------
+ sessions             |    24
+ correction_histories |   290
+ ai_proposals         |  2018
+(3 rows)
+```
+
+### ステップ8: クリーンアップ
+
+```bash
+# PostgreSQLサーバーを停止
+brew services stop postgresql@14
+
+# 一時データベースを削除
+dropdb mjai_temp
+
+# ダンプファイルを削除
+rm /tmp/mjai_dump.sql
+```
+
+## ワンライナー実行
+
+全ステップを一度に実行する場合:
+
+```bash
+# 1. PostgreSQL起動とDB作成
+brew services start postgresql@14 && \
+sleep 3 && \
+createdb mjai_temp && \
+
+# 2. ローカルに移行
+python3 backend/db/migrate_local.py && \
+
+# 3. ダンプ作成
+pg_dump mjai_temp --no-owner --no-acl > /tmp/mjai_dump.sql && \
+
+# 4. Supabaseをクリアしてリストア
+PGPASSWORD='YOUR_PASSWORD' psql \
+  -h aws-0-REGION.pooler.supabase.com \
+  -p 6543 \
+  -U postgres.PROJECT_REF \
+  -d postgres \
+  -c "DROP TABLE IF EXISTS ai_proposals CASCADE; 
+      DROP TABLE IF EXISTS correction_histories CASCADE; 
+      DROP TABLE IF EXISTS sessions CASCADE;" && \
+
+PGPASSWORD='YOUR_PASSWORD' psql \
+  -h aws-0-REGION.pooler.supabase.com \
+  -p 6543 \
+  -U postgres.PROJECT_REF \
+  -d postgres \
+  < /tmp/mjai_dump.sql && \
+
+# 5. クリーンアップ
+brew services stop postgresql@14 && \
+dropdb mjai_temp && \
+rm /tmp/mjai_dump.sql && \
+
+echo "✓ Migration completed successfully!"
+```
+
+## トラブルシューティング
+
+### PostgreSQLが起動しない
+
+```bash
+# ログを確認
+brew services list
+brew services restart postgresql@14
+```
+
+### 接続エラー
+
+```bash
+# DNS解決を確認
+nslookup aws-0-REGION.pooler.supabase.com
+
+# 接続テスト
+PGPASSWORD='YOUR_PASSWORD' psql \
+  -h aws-0-REGION.pooler.supabase.com \
+  -p 6543 \
+  -U postgres.PROJECT_REF \
+  -d postgres \
+  -c "SELECT version();"
+```
+
+### 無効なUUIDエラー
+
+`migrate_local.py`スクリプトは自動的に無効なUUIDを持つレコードをスキップまたは新しいUUIDを生成します。Warningが表示されますが、マイグレーションは続行されます。
+
+### テーブルが既に存在するエラー
+
+ステップ5を実行して既存のテーブルを削除してから、再度ステップ6を実行してください。
+
+## パフォーマンス比較
+
+| 方法 | 2332レコードの移行時間 |
+|------|----------------------|
+| 直接Supabase挿入 | 数分〜数十分 |
+| ローカルPostgreSQL経由 | **数秒〜数十秒** |
+
+## スクリプトファイル
+
+- `backend/db/migrate_local.py` - SQLiteからローカルPostgreSQLへの移行スクリプト
+- `backend/db/migrate_to_supabase.py` - 直接Supabaseに挿入する旧スクリプト（非推奨）
+
+## 注意事項
+
+1. マイグレーション前に必ずデータのバックアップを取ってください
+2. 本番環境での実行前にテスト環境で動作確認してください
+3. Supabaseの接続情報（パスワード等）は`.env`ファイルで管理し、Gitにコミットしないでください
+4. 大量データの場合、ダンプファイルのサイズに注意してください

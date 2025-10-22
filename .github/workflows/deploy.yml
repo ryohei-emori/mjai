@@ -1,0 +1,154 @@
+name: Deploy to Render
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'terraform/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform-deploy:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    
+    defaults:
+      run:
+        working-directory: ./terraform
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.5.0'
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Init
+        run: terraform init
+        env:
+          TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        env:
+          TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+          TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          TF_VAR_gemini_model: ${{ secrets.GEMINI_MODEL }}
+          TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'mjai' }}
+          TF_VAR_repo: ${{ github.repository }}
+          TF_VAR_branch: ${{ github.ref_name }}
+          TF_VAR_environment: ${{ github.event.inputs.environment || 'production' }}
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+          TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          TF_VAR_gemini_model: ${{ secrets.GEMINI_MODEL }}
+          TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'mjai' }}
+          TF_VAR_repo: ${{ github.repository }}
+          TF_VAR_branch: ${{ github.ref_name }}
+          TF_VAR_environment: ${{ github.event.inputs.environment || 'production' }}
+
+      - name: Terraform Output
+        if: github.ref == 'refs/heads/main'
+        run: terraform output -json > deployment-info.json
+
+      - name: Display Deployment Info
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "=========================================="
+          echo "Deployment Complete!"
+          echo "=========================================="
+          terraform output
+          echo ""
+          echo "Backend URL: https://mjai-backend.onrender.com"
+          echo "Frontend URL: https://mjai-frontend.onrender.com"
+          echo "=========================================="
+
+      - name: Upload Deployment Info
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info
+          path: terraform/deployment-info.json
+          retention-days: 30
+
+  verify-deployment:
+    name: Verify Deployment
+    needs: terraform-deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Wait for services to be ready
+        run: sleep 60
+
+      - name: Check Backend Health
+        run: |
+          echo "Checking backend health..."
+          for i in {1..10}; do
+            if curl -f -s https://mjai-backend.onrender.com/health; then
+              echo "✓ Backend is healthy"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 30s..."
+            sleep 30
+          done
+          echo "❌ Backend health check failed"
+          exit 1
+
+      - name: Check Frontend
+        run: |
+          echo "Checking frontend..."
+          for i in {1..10}; do
+            if curl -f -s -o /dev/null https://mjai-frontend.onrender.com; then
+              echo "✓ Frontend is accessible"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 30s..."
+            sleep 30
+          done
+          echo "❌ Frontend check failed"
+          exit 1
+
+      - name: Deployment Success Notification
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "✓ Deployment Verified Successfully!"
+          echo "=========================================="
+          echo "Backend: https://mjai-backend.onrender.com"
+          echo "Frontend: https://mjai-frontend.onrender.com"
+          echo "=========================================="
