@@ -1,0 +1,50 @@
+name: Database Migration to Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to run migration in (staging/production)'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run database migration
+        env:
+          # The migration script reads DATABASE_URL from environment (conf/.env or env var)
+          DATABASE_URL: ${{ secrets.TARGET_DATABASE_URL }}
+        run: |
+          cd backend
+          echo "Starting migration to target DATABASE_URL..."
+          python db/migrate_to_supabase.py
+
+      - name: Verify migration
+        env:
+          TARGET_DATABASE_URL: ${{ secrets.TARGET_DATABASE_URL }}
+        run: |
+          cd backend
+          echo "Running tests against target database..."
+          TARGET_DATABASE_URL=$TARGET_DATABASE_URL pytest app/test_main.py -v

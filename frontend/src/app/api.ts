@@ -1,24 +1,19 @@
-// Supabase設定
-import { createClient } from '@supabase/supabase-js'
+// API configuration 
+// All data access is via the backend REST API
+// No direct database client usage in frontend for security
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // API設定
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 // デバッグ用ログ
-console.log('=== API Configuration Debug ===');
+console.log('=== API Configuration ===');
 console.log('API_BASE_URL:', API_BASE_URL);
-console.log('Environment check:', {
-  NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL,
+console.log('Environment:', {
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
   NODE_ENV: process.env.NODE_ENV,
-  NEXT_PUBLIC_BACKEND_NGROK_URL: process.env.NEXT_PUBLIC_BACKEND_NGROK_URL,
-  NEXT_PUBLIC_FRONTEND_NGROK_URL: process.env.NEXT_PUBLIC_FRONTEND_NGROK_URL
 });
-console.log('==============================');
+console.log('=====================');
 
 // 共通のfetch関数（エラーハンドリング付き）
 const apiFetch = async (url: string, options?: RequestInit) => {
@@ -30,7 +25,6 @@ const apiFetch = async (url: string, options?: RequestInit) => {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true', // ← 追加
         ...options?.headers,
       },
     });
@@ -68,6 +62,7 @@ const apiFetch = async (url: string, options?: RequestInit) => {
 export const sessionAPI = {
   // セッション一覧取得
   getSessions: async () => {
+    // backend API 経由で取得（移行後はこちらを推奨）
     return await apiFetch('/sessions');
   },
 
