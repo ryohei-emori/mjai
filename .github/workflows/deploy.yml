@@ -60,10 +60,11 @@ jobs:
         run: terraform plan -no-color -out=tfplan
         env:
           TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_render_owner_id: ${{ secrets.RENDER_OWNER_ID }}
           TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
           TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          TF_VAR_gemini_model: ${{ secrets.GEMINI_MODEL }}
-          TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'mjai' }}
+          TF_VAR_gemini_model: ${{ secrets.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'mjai-app' }}
           TF_VAR_repo: ${{ github.repository }}
           TF_VAR_branch: ${{ github.ref_name }}
           TF_VAR_environment: ${{ github.event.inputs.environment || 'production' }}
@@ -73,10 +74,11 @@ jobs:
         run: terraform apply -auto-approve tfplan
         env:
           TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_render_owner_id: ${{ secrets.RENDER_OWNER_ID }}
           TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
           TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          TF_VAR_gemini_model: ${{ secrets.GEMINI_MODEL }}
-          TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'mjai' }}
+          TF_VAR_gemini_model: ${{ secrets.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          TF_VAR_project_name: ${{ vars.PROJECT_NAME || 'mjai-app' }}
           TF_VAR_repo: ${{ github.repository }}
           TF_VAR_branch: ${{ github.ref_name }}
           TF_VAR_environment: ${{ github.event.inputs.environment || 'production' }}
@@ -93,8 +95,8 @@ jobs:
           echo "=========================================="
           terraform output
           echo ""
-          echo "Backend URL: https://mjai-backend.onrender.com"
-          echo "Frontend URL: https://mjai-frontend.onrender.com"
+          echo "Backend URL: https://mjai.onrender.com"
+          echo "Frontend URL: https://mjai-app-frontend.onrender.com"
           echo "=========================================="
 
       - name: Upload Deployment Info
@@ -119,7 +121,7 @@ jobs:
         run: |
           echo "Checking backend health..."
           for i in {1..10}; do
-            if curl -f -s https://mjai-backend.onrender.com/health; then
+            if curl -f -s https://mjai.onrender.com/health; then
               echo "✓ Backend is healthy"
               exit 0
             fi
@@ -133,7 +135,7 @@ jobs:
         run: |
           echo "Checking frontend..."
           for i in {1..10}; do
-            if curl -f -s -o /dev/null https://mjai-frontend.onrender.com; then
+            if curl -f -s -o /dev/null https://mjai-app-frontend.onrender.com; then
               echo "✓ Frontend is accessible"
               exit 0
             fi
@@ -149,6 +151,6 @@ jobs:
           echo "=========================================="
           echo "✓ Deployment Verified Successfully!"
           echo "=========================================="
-          echo "Backend: https://mjai-backend.onrender.com"
-          echo "Frontend: https://mjai-frontend.onrender.com"
+          echo "Backend: https://mjai.onrender.com"
+          echo "Frontend: https://mjai-app-frontend.onrender.com"
           echo "=========================================="
