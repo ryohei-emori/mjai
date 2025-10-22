@@ -62,6 +62,9 @@ def get_cors_origins():
         "http://0.0.0.0:3000",
         "http://0.0.0.0:3001",
         "http://0.0.0.0:8080",
+        # Render本番環境
+        "https://mjai-app-frontend.onrender.com",
+        "https://mjai.onrender.com",
     ]
     
     print("=== Backend CORS Debug ===")
@@ -109,7 +112,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^https://[a-z0-9.-]+\\.ngrok-free\\.app$|^https://[a-z0-9.-]+\\.ngrok\\.io$",
+    allow_origin_regex=r"^https://[a-z0-9.-]+\\.ngrok-free\\.app$|^https://[a-z0-9.-]+\\.ngrok\\.io$|^https://[a-z0-9.-]+\\.onrender\\.com$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
