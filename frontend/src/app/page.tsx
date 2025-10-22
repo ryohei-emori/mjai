@@ -842,7 +842,7 @@ export default function TextCorrectionApp() {
                                     <div className="bg-blue-50 p-3 rounded">
                                       <Label className="text-sm font-medium text-blue-600">修正コメント</Label>
                                       {suggestion.selected ? (
-                                        <Textareaarea
+                                        <Textarea
                                           value={suggestion.userModifiedReason || suggestion.reason}
                                           onChange={(e) => updateSuggestionReason(suggestion.id, e.target.value)}
                                           className="text-sm min-h-[80px] mt-1 bg-white"
