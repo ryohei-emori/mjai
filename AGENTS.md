@@ -4,7 +4,7 @@ Agent-facing environment/operational constraints for MJAI (Japanese text-correct
 
 ## ⚠️ Reality check: docs vs. repo state
 
-`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). There is still no ngrok tunnel-provisioning tooling in-repo; `*_NGROK_URL` vars remain optional CORS allow-list entries. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions are client-side WebLLM — do **not** configure `GEMINI_*`.
+`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). There is still no ngrok tunnel-provisioning tooling in-repo; `*_NGROK_URL` vars remain optional CORS allow-list entries. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq primary, Cloudflare failover) with WebLLM as offline fallback** — do **not** configure `GEMINI_*`.
 
 ## Multi-Environment Architecture: Shared DB, Environment-Aware Auth
 
@@ -68,6 +68,15 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | `SUPABASE_JWT_SECRET` | Backend-only secret used by `backend/app/auth.py` to verify Supabase-issued JWTs (Supabase project settings → API → JWT Secret). Never exposed as `NEXT_PUBLIC_*` |
 | `ALLOWED_USER_EMAIL` | Google-auth allow-list checked by `backend/app/auth.py`; case-insensitive, supports comma-separated multiple addresses (also read as `ALLOWED_USER_EMAILS`) |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Browser-side Supabase client config used by `frontend/src/lib/supabaseClient.ts` for Google sign-in — **build-time** vars, safe to expose |
+
+**AI Provider Keys (backend-only, never `NEXT_PUBLIC_*`):**
+| Variable | Purpose |
+|---|---|
+| `GROQ_API_KEY` | Primary AI provider for fast inference (~1-3s). Get from [console.groq.com](https://console.groq.com) |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers AI access |
+
+WebLLM (client-side) requires no backend configuration — it runs in the browser using WebGPU.
 
 Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commented placeholder in `.env.example`) — not referenced by current backend/frontend code. Google OAuth client secrets belong in the Supabase Auth provider (local `conf/client_secret*.json` is gitignored; never commit). `GEMINI_API_KEY` / `GEMINI_MODEL` are obsolete and must not be set.
 
@@ -182,6 +191,8 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 - `ENVIRONMENT` — `production` or `development`
 - `NEXT_PUBLIC_API_URL` — empty or `/api` for same-origin monorepo deployment
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase browser client config
+- `GROQ_API_KEY` — Primary AI provider (recommended)
+- `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` — Fallback AI provider (optional)
 
 **Render and Terraform infrastructure has been removed**: The Render Web Service and `terraform/` directory have been deleted. All deployment is now via Vercel git integration.
 
@@ -199,79 +210,105 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 - Never make an infrastructure or architecture change (new deployment target, database/persistence backend swap, new or removed external service dependency, etc.) without reviewing and updating this file **and** `docs/SYSTEM-DESIGN.md` to match — that's exactly how README's old Quick Start section, documented in the Reality check above, went stale in the first place.
 ## AI Suggestion Generation
 
-AI correction suggestions are now generated **entirely client-side** using WebLLM (`@mlc-ai/web-llm`). The frontend loads and runs a quantized LLM in the user's browser via WebGPU. Key facts:
+AI correction suggestions use a **hybrid architecture**: cloud APIs for speed with client-side WebLLM as offline fallback.
 
-### Model Details
+### Architecture Overview
+
+```
+User Request → POST /api/suggestions (authenticated)
+              ↓
+         Groq API (primary, ~1-3s)
+              ↓ 429/5xx/timeout
+         Cloudflare Workers AI (fallback)
+              ↓ both fail
+         Frontend falls back to WebLLM (offline)
+```
+
+| Path | Provider | Latency | When Used |
+|------|----------|---------|-----------|
+| **Default** | Groq (llama-3.1-8b-instant) | ~1-3s | API keys configured, Groq available |
+| **Failover** | Cloudflare Workers AI | ~2-5s | Groq rate-limited/error/timeout |
+| **Offline** | WebLLM (SmolLM2-1.7B) | ~10-30s | API unavailable OR user enables オフラインモード |
+
+### Backend Providers (`backend/app/llm/`)
+
+| Module | Purpose |
+|--------|---------|
+| `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
+| `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
+| `groq_provider.py` | Groq API client with 10s timeout |
+| `cloudflare_provider.py` | Cloudflare Workers AI client with 15s timeout |
+| `suggestions.py` | Failover chain logic |
+
+### Environment Variables (Vercel Production)
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GROQ_API_KEY` | Recommended | Primary provider. Get from [console.groq.com](https://console.groq.com) → API Keys |
+| `CLOUDFLARE_ACCOUNT_ID` | Optional | Fallback provider. Get from Cloudflare dashboard → Overview |
+| `CLOUDFLARE_API_TOKEN` | Optional | Fallback provider. Create token with Workers AI read access |
+
+If neither is configured, `/api/suggestions` returns 503 and frontend auto-falls back to WebLLM.
+
+### Frontend UX
+
+- **Default behavior**: Calls `/api/suggestions` first for fast response
+- **Auto-fallback**: If API fails, automatically switches to WebLLM with toast notification
+- **オフラインモード toggle**: User can explicitly enable WebLLM-only mode (checkbox near generate button)
+- **Visual indicator**: Badge shows "クラウドAPI" or "ローカルAI" after generation
+
+### WebLLM (Offline Fallback)
+
+WebLLM remains fully functional for offline use and future evolution:
+
 - **Model ID:** `SmolLM2-1.7B-Instruct-q4f16_1-MLC`
-- **Approximate download size:** ~0.9 GB (quantized weights, tokenizer, model config)
+- **Approximate download size:** ~0.9 GB (cached in browser Cache API)
 - **VRAM required:** ~1.8 GB
-- **Context window:** 8192 tokens (8K)
-- **Quantization:** 4-bit (q4f16_1) for reduced memory footprint
-- **Implementation:** See `frontend/src/lib/webllm/` for model loading, prompt construction, inference, and parsing logic
+- **WebGPU required:** Modern Chrome/Edge/Safari
+- **Implementation:** `frontend/src/lib/webllm/`
 
-### Inference Parameters (SmolLM2-optimized)
-- **max_tokens:** 512 (sufficient for 5 corrections + overall comment in JSON)
-- **temperature:** 0.2 (low for consistent JSON structure output)
-- **Typical prompt size:** ~500 tokens (system + few-shot + user input)
-- **Inference timeout:** 2 minutes (should complete in <30s with optimized prompts)
+WebLLM is retained for:
+1. Offline usage when cloud APIs are unavailable
+2. Users who prefer local inference (privacy, no API dependencies)
+3. Future client-side AI evolution
 
-These parameters were tuned to prevent unbounded generation (80s+ timeouts observed with max_tokens=2048, temperature=0.7).
+### Prompts (Shared)
 
-#### Model Selection History
-- **2026-08-11:** Switched from Phi-3.5-mini (~3.7GB) to SmolLM2-1.7B (~0.9GB) for faster inference
-- **2026-08-11:** Optimized prompts and inference params for SmolLM2 (max_tokens 2048→512, temperature 0.7→0.2)
-- **Liquid AI LFM2.5 (blocked):** User requested LFM2.5 ("LFG2.5") but it's not available in WebLLM's prebuilt catalog. LFM2.5 models exist only in native/GGUF/MLX/ONNX formats, not MLC format. Custom compilation would be required.
-
-### Runtime Requirements
-- **WebGPU required:** Users need a WebGPU-capable browser (modern Chrome/Edge/Safari). Unsupported browsers see a graceful fallback message but can still add manual custom corrections
-- **No server-side AI:** The backend no longer has a `POST /suggestions` endpoint or any Gemini-related code. `GEMINI_API_KEY`/`GEMINI_MODEL` env vars are not needed
-
-### Caching Behavior
-- **Cache mechanism:** `@mlc-ai/web-llm` uses the browser's **Cache API** (via MLC's tvmjs runtime) to store model weights
-- **Cache location:** Browser's Cache Storage (visible in DevTools → Application → Cache Storage)
-- **Persistence:** Model cache persists across:
-  - Page reloads
-  - Browser tab closes/reopens
-  - Browser session restarts
-  - **User logout** (MJAI logout clears only Supabase auth state, not model cache)
-- **First visit:** Downloads full ~0.9GB model with progress indicator
-- **Subsequent visits:** Loads from cache (fast, no network download)
-- **Cache eviction:** Browser may evict cache under storage pressure (standard browser behavior, no MJAI control)
-
-### Logout Behavior
-- Logout clears Supabase auth localStorage keys (`sb-*`) only
-- Logout does **NOT** clear Cache API or IndexedDB entries used by WebLLM
-- After logout and re-login, model loads from cache without re-downloading
-
-### Diagnostics
-- UI shows current phase (Japanese labels), elapsed time, and download progress during AI inference
-- Console logs prefixed `[webllm]` with phase transitions and timing for debugging
-- Access `window.__webllmDiagnostics.getState()` or `.getLastRunSummary()` in DevTools
-- Timeout errors indicate which phase timed out (e.g., "モデルダウンロード中" vs "AI推論中")
-
-### Prompt Management
-
-AI correction prompts are stored in `frontend/src/lib/webllm/prompts/` for easy management and optimization:
+Same prompt is used across all providers (backend and WebLLM):
 
 ```
 frontend/src/lib/webllm/prompts/
-├── index.ts      # Re-exports all prompts (import from here)
-├── system.ts     # System prompt (core AI instructions, Chinese)
-├── fewShot.ts    # Minimal few-shot example showing JSON structure
-└── templates.ts  # Section headers used in prompt construction
+├── system.ts     # System prompt (Chinese, ultra-concise for small models)
+├── fewShot.ts    # Minimal few-shot example
+└── templates.ts  # Section headers
+
+backend/app/llm/prompts.py  # Python port of above
 ```
 
-**Editing prompts:**
-- Edit the `.ts` files directly — they export string constants
-- `system.ts`: Modify AI behavior, tone, output format requirements
-- `fewShot.ts`: Change the example to guide AI output structure
-- `templates.ts`: Adjust section headers (e.g., for localization)
+### Response Schema
 
-**SmolLM2 prompt optimization guidelines:**
-- Keep prompts **concise** — small models work better with shorter, direct instructions
-- Explicitly state **JSON-only output** requirement (禁止任何其他文字)
-- Use **minimal few-shot examples** — show structure, not lengthy sample texts
-- System prompt is in **Chinese** for consistency with output language requirement
-- Total prompt tokens should stay under ~500 to leave room for user input within 8K context
+All providers return the same JSON structure:
 
-**No backend deploy needed:** Prompt changes only require a frontend rebuild (`npm run build` or Vercel auto-deploy on push). The backend has no AI-related code.
+```json
+{
+  "suggestions": [
+    {"id": "1", "original": "指摘箇所", "reason": "修正理由"}
+  ],
+  "overallComment": "全体講評"
+}
+```
+
+### How to Get API Keys
+
+**Groq (primary, free tier available):**
+1. Go to [console.groq.com](https://console.groq.com)
+2. Sign up / log in
+3. Navigate to API Keys → Create API Key
+4. Copy key and set as `GROQ_API_KEY` in Vercel
+
+**Cloudflare Workers AI (fallback):**
+1. Log in to [dash.cloudflare.com](https://dash.cloudflare.com)
+2. Copy Account ID from Overview page → set as `CLOUDFLARE_ACCOUNT_ID`
+3. Go to My Profile → API Tokens → Create Token
+4. Use "Workers AI" template or custom with Workers AI Read permission
+5. Copy token and set as `CLOUDFLARE_API_TOKEN` in Vercel

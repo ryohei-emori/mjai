@@ -1197,13 +1197,13 @@ export default function TextCorrectionApp() {
                           >
                             {isProcessing ? (
                               <>
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                {webllmStatus.diagnostics?.phaseLabel || 
-                                  (webllmStatus.state === "loading" 
-                                    ? `${WEBLLM_MODEL_DISPLAY_NAME} 準備中...` 
-                                    : webllmStatus.state === "generating"
-                                    ? offlineMode ? `${WEBLLM_MODEL_DISPLAY_NAME} 分析中...` : "AI分析中..."
-                                    : "処理中...")}
+                                <Plus className="w-4 h-4 mr-2" />
+                                キューに追加
+                                {jobQueue.filter(j => j.status === 'queued').length > 0 && (
+                                  <Badge variant="secondary" className="ml-2 text-xs">
+                                    待機: {jobQueue.filter(j => j.status === 'queued').length}
+                                  </Badge>
+                                )}
                               </>
                             ) : offlineMode ? (
                               isEngineReady() ? (

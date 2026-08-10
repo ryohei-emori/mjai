@@ -173,7 +173,33 @@ export const proposalAPI = {
   }
 };
 
-// AI提案生成API (REMOVED)
-// Suggestion generation has been migrated to client-side WebLLM.
-// The backend /suggestions endpoint and suggestionsAPI have been removed.
-// See frontend/src/lib/webllm/ for the client-side implementation.
+// AI提案生成API
+// Primary: Cloud LLM (Groq/Cloudflare) via backend
+// Fallback: Client-side WebLLM (when API unavailable or offline mode)
+export type SuggestionsResponse = {
+  suggestions: Array<{
+    id: string;
+    original: string;
+    reason: string;
+  }>;
+  overallComment: string;
+};
+
+export type SuggestionsErrorResponse = {
+  error: string;
+  fallback_available: boolean;
+  message?: string;
+  groq_error?: string;
+  cf_error?: string;
+};
+
+export const suggestionsAPI = {
+  // Generate AI suggestions via backend (Groq/Cloudflare)
+  generate: async (originalText: string, targetText: string): Promise<SuggestionsResponse> => {
+    const response = await apiFetch('/suggestions', {
+      method: 'POST',
+      body: JSON.stringify({ originalText, targetText })
+    });
+    return response as SuggestionsResponse;
+  },
+};

@@ -259,9 +259,55 @@ async def get_session(session_id: str):
         }
     return {"error": "Session not found", "sessionId": session_id}
 
+# AI提案生成エンドポイント
+@router.post("/suggestions")
+async def generate_ai_suggestions(payload: dict = Body(...)):
+    """
+    Generate AI correction suggestions using cloud LLM providers.
+    Primary: Groq (fast), Fallback: Cloudflare Workers AI.
+    WebLLM remains available on frontend as offline fallback.
+    """
+    from .llm import generate_suggestions
+    from .llm.suggestions import SuggestionsError, NoProvidersConfiguredError
+    from fastapi.responses import JSONResponse
+    
+    original_text = payload.get("originalText", "")
+    target_text = payload.get("targetText", "")
+    
+    if not original_text or not target_text:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "originalText and targetText are required", "fallback_available": True}
+        )
+    
+    try:
+        result = await generate_suggestions(original_text, target_text)
+        return result
+    except NoProvidersConfiguredError as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": str(e),
+                "fallback_available": True,
+                "message": "LLM providers not configured. Use WebLLM offline mode."
+            }
+        )
+    except SuggestionsError as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": str(e),
+                "groq_error": e.groq_error,
+                "cf_error": e.cf_error,
+                "fallback_available": True,
+                "message": "All cloud providers failed. Try WebLLM offline mode."
+            }
+        )
+
+
 # ルーターをアプリに含める（/health を除く全ルートに get_current_user 依存関係が適用される）
-# NOTE: AI提案生成（旧 POST /suggestions）はクライアントサイドWebLLMに移行済み
-# backend/app/main.py からGemini関連コード・エンドポイントは完全に削除されました
+# AI提案生成: POST /suggestions でクラウドLLM (Groq/Cloudflare) を使用
+# WebLLMはフロントエンドでオフラインフォールバックとして残存
 # Vercelデプロイではフロントエンドから /api/* でアクセスされるため、両方のプレフィックスで登録
 app.include_router(router)
 app.include_router(router, prefix="/api")

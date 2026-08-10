@@ -42,7 +42,7 @@ Per the OpenSpec capability `architecture-documentation`, review and update this
 
 ## 1. Objective
 
-MJAI is a full-stack web application that assists Japanese/Chinese text correction. A reviewer submits original text and a target (corrected) text; a **client-side WebLLM model** generates ranked correction proposals with reasoning; the reviewer selects, edits, or overrides those proposals; the session, history, and proposals are persisted for audit.
+MJAI is a full-stack web application that assists Japanese/Chinese text correction. A reviewer submits original text and a target (corrected) text; **cloud LLM APIs (Groq primary, Cloudflare Workers AI fallback) or client-side WebLLM** generate ranked correction proposals with reasoning; the reviewer selects, edits, or overrides those proposals; the session, history, and proposals are persisted for audit.
 
 **As-built stack:** FastAPI backend, Next.js/React frontend, Supabase (Postgres for app data + Auth via Google OAuth → JWT) for persistence and access control, **Vercel hosting for both frontend and backend** (monorepo deployment).
 
@@ -81,8 +81,7 @@ Auth via Supabase Google OAuth is implemented in the current codebase (`backend/
 ### Non-goals (explicitly out of scope for the current design)
 
 - Multi-user / multi-tenant RBAC, orgs, or a user directory (auth is an email allow-list).
-- Server-side AI inference (AI suggestions are generated client-side via WebLLM).
-- A pluggable multi-provider LLM abstraction layer on the backend (AI is client-side only).
+- A pluggable multi-provider LLM abstraction layer (simple failover chain is sufficient for 2 providers).
 - Visual design system / brand-token documentation (see [`docs/UI-DESIGN.md`](./UI-DESIGN.md) for the visual-identity document).
 
 ## 4. Proposed Design (System Overview)
@@ -108,7 +107,7 @@ flowchart TB
     Backend -- "JWT verify + email allow-list" --> Supabase
 ```
 
-**Request path (happy case):** browser signs in via Supabase Google OAuth → frontend attaches `Authorization: Bearer <access_token>` on every API call to `/api/*` (same-origin) → backend serverless function verifies JWT (`SUPABASE_JWT_SECRET`, HS256) and checks `email` against `ALLOWED_USER_EMAIL(S)` → route reads/writes via Supabase Postgres (`asyncpg`) → AI suggestions are generated client-side via WebLLM (no server-side AI call).
+**Request path (happy case):** browser signs in via Supabase Google OAuth → frontend attaches `Authorization: Bearer <access_token>` on every API call to `/api/*` (same-origin) → backend serverless function verifies JWT (`SUPABASE_JWT_SECRET`, HS256) and checks `email` against `ALLOWED_USER_EMAIL(S)` → route reads/writes via Supabase Postgres (`asyncpg`) → AI suggestions are generated via `POST /api/suggestions` (Groq → Cloudflare failover) or client-side WebLLM (offline mode).
 
 ## 5. Detailed Design
 
@@ -122,7 +121,7 @@ flowchart TB
 | `auth.py` | FastAPI dependency `get_current_user`: Bearer JWT verify + email allow-list (`401` / `403`) |
 | `db_helper.py` | Postgres DAO: async Postgres (`asyncpg`, snake_case tables); camelCase API responses |
 
-There is **no** `backend/app/llm/` provider package — AI suggestions are generated entirely client-side via WebLLM.
+The `backend/app/llm/` module provides cloud-based AI suggestion generation (Groq primary + Cloudflare Workers AI failover). WebLLM remains on the frontend as an offline fallback option.
 
 #### Frontend (`frontend/src/`, Next.js 15 App Router, React 19, TypeScript)
 
@@ -174,7 +173,7 @@ All business routes hang off a FastAPI `APIRouter` with `Depends(get_current_use
 | `POST /proposals` | Create proposal (AI or custom) | same |
 | `GET /keepalive` | Supabase keep-alive endpoint for free-tier DB pause prevention | None |
 
-AI suggestions are generated client-side via WebLLM — no server-side AI endpoint.
+AI suggestions are generated via `POST /suggestions` (Groq → Cloudflare failover) or client-side WebLLM (offline mode toggle).
 
 ### 5.4 Frontend surface (within system design)
 
