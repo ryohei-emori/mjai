@@ -10,7 +10,7 @@
 
 **Goals:**
 - クライアント側並列ジョブキュー実装（バックエンド変更不要）
-- **APIモード**: 同時に複数リクエストを発行し、並列処理（上限: 3件）
+- **APIモード**: 同時に複数リクエストを発行し、並列処理（上限: 5件）
 - **WebLLMモード**: 逐次処理を維持（GPU/モデルリソース制約）
 - 既存UIパターン（shadcn/ui、Tailwind）の活用
 - 最小限の状態管理変更でキュー機能を追加
@@ -26,7 +26,7 @@
 ### 1. 並列/逐次処理モデル
 
 **選択**: モードに応じた処理モデル
-- **APIモード（オンライン）**: 並列処理、同時実行上限3件
+- **APIモード（オンライン）**: 並列処理、同時実行上限5件
 - **WebLLMモード（オフライン）**: 逐次処理、1件ずつ
 
 **理由**: 
@@ -60,7 +60,7 @@ type QueuedJob = {
 
 ```typescript
 // APIモード: 並列処理
-const MAX_CONCURRENT_API_JOBS = 3
+const MAX_CONCURRENT_API_JOBS = 5
 
 // queuedジョブのうち、processingが上限未満なら新しいジョブを開始
 const processingCount = jobQueue.filter(j => j.status === 'processing').length
@@ -104,7 +104,7 @@ jobsToStart.forEach(job => startJobProcessing(job.id))
 
 ## Risks / Trade-offs
 
-**[リスク] 並列リクエストによるAPI負荷** → 軽減: 同時実行上限（3件）を設定
+**[リスク] 並列リクエストによるAPI負荷** → 軽減: 同時実行上限（5件）を設定
 
 **[リスク] キューが大きくなった場合のメモリ使用** → 軽減: キューサイズ上限（10件）を設定、超過時は警告表示
 

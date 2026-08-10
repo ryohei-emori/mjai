@@ -79,7 +79,7 @@ type QueuedJob = {
   source?: 'api' | 'webllm'
 }
 
-const MAX_CONCURRENT_API_JOBS = 3
+const MAX_CONCURRENT_API_JOBS = 5
 const MAX_CONCURRENT_WEBLLM_JOBS = 1
 
 type Session = {
