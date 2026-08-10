@@ -59,9 +59,9 @@ Scaled up (3 sessions-batches/week, ~4.33 weeks/month, 52 weeks/year) — monthl
 
 ## Tech Stack
 
-**Backend:** Python · FastAPI · PostgreSQL
+**Backend:** Python · FastAPI · PostgreSQL (Supabase)
 **Frontend:** Next.js 15 · React 19 · TypeScript · Tailwind CSS · Radix UI · WebLLM (client-side)
-**Infra:** Vercel (frontend) · Render (backend) · Terraform (backend infra-as-code)
+**Infra:** Vercel (monorepo: frontend + backend serverless) · Supabase (DB + Auth)
 
 ## Getting Started
 
@@ -74,8 +74,8 @@ See `AGENTS.md` for environment variables, local/Docker run instructions, and de
 
 ## Deployment
 
-- **Frontend:** Deployed via Vercel git integration. Push to `main` triggers automatic production deployment; PRs get preview deployments.
-- **Backend:** Deployed to Render (managed outside Terraform). CI workflow verifies `/health` endpoint after infrastructure changes.
+- **Frontend + Backend:** Deployed via Vercel as a monorepo. Push to `main` triggers automatic production deployment; PRs get preview deployments.
+- **Database + Auth:** Supabase (Postgres + Google OAuth). Single project shared between local and production environments.
 
 ---
 

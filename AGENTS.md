@@ -88,7 +88,7 @@ Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commente
 - Tables use snake_case columns (`sessions`, `correction_histories`, `ai_proposals`); `backend/app/db_helper.py` maps to camelCase for API responses.
 - Supabase is used for both **Auth** (Google OAuth, JWT) and **app data persistence** — a unified platform.
 - RLS is enabled on all tables with permissive `USING (true)` policies. Tightening to per-user scope is deferred to a future change.
-- **Historical files**: `backend/db/app.db` and `backend/db/schema.sql` are retained for reference but are no longer used by the application. Local development requires a Postgres connection (local Docker or Supabase).
+- **Historical files**: `backend/db/app.db` is retained as historical data reference but is no longer used by the application. SQLite scripts and schema have been removed. Local development requires a Postgres connection (Supabase).
 - **Free tier note**: Supabase free-tier projects may pause after ~7 days of inactivity; first request after pause incurs a cold-start delay. An automated keep-alive workflow prevents this (see below).
 
 ## Supabase Keep-alive
@@ -140,7 +140,7 @@ GitHub repoには3つのEnvironmentが存在:
 **不要（削除可能）:**
 - `RENDER_API_KEY`, `RENDER_OWNER_ID` — Render廃止済み
 - `GEMINI_API_KEY`, `GEMINI_MODEL` — AI生成はクライアントサイドWebLLMに移行済み
-- `TF_API_TOKEN` — Terraform使用停止（terraform/は参照用に保持）
+- `TF_API_TOKEN` — Terraform削除済み（`terraform/`ディレクトリは削除されました）
 
 これらの古いシークレットはGitHub Settings → Secrets and variablesから手動で削除可能。
 
@@ -183,9 +183,7 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 - `NEXT_PUBLIC_API_URL` — empty or `/api` for same-origin monorepo deployment
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase browser client config
 
-**Render infrastructure is retired**: The Render Web Service `mjai` and `render_static_site.frontend` resource are no longer used. The `terraform/` directory may contain obsolete Render provider configuration.
-
-Running any `terraform` command against this directory affects **real cloud resources**. `terraform.tfstate`/`terraform.tfvars` are git-ignored; `terraform/tfplan` is currently committed to git — be aware a saved plan file may be present in history.
+**Render and Terraform infrastructure has been removed**: The Render Web Service and `terraform/` directory have been deleted. All deployment is now via Vercel git integration.
 
 ## Documentation habits
 
@@ -195,10 +193,9 @@ Running any `terraform` command against this directory affects **real cloud reso
 
 ## Never do
 
-- Never commit `conf/.env`, `backend/.env`, `frontend/.env`, or `terraform/terraform.tfvars` — all are git-ignored; only `conf/.env.example` and `terraform/terraform.tfvars.example` should carry (placeholder) values.
+- Never commit `conf/.env`, `backend/.env`, or `frontend/.env` — all are git-ignored; only `conf/.env.example` carries placeholder values.
 - Never assume changing a `NEXT_PUBLIC_*` var takes effect without rebuilding the frontend (`docker-compose build frontend` / `npm run build`).
-- Never run `terraform apply`/`destroy` casually — both act on live external services/data.
-- Never treat the README's docker-compose/ngrok Quick Start as verified-working without first confirming the referenced files exist.
+- Never treat the README's docker-compose Quick Start as verified-working without first confirming the referenced files exist.
 - Never make an infrastructure or architecture change (new deployment target, database/persistence backend swap, new or removed external service dependency, etc.) without reviewing and updating this file **and** `docs/SYSTEM-DESIGN.md` to match — that's exactly how README's old Quick Start section, documented in the Reality check above, went stale in the first place.
 ## AI Suggestion Generation
 

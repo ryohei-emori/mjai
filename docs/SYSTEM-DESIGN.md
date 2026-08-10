@@ -42,7 +42,7 @@ Per the OpenSpec capability `architecture-documentation`, review and update this
 
 ## 1. Objective
 
-MJAI is a full-stack web application that assists Japanese/Chinese text correction. A reviewer submits original text and a target (corrected) text; a server-side LLM (Google Gemini) generates ranked correction proposals with reasoning; the reviewer selects, edits, or overrides those proposals; the session, history, and proposals are persisted for audit.
+MJAI is a full-stack web application that assists Japanese/Chinese text correction. A reviewer submits original text and a target (corrected) text; a **client-side WebLLM model** generates ranked correction proposals with reasoning; the reviewer selects, edits, or overrides those proposals; the session, history, and proposals are persisted for audit.
 
 **As-built stack:** FastAPI backend, Next.js/React frontend, Supabase (Postgres for app data + Auth via Google OAuth → JWT) for persistence and access control, **Vercel hosting for both frontend and backend** (monorepo deployment).
 
@@ -73,7 +73,7 @@ Auth via Supabase Google OAuth is implemented in the current codebase (`backend/
 ### Goals (current system)
 
 - Support a correction **session** with full history and proposal tracking so prior work is not lost.
-- Generate ranked correction proposals via an LLM (Gemini today) to reduce reviewer drafting time.
+- Generate ranked correction proposals via client-side WebLLM to reduce reviewer drafting time.
 - Restrict API access to an **allow-listed** Google account email (single-tenant gate, not a multi-user product).
 - Persist sessions, histories, and proposals for later reconstruction (“full auditability”).
 - Expose a small authenticated JSON REST API consumed only by the Next.js frontend.
@@ -81,8 +81,8 @@ Auth via Supabase Google OAuth is implemented in the current codebase (`backend/
 ### Non-goals (explicitly out of scope for the current design)
 
 - Multi-user / multi-tenant RBAC, orgs, or a user directory (auth is an email allow-list).
-- Client-side / offline AI inference (suggestion generation is a synchronous server call to Gemini; WebLLM is planned, not shipped).
-- A pluggable multi-provider LLM abstraction layer (the Gemini call is inline in `main.py`; README’s `backend/app/llm/` claim is aspirational).
+- Server-side AI inference (AI suggestions are generated client-side via WebLLM).
+- A pluggable multi-provider LLM abstraction layer on the backend (AI is client-side only).
 - Visual design system / brand-token documentation (see [`docs/UI-DESIGN.md`](./UI-DESIGN.md) for the visual-identity document).
 
 ## 4. Proposed Design (System Overview)
@@ -118,11 +118,11 @@ flowchart TB
 
 | Module | Responsibility |
 |---|---|
-| `main.py` | App entry: CORS from env, `/health`, authenticated `APIRouter` for sessions/histories/proposals/suggestions; Gemini prompt + `generate_gemini_suggestions()` |
+| `main.py` | App entry: CORS from env, `/health`, `/keepalive`, authenticated `APIRouter` for sessions/histories/proposals |
 | `auth.py` | FastAPI dependency `get_current_user`: Bearer JWT verify + email allow-list (`401` / `403`) |
-| `db_helper.py` | Dual DAOs: async Postgres (`asyncpg`, snake_case tables) and sync SQLite (`sqlite3`, camelCase tables); path chosen per request via `USE_POSTGRESQL` |
+| `db_helper.py` | Postgres DAO: async Postgres (`asyncpg`, snake_case tables); camelCase API responses |
 
-There is **no** `backend/app/llm/` provider package and **no** `backend/app/models/` package today; Gemini integration lives in `main.py`.
+There is **no** `backend/app/llm/` provider package — AI suggestions are generated entirely client-side via WebLLM.
 
 #### Frontend (`frontend/src/`, Next.js 15 App Router, React 19, TypeScript)
 
@@ -154,7 +154,7 @@ Domain: `Session` → `CorrectionHistory` → `AIProposal`.
 
 Schema migrations: `backend/supabase/migrations/001_initial_schema.sql`, `002_add_session_status.sql`, `003_align_ai_proposals_schema.sql`.
 
-**Historical files**: `backend/db/app.db` and `backend/db/schema.sql` are retained for reference but no longer used by the application.
+**Historical files**: `backend/db/app.db` is retained for reference (contains historical data from SQLite era) but no longer used by the application. SQLite migration scripts have been removed.
 
 ### 5.3 APIs
 
@@ -167,14 +167,14 @@ All business routes hang off a FastAPI `APIRouter` with `Depends(get_current_use
 | `POST /sessions` | Create session | same |
 | `GET /sessions/{id}` | Get one session | same |
 | `PUT /sessions/{id}` | Update session fields (`name`, counts, open flag, timestamps) | same |
-| `DELETE /sessions/{id}` | **Postgres:** soft-archive (`status='archived'`). **SQLite:** hard-delete | same |
+| `DELETE /sessions/{id}` | Soft-archive session (`status='archived'`) | same |
 | `GET /sessions/{id}/histories` | List histories for a session | same |
 | `POST /histories` | Create history entry | same |
 | `GET /histories/{id}/proposals` | List proposals | same |
 | `POST /proposals` | Create proposal (AI or custom) | same |
-| `POST /suggestions` | Generate AI suggestions (mock by default; `engine=gemini` hits Gemini) | same |
+| `GET /keepalive` | Supabase keep-alive endpoint for free-tier DB pause prevention | None |
 
-Path selection (`USE_POSTGRESQL`) is **per request**, not only at process start.
+AI suggestions are generated client-side via WebLLM — no server-side AI endpoint.
 
 ### 5.4 Frontend surface (within system design)
 
@@ -184,10 +184,10 @@ The frontend is a static-exported Next.js app that: (1) gates the workspace on S
 
 | Piece | Reality |
 |---|---|
-| Backend | Pre-existing Render Web Service `mjai` (`srv-d2f031buibrs738hhe40`, `https://mjai.onrender.com`), **outside** Terraform. `backend/Dockerfile` → `uvicorn app.main:app` on `${PORT:-8000}`. |
-| Frontend | Terraform `render_static_site` (`terraform/main.tf`): `npm install && npm run build`, publish `out`. Matches `frontend/next.config.js` `output: 'export'`. `NEXT_PUBLIC_*` baked at build time. |
-| CI/CD | `.github/workflows/deploy.yml` on `main` (paths under `backend/**`, `frontend/**`, `terraform/**`) or manual dispatch: `terraform plan`/`apply` for frontend, then health checks. Separate manual `backend/.github/workflows/migrate-database.yml` for live SQLite→Postgres migration — not normal deploy. |
-| Local Docker / ngrok | README “Quick Start” references `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, etc. that **are not in the repo**; only `conf/.env` / `.env.example` exist. Treat as outdated docs. |
+| Backend | Vercel serverless function at `/api/*` via `api/index.py` (imports FastAPI app from `backend.app.main`). Local dev via `docker-compose.yml` at repo root. |
+| Frontend | Vercel Next.js deployment at `/`. Git integration auto-deploys on push to `main`. `NEXT_PUBLIC_*` baked at build time. |
+| CI/CD | `.github/workflows/ci.yml` runs tests on PR/push to `main`. `.github/workflows/supabase-keepalive.yml` pings DB every 3 days to prevent free-tier pause. Deployment is via Vercel git integration (not GitHub Actions). |
+| Local Docker | `docker-compose.yml` at repo root runs backend (`:8000`) and frontend (`:3000`) for local development. Uses `conf/.env` for configuration. |
 
 ## 6. Cross-Cutting Concerns
 
@@ -275,15 +275,15 @@ For MJAI's single-user, allow-listed model, the simpler shared-project architect
 ### 6.1 Security and privacy
 
 - **AuthN/Z:** Every non-`/health` route requires a valid Supabase JWT and allow-listed `email`. Frontend obtains the token via Google OAuth; `401` forces sign-out (`authEvents` bridge from `api.ts` into `AuthProvider`).
-- **Secrets:** `SUPABASE_JWT_SECRET`, `GEMINI_API_KEY`, `DATABASE_URL`, allow-list emails are backend/server or build-time config; never commit `conf/.env`. Anon Supabase keys are `NEXT_PUBLIC_*` by design (browser auth client).
+- **Secrets:** `SUPABASE_JWT_SECRET`, `DATABASE_URL`, allow-list emails are backend/server or build-time config; never commit `conf/.env`. Anon Supabase keys are `NEXT_PUBLIC_*` by design (browser auth client).
 - **Privacy:** Single-tenant tool; correction text is stored in the app DB. No dedicated privacy design doc exists; treat stored text as sensitive operational data.
-- **CORS:** `main.py` builds an allow-list from localhost/LAN plus optional ngrok URLs / regex for `*.ngrok*` / `*.onrender.com`. Same logic regardless of `ENVIRONMENT` today.
+- **CORS:** `main.py` builds an allow-list from localhost/LAN plus optional ngrok URLs / regex for `*.ngrok*` / `*.vercel.app`. Same logic regardless of `ENVIRONMENT` today.
 
 ### 6.2 Observability and failure modes
 
-- **Observability:** `/health` only for production signals. No structured logging, metrics, or tracing beyond ad hoc `print()` in `main.py`.
-- **DB failures:** When `USE_POSTGRESQL=true` (default), routes **re-raise** on Postgres errors — they do **not** fall back to SQLite despite some comments implying fallback. SQLite path runs only when `USE_POSTGRESQL` is explicitly `false`.
-- **Gemini failures:** Surface as `/suggestions` errors to the client; no durable queue or retry subsystem.
+- **Observability:** `/health` and `/keepalive` for production signals. No structured logging, metrics, or tracing beyond ad hoc `print()` in `main.py`.
+- **DB failures:** Routes re-raise on Postgres errors. Supabase free-tier pause is mitigated by `/keepalive` cron.
+- **AI failures:** WebLLM runs client-side — browser console shows errors. No server-side AI endpoint.
 - **Auth failures:** Invalid/expired JWT → `401`; valid JWT but non-allow-listed email → `403`.
 
 ### 6.3 Configuration
@@ -296,11 +296,9 @@ For MJAI's single-user, allow-listed model, the simpler shared-project architect
 
 Documented rather than idealized:
 
-1. **README “pluggable LLM interface”** — no `backend/app/llm/`; Gemini is inline in `main.py`.
-2. **`next.config.js` vs `frontend/Dockerfile`** — static export (`out`) is what Terraform/Render static site uses; Dockerfile builds a `standalone` Node server on 8080 (second, inconsistent strategy).
-3. **Backend ownership** — backend Render service outside Terraform; `docs/deployment-plan.md` describing both services in Terraform is historical.
-4. **Deploy pipeline** — per `docs/github-secrets.md`, missing `RENDER_OWNER_ID` causes `terraform plan` to fail; end-to-end deploy is not currently succeeding as configured.
-5. **Session delete semantics diverge by DB path** — Postgres archives; SQLite hard-deletes (see §5.3).
+1. **`backend/Dockerfile`** — retained for local `docker-compose.yml` development; production uses Vercel serverless.
+2. **Historical SQLite data** — `backend/db/app.db` retained as migration source reference; application uses Postgres only.
+3. **Session soft-delete** — Postgres archives via `status='archived'` rather than hard-delete.
 
 ## 7. Alternatives Considered
 
@@ -308,9 +306,8 @@ This is primarily an as-built record; most historical choices were not re-litiga
 
 | Alternative | Trade-off vs as-built |
 |---|---|
-| **Single Postgres-only DAO** | Simpler mental model; requires finishing migration and dropping SQLite path / checked-in `app.db`. Dual path kept for migration risk. |
-| **Provider-abstracted LLM (`backend/app/llm/`)** | Cleaner testing/swaps; more indirection. Current code inlines Gemini for speed of delivery; README still describes the abstraction as if present. |
-| **Client-side WebLLM** | Removes server API key and latency to Gemini; adds model download, WebGPU/WASM constraints, and larger frontend complexity. **Implemented** as the current production path. |
+| **Server-side LLM (Gemini)** | Lower client requirements; adds API key management, server costs, latency. **Replaced** by client-side WebLLM for simpler ops and no API key. |
+| **Client-side WebLLM** | Removes server API key and latency; adds model download, WebGPU/WASM constraints, and larger frontend complexity. **Implemented** as the current production path. |
 | **Backend on Render** | Always-on web service with traditional container deployment. **Replaced** by Vercel serverless for unified hosting and simpler operations. |
 | **Hard-delete sessions always** | Simpler; loses recoverability. Postgres path chose soft-archive via `status`. |
 
