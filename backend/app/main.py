@@ -113,15 +113,18 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# ヘルスチェックエンドポイント
+# ヘルスチェックエンドポイント (Vercelでは /api/health でアクセスされる)
 @app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """コンテナのヘルスチェック用エンドポイント"""
     return {"status": "healthy", "message": "Application is running"}
 
 
 # Supabase Keep-alive エンドポイント（認証不要）
+# Vercelでは /api/keepalive でアクセスされる
 @app.get("/keepalive")
+@app.get("/api/keepalive")
 async def keepalive():
     """
     Supabase無料プランのDB一時停止を防ぐためのkeep-aliveエンドポイント。
@@ -259,4 +262,6 @@ async def get_session(session_id: str):
 # ルーターをアプリに含める（/health を除く全ルートに get_current_user 依存関係が適用される）
 # NOTE: AI提案生成（旧 POST /suggestions）はクライアントサイドWebLLMに移行済み
 # backend/app/main.py からGemini関連コード・エンドポイントは完全に削除されました
+# Vercelデプロイではフロントエンドから /api/* でアクセスされるため、両方のプレフィックスで登録
 app.include_router(router)
+app.include_router(router, prefix="/api")
