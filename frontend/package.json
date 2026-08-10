@@ -35,7 +35,6 @@
     "typescript": "^5"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.60",
     "@babel/preset-env": "^7.28.0",
     "@babel/preset-react": "^7.27.1",
     "@babel/preset-typescript": "^7.27.1",
@@ -45,6 +44,7 @@
     "@types/jest": "^30.0.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@webgpu/types": "^0.1.71",
     "babel-jest": "^30.0.4",
     "babel-loader": "^10.0.0",
     "eslint": "^9",

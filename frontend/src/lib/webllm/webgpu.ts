@@ -1,5 +1,6 @@
 /**
  * WebGPU feature detection utilities
+ * Types provided by @webgpu/types package
  */
 
 export type WebGPUStatus = {

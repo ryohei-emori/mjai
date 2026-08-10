@@ -45,6 +45,20 @@ const apiFetch = async (url: string, options?: RequestInit) => {
       const errorText = await response.text();
       console.error('API Error:', response.status, errorText);
       if (response.status === 401) {
+        // 401 の詳細をログ出力（デバッグ用）
+        console.error('[api] 401 Unauthorized - details:', {
+          url: fullUrl,
+          hadAuthHeader: !!authHeaders.Authorization,
+          errorText,
+        });
+        
+        // "Authentication is not configured" はバックエンドの環境変数ミスを示す
+        // この場合はサインアウトせずエラーを投げるのみ
+        if (errorText.includes('Authentication is not configured')) {
+          console.error('[api] Backend SUPABASE_JWT_SECRET is not configured on Vercel');
+          throw new Error('サーバー認証設定エラー: バックエンドの環境変数を確認してください');
+        }
+        
         // トークンが失効/不正: ログイン画面に戻す
         notifyUnauthorized();
       }

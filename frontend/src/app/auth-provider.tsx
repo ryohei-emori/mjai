@@ -1,7 +1,7 @@
 "use client"
 
-import { createContext, useContext, useEffect, useState, useCallback } from "react"
-import type { Session, User } from "@supabase/supabase-js"
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react"
+import type { Session, User, AuthChangeEvent } from "@supabase/supabase-js"
 import { supabase } from "@/lib/supabaseClient"
 import { registerUnauthorizedHandler } from "@/lib/authEvents"
 
@@ -32,12 +32,14 @@ function detectOAuthCallback(): boolean {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  // セッションが確立済みかどうかを追跡（API 401 処理用）
+  const sessionEstablishedRef = useRef(false)
 
   useEffect(() => {
     let isMounted = true
     let fallbackTimeoutId: ReturnType<typeof setTimeout> | null = null
 
-    // OAuth コールバック中かどうかを判定
+    // OAuth コールバック中かどうかを判定（useEffect 内で1回だけ評価）
     const isOAuthCallback = detectOAuthCallback()
 
     if (isOAuthCallback) {
@@ -52,6 +54,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         supabase.auth.getSession().then(({ data }) => {
           if (!isMounted) return
           setSession(data.session)
+          if (data.session) {
+            sessionEstablishedRef.current = true
+          }
           setIsLoading(false)
         })
       }, 5000)
@@ -60,19 +65,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       supabase.auth.getSession().then(({ data }) => {
         if (!isMounted) return
         setSession(data.session)
+        if (data.session) {
+          sessionEstablishedRef.current = true
+        }
         setIsLoading(false)
       })
     }
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, newSession) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, newSession) => {
       if (!isMounted) return
-      console.log("[auth] Auth state change:", event)
+      console.log("[auth] Auth state change:", event, newSession ? "with session" : "no session")
+
+      // OAuth コールバック時の INITIAL_SESSION イベントで null セッションが来た場合は無視
+      // Supabase はハッシュトークンをパースする前に INITIAL_SESSION を null で発火する
+      if (isOAuthCallback && event === "INITIAL_SESSION" && !newSession) {
+        console.log("[auth] Ignoring INITIAL_SESSION with null during OAuth callback")
+        return
+      }
+
       // OAuth コールバックのタイムアウトをクリア
       if (fallbackTimeoutId) {
         clearTimeout(fallbackTimeoutId)
         fallbackTimeoutId = null
       }
+
       setSession(newSession)
+      if (newSession) {
+        sessionEstablishedRef.current = true
+      }
       setIsLoading(false)
     })
 
@@ -100,7 +120,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   // バックエンドが401を返した場合（トークン失効・不正）にログイン画面へ戻す
+  // ただし、セッションが一度も確立されていない場合（OAuth フロー中）は即座にサインアウトしない
   const handleUnauthenticated = useCallback(() => {
+    console.log("[auth] handleUnauthenticated called, sessionEstablished:", sessionEstablishedRef.current)
+    
+    // セッションが確立されていない場合は、まだOAuthフロー中の可能性があるため
+    // 即座にサインアウトせず、現在のセッション状態を確認
+    if (!sessionEstablishedRef.current) {
+      console.log("[auth] Session not yet established, checking current session before sign out...")
+      supabase.auth.getSession().then(({ data }) => {
+        if (data.session) {
+          // セッションがある場合は、トークンが有効かもしれないのでサインアウトしない
+          console.log("[auth] Active session found, not signing out")
+          setSession(data.session)
+          sessionEstablishedRef.current = true
+        } else {
+          // セッションがない場合のみサインアウト
+          console.log("[auth] No session found, clearing state")
+          setSession(null)
+        }
+      })
+      return
+    }
+    
+    // セッションが確立済みの場合は、401 はトークン失効を意味するのでサインアウト
+    console.log("[auth] Session was established, signing out due to 401")
     setSession(null)
     supabase.auth.signOut()
   }, [])
