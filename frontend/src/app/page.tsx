@@ -225,6 +225,9 @@ export default function TextCorrectionApp() {
   const [confirmingHistoryIndex, setConfirmingHistoryIndex] = useState<number | null>(null)
   const { toast } = useToast()
 
+  // Derived state - must be declared before any hooks that reference it
+  const currentSession = sessions.find((s) => s.id === currentSessionId)
+
   // Check WebGPU support on mount
   useEffect(() => {
     const check = checkWebGPUSupport()
@@ -417,6 +420,48 @@ export default function TextCorrectionApp() {
     updateCurrentSession({ targetText: "" })
   }, [currentSession, addJobAndProcess])
 
+  // セッション詳細をオンデマンドで取得
+  const loadSessionDetails = useCallback(async (sessionId: string) => {
+    try {
+      console.log("Loading session details for:", sessionId)
+      const historiesData = await historyAPI.getHistories(sessionId)
+      console.log("Histories for session", sessionId, ":", historiesData)
+
+      const savedData: SavedData[] = []
+      for (const history of historiesData) {
+        const proposalsData: ProposalAPIResponse[] = await proposalAPI.getProposals(history.historyId)
+        const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal) => ({
+          id: proposal.proposalId,
+          original: proposal.originalAfterText,
+          reason: proposal.originalReason || "",
+          selected: proposal.isSelected === 1,
+          selectedOrder: proposal.selectedOrder,
+          userModifiedReason: proposal.modifiedReason,
+          isCustom: proposal.isCustom === 1,
+        }))
+
+        savedData.push({
+          originalText: history.originalText,
+          instructionPrompt: history.instructionPrompt,
+          targetText: history.targetText,
+          aiSuggestions,
+          selectedCorrections: aiSuggestions.filter((s) => s.selected),
+          overallComment: history.combinedComment,
+          combinedComment: history.combinedComment,
+          timestamp: new Date(history.timestamp),
+        })
+      }
+
+      setSessions((prevSessions) =>
+        prevSessions.map((s) =>
+          s.id === sessionId ? { ...s, savedData } : s
+        ),
+      )
+    } catch (error) {
+      console.error("Error loading session details:", error)
+    }
+  }, [])
+
   // セッション切り替えハンドラー - 処理中ジョブがある場合は確認
   const handleSessionSwitch = useCallback((sessionId: string) => {
     const hasActiveJobs = jobQueue.some(j => j.status === 'queued' || j.status === 'processing')
@@ -496,8 +541,6 @@ export default function TextCorrectionApp() {
   const mockOverallComment =
     "译文整体的流畅性和对原意翻译处理和展现比较不错，可以再看一下以上几点，注意积累一下ようがない和担任的含义，加油～"
 
-  const currentSession = sessions.find((s) => s.id === currentSessionId)
-
   // セッション一覧をAPIから取得
   const loadSessions = useCallback(async () => {
     try {
@@ -523,48 +566,6 @@ export default function TextCorrectionApp() {
       console.error("Error loading sessions:", error)
     }
   }, [])
-
-  // セッション詳細をオンデマンドで取得
-  const loadSessionDetails = async (sessionId: string) => {
-    try {
-      console.log("Loading session details for:", sessionId)
-      const historiesData = await historyAPI.getHistories(sessionId)
-      console.log("Histories for session", sessionId, ":", historiesData)
-
-      const savedData: SavedData[] = []
-      for (const history of historiesData) {
-        const proposalsData: ProposalAPIResponse[] = await proposalAPI.getProposals(history.historyId)
-        const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal) => ({
-          id: proposal.proposalId,
-          original: proposal.originalAfterText,
-          reason: proposal.originalReason || "",
-          selected: proposal.isSelected === 1,
-          selectedOrder: proposal.selectedOrder,
-          userModifiedReason: proposal.modifiedReason,
-          isCustom: proposal.isCustom === 1,
-        }))
-
-        savedData.push({
-          originalText: history.originalText,
-          instructionPrompt: history.instructionPrompt,
-          targetText: history.targetText,
-          aiSuggestions,
-          selectedCorrections: aiSuggestions.filter((s) => s.selected),
-          overallComment: history.combinedComment,
-          combinedComment: history.combinedComment,
-          timestamp: new Date(history.timestamp),
-        })
-      }
-
-      setSessions((prevSessions) =>
-        prevSessions.map((s) =>
-          s.id === sessionId ? { ...s, savedData } : s
-        ),
-      )
-    } catch (error) {
-      console.error("Error loading session details:", error)
-    }
-  }
 
   // セッション作成をAPIに保存
   const createNewSession = async () => {
