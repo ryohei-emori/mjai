@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useCallback } from "react"
+import { useEffect, useCallback, useRef } from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -27,7 +27,7 @@ import {
   LogOut,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { sessionAPI, historyAPI, proposalAPI } from "./api"
+import { sessionAPI, historyAPI, proposalAPI, suggestionsAPI } from "./api"
 import { useAuth } from "./auth-provider"
 import { LoginScreen } from "./login-screen"
 import {
@@ -65,6 +65,17 @@ type SavedData = {
   overallComment: string
   combinedComment: string
   timestamp: Date
+  confirmed?: boolean
+}
+
+type QueuedJob = {
+  id: string
+  targetText: string
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  result?: SavedData
+  error?: string
+  queuedAt: Date
+  completedAt?: Date
 }
 
 type Session = {
@@ -205,6 +216,10 @@ export default function TextCorrectionApp() {
   const [webllmStatus, setWebllmStatus] = useState<EngineStatus>({ state: "idle" })
   const [webgpuSupported, setWebgpuSupported] = useState<boolean | null>(null)
   const [webgpuUnsupportedReason, setWebgpuUnsupportedReason] = useState<string | null>(null)
+  const [offlineMode, setOfflineMode] = useState(false)
+  const [lastSuggestionSource, setLastSuggestionSource] = useState<"api" | "webllm" | null>(null)
+  const [jobQueue, setJobQueue] = useState<QueuedJob[]>([])
+  const [confirmingHistoryIndex, setConfirmingHistoryIndex] = useState<number | null>(null)
   const { toast } = useToast()
 
   // Check WebGPU support on mount
@@ -238,6 +253,110 @@ export default function TextCorrectionApp() {
 
     return () => clearInterval(intervalId)
   }, [isProcessing, webllmStatus.state])
+
+  // ジョブをキューに追加する関数
+  const addToQueue = useCallback((targetText: string) => {
+    const MAX_QUEUE_SIZE = 10
+    const currentQueueSize = jobQueue.filter(j => j.status === 'queued' || j.status === 'processing').length
+    
+    if (currentQueueSize >= MAX_QUEUE_SIZE) {
+      toast({
+        title: "キュー上限",
+        description: `キューの上限（${MAX_QUEUE_SIZE}件）に達しています。処理完了後に追加してください。`,
+        variant: "destructive",
+      })
+      return false
+    }
+
+    const newJob: QueuedJob = {
+      id: `job-${Date.now()}`,
+      targetText,
+      status: 'queued',
+      queuedAt: new Date(),
+    }
+    
+    setJobQueue(prev => [...prev, newJob])
+    
+    const queuedCount = currentQueueSize + 1
+    toast({
+      title: "キューに追加",
+      description: `ジョブをキューに追加しました（待機中: ${queuedCount}件）`,
+    })
+    
+    return true
+  }, [jobQueue, toast])
+
+  // キュー消化ループ - queuedジョブをprocessingに移行して処理
+  useEffect(() => {
+    const processNextJob = async () => {
+      // 処理中の場合は何もしない
+      if (isProcessing) return
+      
+      // 処理中のジョブがあれば何もしない
+      const processingJob = jobQueue.find(j => j.status === 'processing')
+      if (processingJob) return
+
+      // 次のqueuedジョブを取得
+      const nextJob = jobQueue.find(j => j.status === 'queued')
+      if (!nextJob || !currentSession) return
+
+      // ジョブをprocessingに更新
+      setJobQueue(prev => prev.map(j => 
+        j.id === nextJob.id ? { ...j, status: 'processing' as const } : j
+      ))
+
+      // セッションのターゲットテキストを更新
+      updateCurrentSession({ targetText: nextJob.targetText })
+
+      // 処理中の通知
+      const queuedCount = jobQueue.filter(j => j.status === 'queued').length - 1
+      toast({
+        title: "処理中",
+        description: queuedCount > 0 
+          ? `AI添削を実行中...（残り: ${queuedCount}件）`
+          : "AI添削を実行中...",
+      })
+    }
+
+    processNextJob()
+  }, [jobQueue, currentSession, isProcessing, toast])
+
+  // ジョブ処理完了時のハンドラー
+  const completeCurrentJob = useCallback((success: boolean, error?: string) => {
+    const processingJob = jobQueue.find(j => j.status === 'processing')
+    if (!processingJob) return
+
+    setJobQueue(prev => prev.map(j => 
+      j.id === processingJob.id 
+        ? { 
+            ...j, 
+            status: success ? 'completed' as const : 'failed' as const,
+            completedAt: new Date(),
+            error: error,
+          } 
+        : j
+    ))
+
+    if (success) {
+      toast({
+        title: "完了",
+        description: "AI添削が完了しました",
+      })
+    }
+  }, [jobQueue, toast])
+
+  // ボタンクリックハンドラー - 処理中ならキューに追加、そうでなければ直接実行
+  const handleGenerateClick = useCallback(() => {
+    if (!currentSession?.targetText.trim()) return
+
+    if (isProcessing) {
+      // 処理中の場合はキューに追加
+      addToQueue(currentSession.targetText)
+      // テキストエリアをクリアして次の入力を待つ
+      updateCurrentSession({ targetText: "" })
+    }
+    // 処理中でない場合は、ボタンのonClickでgenerateAISuggestionsが呼ばれる
+  }, [currentSession, isProcessing, addToQueue])
 
   const mockSuggestions: CorrectionSuggestion[] = [
     {
@@ -402,21 +521,12 @@ export default function TextCorrectionApp() {
     )
   }
 
-  // AI提案生成をWebLLMで実行（既存の選択状態を保持）
+  // AI提案生成: API優先、WebLLMフォールバック（既存の選択状態を保持）
   const generateAISuggestions = async () => {
     if (!currentSession?.targetText.trim()) return
 
-    // Check WebGPU support first
-    if (!webgpuSupported) {
-      toast({
-        title: "WebGPU非対応",
-        description: webgpuUnsupportedReason || "このブラウザではAI提案機能を利用できません",
-        variant: "destructive",
-      })
-      return
-    }
-
     setIsProcessing(true)
+    setLastSuggestionSource(null)
 
     // 既存の選択状態とカスタム修正を保存
     const existingSelections = new Map()
@@ -460,18 +570,8 @@ export default function TextCorrectionApp() {
       return
     }
 
-    try {
-      // Use client-side WebLLM for suggestion generation
-      const data = await generateWebLLMSuggestions(
-        {
-          originalText: currentSession.originalText,
-          targetText: currentSession.targetText,
-          instructionPrompt: "CCTalkからの添削指示",
-        },
-        (status) => setWebllmStatus(status)
-      )
-
-      // 既存の選択状態を復元
+    // Helper function to apply suggestions
+    const applySuggestions = (data: { suggestions: Array<{ id: string; original: string; reason: string }>; overallComment: string }) => {
       const restoredSuggestions = data.suggestions.map((s) => {
         const existing = existingSelections.get(s.original)
         return existing
@@ -479,7 +579,6 @@ export default function TextCorrectionApp() {
           : { ...s, selected: false, selectedOrder: undefined }
       })
 
-      // カスタム修正を追加
       const allSuggestions = [...restoredSuggestions, ...existingCustomCorrections]
 
       updateCurrentSession({
@@ -488,30 +587,109 @@ export default function TextCorrectionApp() {
       })
       setShowCustomForm(true)
 
-      // 選択カウンターを復元
       const selectedCount = allSuggestions.filter((s) => s.selected).length
       setSelectionCounter(selectedCount)
-    } catch (error) {
-      let errorMessage = "AI提案の生成に失敗しました"
-      
-      if (error instanceof WebGPUUnsupportedError) {
-        errorMessage = error.message
-        setWebgpuSupported(false)
-        setWebgpuUnsupportedReason(error.message)
-      } else if (error instanceof TimeoutError) {
-        errorMessage = error.message
-      } else if (error instanceof ModelLoadError) {
-        errorMessage = `モデルの読み込みに失敗しました: ${error.message}`
-      } else if (error instanceof InferenceError) {
-        errorMessage = `推論に失敗しました: ${error.message}`
+    }
+
+    // オフラインモードの場合はWebLLMを直接使用
+    if (offlineMode) {
+      if (!webgpuSupported) {
+        toast({
+          title: "WebGPU非対応",
+          description: webgpuUnsupportedReason || "このブラウザではオフラインモードを利用できません",
+          variant: "destructive",
+        })
+        setIsProcessing(false)
+        return
       }
-      
-      toast({
-        title: "エラー",
-        description: errorMessage,
-        variant: "destructive",
-      })
+
+      try {
+        const data = await generateWebLLMSuggestions(
+          {
+            originalText: currentSession.originalText,
+            targetText: currentSession.targetText,
+            instructionPrompt: "CCTalkからの添削指示",
+          },
+          (status) => setWebllmStatus(status)
+        )
+        applySuggestions(data)
+        setLastSuggestionSource("webllm")
+      } catch (error) {
+        let errorMessage = "AI提案の生成に失敗しました"
+        if (error instanceof WebGPUUnsupportedError) {
+          errorMessage = error.message
+          setWebgpuSupported(false)
+          setWebgpuUnsupportedReason(error.message)
+        } else if (error instanceof TimeoutError) {
+          errorMessage = error.message
+        } else if (error instanceof ModelLoadError) {
+          errorMessage = `モデルの読み込みに失敗しました: ${error.message}`
+        } else if (error instanceof InferenceError) {
+          errorMessage = `推論に失敗しました: ${error.message}`
+        }
+        toast({ title: "エラー", description: errorMessage, variant: "destructive" })
+        setWebllmStatus({ state: "idle" })
+      } finally {
+        setIsProcessing(false)
+      }
+      return
+    }
+
+    // API優先モード: まずAPIを試し、失敗したらWebLLMにフォールバック
+    try {
+      setWebllmStatus({ state: "generating", progress: 0, text: "クラウドAPI接続中..." })
+      const data = await suggestionsAPI.generate(currentSession.originalText, currentSession.targetText)
+      applySuggestions(data)
+      setLastSuggestionSource("api")
       setWebllmStatus({ state: "idle" })
+    } catch (apiError) {
+      console.warn("[suggestions] API failed, falling back to WebLLM:", apiError)
+      
+      // WebGPUがサポートされていない場合はエラーを表示して終了
+      if (!webgpuSupported) {
+        toast({
+          title: "API接続エラー",
+          description: "クラウドAPIに接続できませんでした。WebGPUも非対応のため、AI提案機能を利用できません。",
+          variant: "destructive",
+        })
+        setWebllmStatus({ state: "idle" })
+        setIsProcessing(false)
+        return
+      }
+
+      // WebLLMにフォールバック
+      toast({
+        title: "オフラインモードに切り替え",
+        description: "クラウドAPIに接続できませんでした。ローカルAIモデルを使用します。",
+      })
+
+      try {
+        const data = await generateWebLLMSuggestions(
+          {
+            originalText: currentSession.originalText,
+            targetText: currentSession.targetText,
+            instructionPrompt: "CCTalkからの添削指示",
+          },
+          (status) => setWebllmStatus(status)
+        )
+        applySuggestions(data)
+        setLastSuggestionSource("webllm")
+      } catch (webllmError) {
+        let errorMessage = "AI提案の生成に失敗しました"
+        if (webllmError instanceof WebGPUUnsupportedError) {
+          errorMessage = webllmError.message
+          setWebgpuSupported(false)
+          setWebgpuUnsupportedReason(webllmError.message)
+        } else if (webllmError instanceof TimeoutError) {
+          errorMessage = webllmError.message
+        } else if (webllmError instanceof ModelLoadError) {
+          errorMessage = `モデルの読み込みに失敗しました: ${(webllmError as Error).message}`
+        } else if (webllmError instanceof InferenceError) {
+          errorMessage = `推論に失敗しました: ${(webllmError as Error).message}`
+        }
+        toast({ title: "エラー", description: errorMessage, variant: "destructive" })
+        setWebllmStatus({ state: "idle" })
+      }
     } finally {
       setIsProcessing(false)
     }
@@ -852,7 +1030,7 @@ export default function TextCorrectionApp() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="h-screen flex flex-col bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* Mobile Sidebar */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetTrigger asChild>
@@ -868,7 +1046,7 @@ export default function TextCorrectionApp() {
         </SheetContent>
       </Sheet>
 
-      <div className="flex h-screen">
+      <div className="flex flex-1 min-h-0">
         {/* Desktop collapsed sidebar menu button */}
         {!desktopSidebarOpen && (
           <Button
@@ -881,16 +1059,16 @@ export default function TextCorrectionApp() {
           </Button>
         )}
 
-        {/* Desktop Sidebar */}
+        {/* Desktop Sidebar - Fixed */}
         {desktopSidebarOpen && (
-          <div className="hidden lg:block w-80 bg-white border-r shadow-sm transition-all duration-300">
+          <div className="hidden lg:flex lg:flex-col w-80 h-full bg-white border-r shadow-sm flex-shrink-0">
             <SidebarHeader isDesktop={true} />
             <SidebarContent />
           </div>
         )}
 
-        {/* Main Content */}
-        <div className="flex-1 overflow-auto relative">
+        {/* Main Content - Scrollable */}
+        <div className="flex-1 overflow-y-auto relative">
           {/* Global Logout Button - Top Right */}
           <Button
             variant="outline"
@@ -909,18 +1087,20 @@ export default function TextCorrectionApp() {
               </div>
 
               {!currentSession ? (
-                <Card className="max-w-md mx-auto">
-                  <CardHeader className="text-center">
-                    <FileText className="w-12 h-12 mx-auto mb-4 text-blue-600" />
-                    <CardTitle>セッションを開始</CardTitle>
-                    <CardDescription>新しいセッションを作成して添削を開始しましょう</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Button onClick={createNewSession} className="w-full" size="lg">
-                      新しいセッション作成
-                    </Button>
-                  </CardContent>
-                </Card>
+                <div className="flex items-center justify-center min-h-[calc(100vh-8rem)]">
+                  <Card className="max-w-md w-full mx-4">
+                    <CardHeader className="text-center">
+                      <FileText className="w-12 h-12 mx-auto mb-4 text-blue-600" />
+                      <CardTitle>セッションを開始</CardTitle>
+                      <CardDescription>新しいセッションを作成して添削を開始しましょう</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Button onClick={createNewSession} className="w-full" size="lg">
+                        新しいセッション作成
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </div>
               ) : (
                 <div className="space-y-6">
                   {/* Session Header */}
@@ -967,12 +1147,32 @@ export default function TextCorrectionApp() {
                             onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
                             className="min-h-[250px] text-base leading-relaxed"
                           />
+                          {/* Offline mode toggle */}
+                          <div className="flex items-center justify-between p-3 bg-gray-50 border rounded-lg">
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                id="offline-mode"
+                                checked={offlineMode}
+                                onCheckedChange={(checked) => setOfflineMode(checked === true)}
+                                disabled={webgpuSupported === false}
+                              />
+                              <Label htmlFor="offline-mode" className="text-sm cursor-pointer">
+                                オフラインモード（WebLLM）
+                              </Label>
+                            </div>
+                            {lastSuggestionSource && (
+                              <Badge variant={lastSuggestionSource === "api" ? "default" : "secondary"} className="text-xs">
+                                {lastSuggestionSource === "api" ? "クラウドAPI" : "ローカルAI"}
+                              </Badge>
+                            )}
+                          </div>
+                          
                           {/* WebGPU unsupported message */}
                           {webgpuSupported === false && (
                             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
-                              <p className="font-medium">AI提案機能を利用できません</p>
+                              <p className="font-medium">オフラインモード利用不可</p>
                               <p className="text-xs mt-1">{webgpuUnsupportedReason}</p>
-                              <p className="text-xs mt-1">手動でカスタム修正を追加してください。</p>
+                              <p className="text-xs mt-1">クラウドAPIが利用できない場合、手動でカスタム修正を追加してください。</p>
                             </div>
                           )}
                           
@@ -985,8 +1185,14 @@ export default function TextCorrectionApp() {
                           )}
                           
                           <Button
-                            onClick={generateAISuggestions}
-                            disabled={!currentSession.targetText.trim() || isProcessing || webgpuSupported === false}
+                            onClick={() => {
+                              if (isProcessing) {
+                                handleGenerateClick()
+                              } else {
+                                generateAISuggestions()
+                              }
+                            }}
+                            disabled={!currentSession.targetText.trim() || (offlineMode && webgpuSupported === false)}
                             className="w-full"
                           >
                             {isProcessing ? (
@@ -996,18 +1202,25 @@ export default function TextCorrectionApp() {
                                   (webllmStatus.state === "loading" 
                                     ? `${WEBLLM_MODEL_DISPLAY_NAME} 準備中...` 
                                     : webllmStatus.state === "generating"
-                                    ? `${WEBLLM_MODEL_DISPLAY_NAME} 分析中...`
+                                    ? offlineMode ? `${WEBLLM_MODEL_DISPLAY_NAME} 分析中...` : "AI分析中..."
                                     : "処理中...")}
                               </>
-                            ) : isEngineReady() ? (
-                              <>
-                                <Bot className="w-4 h-4 mr-2" />
-                                AI提案を生成
-                              </>
+                            ) : offlineMode ? (
+                              isEngineReady() ? (
+                                <>
+                                  <Bot className="w-4 h-4 mr-2" />
+                                  AI提案を生成（オフライン）
+                                </>
+                              ) : (
+                                <>
+                                  <Bot className="w-4 h-4 mr-2" />
+                                  AI提案を生成（初回は{WEBLLM_MODEL_DISPLAY_NAME}をDL）
+                                </>
+                              )
                             ) : (
                               <>
                                 <Bot className="w-4 h-4 mr-2" />
-                                AI提案を生成（初回は{WEBLLM_MODEL_DISPLAY_NAME}をDL）
+                                AI提案を生成
                               </>
                             )}
                           </Button>
