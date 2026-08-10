@@ -136,6 +136,7 @@ export class DiagnosticsTracker {
   private lastError: string | null = null;
   private timeoutPhase: InferencePhase | null = null;
   private phaseHistory: PhaseTimingRecord[] = [];
+  private lastRawOutput: string | null = null;
 
   /**
    * Start a new inference run (resets all state)
@@ -284,6 +285,20 @@ export class DiagnosticsTracker {
   }
 
   /**
+   * Store the last raw output for debugging
+   */
+  setLastRawOutput(output: string): void {
+    this.lastRawOutput = output;
+  }
+
+  /**
+   * Get the last raw model output (for debugging)
+   */
+  getLastRawOutput(): string | null {
+    return this.lastRawOutput;
+  }
+
+  /**
    * Get last run diagnostics (for DevTools inspection)
    */
   getLastRunSummary(): {
@@ -291,6 +306,7 @@ export class DiagnosticsTracker {
     totalMs: number;
     error: string | null;
     timeoutPhase: string | null;
+    lastRawOutput: string | null;
   } {
     const totalMs = this.phaseHistory.reduce((sum, r) => sum + (r.durationMs || 0), 0);
     return {
@@ -300,6 +316,7 @@ export class DiagnosticsTracker {
       totalMs,
       error: this.lastError,
       timeoutPhase: this.timeoutPhase,
+      lastRawOutput: this.lastRawOutput,
     };
   }
 

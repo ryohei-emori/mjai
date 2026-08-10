@@ -277,11 +277,20 @@ export async function generateSuggestions(
 
     const rawOutput = response.choices[0]?.message?.content || "";
     const inferenceElapsedMs = tracker.getCurrentPhaseElapsedMs();
+    
+    // Log raw output preview for debugging (first 500 chars)
+    const outputPreview = rawOutput.length > 500 
+      ? rawOutput.substring(0, 500) + "..." 
+      : rawOutput;
     logWebLLM("info", "inference", "Inference complete", {
       outputLength: rawOutput.length,
       inferenceTimeMs: inferenceElapsedMs,
       inferenceTimeFormatted: `${(inferenceElapsedMs / 1000).toFixed(1)}s`,
+      outputPreview,
     });
+    
+    // Store raw output in diagnostics for debugging
+    tracker.setLastRawOutput(rawOutput);
     
     // Parse phase
     tracker.setPhase("parse");
