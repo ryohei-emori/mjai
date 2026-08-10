@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Override the image's production CMD with --reload for live code updates.
+    command: ["uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./conf/.env
+    environment:
+      - APP_ROOT=/app
+    volumes:
+      # Bind-mount source so uvicorn --reload picks up edits without a rebuild.
+      - ./backend:/app
+    restart: unless-stopped
+
+  frontend:
+    # Use the base Node image directly (not frontend/Dockerfile, which builds a
+    # production `standalone` server) so we can run `next dev` for hot reload.
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- -H 0.0.0.0"
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./conf/.env
+    environment:
+      # Browser-side fetches hit the host-mapped backend port, not the
+      # docker-network service name.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app
+      # Keep node_modules/.next in named volumes so the container's Linux
+      # build artifacts don't clash with the host's (e.g. macOS) node_modules.
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  frontend_node_modules:
+  frontend_next:

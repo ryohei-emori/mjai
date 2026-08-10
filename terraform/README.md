@@ -4,9 +4,9 @@
 
 ## 構成
 
-- **Backend**: Render Web Service (FastAPI + Docker)
-- **Frontend**: Render Web Service (Next.js + Docker)
-- **Database**: Supabase PostgreSQL (既存プロジェクト使用)
+- **Backend**: 既存のRender Web Service（`mjai`、`srv-d2f031buibrs738hhe40`）。Terraform管理**外**（`main.tf`参照）
+- **Frontend**: `render_static_site`としてTerraformが管理
+- **Database**: Postgres（`DATABASE_URL`経由。Terraformでは管理していない）
 
 ## 前提条件
 
@@ -42,21 +42,9 @@ vim terraform.tfvars
 - `gemini_api_key`: Gemini APIキー
 - `gemini_model`: 使用するモデル（デフォルト: gemini-2.5-flash）
 
-### 2. デプロイスクリプトの実行
+### 2. Terraformコマンドの実行
 
-```bash
-# デプロイスクリプトを実行
-./deploy-local.sh
-```
-
-このスクリプトは以下を実行します：
-1. Terraform初期化
-2. 設定の検証
-3. プランの作成と確認
-4. デプロイの実行
-5. 結果の表示
-
-### 3. 手動実行（詳細制御が必要な場合）
+ローカルからの手動デプロイは、CLIコマンドを直接実行してください（インタラクティブなラッパースクリプトは廃止し、以後はCI/CD（GitHub Actions）またはコンテナベースのワークフローに寄せる方針です）：
 
 ```bash
 # 初期化
@@ -89,6 +77,7 @@ mainブランチへのpush時に自動的にデプロイされます。
 | シークレット名 | 説明 |
 |--------------|------|
 | `RENDER_API_KEY` | RenderのAPIキー |
+| `RENDER_OWNER_ID` | RenderのOwner ID（`variables.tf`で必須・デフォルト値なし。未設定だと`terraform plan`が即エラーになる） |
 | `DATABASE_URL` | Supabaseの接続URL |
 | `GEMINI_API_KEY` | Gemini APIキー |
 | `GEMINI_MODEL` | 使用するGeminiモデル |
@@ -186,7 +175,6 @@ terraform/
 ├── outputs.tf                 # 出力定義
 ├── terraform.tfvars.example   # 設定例
 ├── terraform.tfvars           # 実際の設定（Git管理外）
-├── deploy-local.sh            # ローカルデプロイスクリプト
 └── README.md                  # このファイル
 ```
 

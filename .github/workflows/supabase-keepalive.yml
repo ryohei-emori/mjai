@@ -1,0 +1,64 @@
+name: Supabase Keep-alive
+
+on:
+  schedule:
+    # Run every 3 days at 00:00 UTC to prevent Supabase free-tier project pause
+    # Supabase pauses after ~7 days of inactivity, so 3 days provides safe margin
+    - cron: '0 0 */3 * *'
+  workflow_dispatch:
+    # Allow manual trigger for testing
+
+jobs:
+  keepalive:
+    name: Ping Keep-alive Endpoint
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Ping keep-alive endpoint
+        id: ping
+        run: |
+          # Use KEEPALIVE_URL variable if set, otherwise use default production URL
+          URL="${{ vars.KEEPALIVE_URL }}"
+          if [ -z "$URL" ]; then
+            URL="https://mjai-nine.vercel.app/api/keepalive"
+          fi
+          
+          echo "Pinging: $URL"
+          
+          # First attempt
+          HTTP_STATUS=$(curl -s -o /tmp/response.txt -w "%{http_code}" "$URL" --max-time 30)
+          
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Success! HTTP Status: $HTTP_STATUS"
+            cat /tmp/response.txt
+            exit 0
+          fi
+          
+          echo "First attempt failed with HTTP Status: $HTTP_STATUS"
+          cat /tmp/response.txt || true
+          
+          # Soft retry after 10 seconds
+          echo "Retrying in 10 seconds..."
+          sleep 10
+          
+          HTTP_STATUS=$(curl -s -o /tmp/response.txt -w "%{http_code}" "$URL" --max-time 30)
+          
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Retry succeeded! HTTP Status: $HTTP_STATUS"
+            cat /tmp/response.txt
+            exit 0
+          fi
+          
+          echo "Retry failed with HTTP Status: $HTTP_STATUS"
+          cat /tmp/response.txt || true
+          exit 1
+
+      - name: Report status
+        if: always()
+        run: |
+          if [ "${{ steps.ping.outcome }}" == "success" ]; then
+            echo "Keep-alive ping successful - Supabase database is active"
+          else
+            echo "Keep-alive ping failed - check Supabase project status"
+            echo "Manual recovery: curl https://mjai-nine.vercel.app/api/keepalive"
+          fi

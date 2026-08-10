@@ -27,23 +27,14 @@ variable "branch" {
   default     = "main"
 }
 
-variable "render_region" {
-  type        = string
-  description = "Render deployment region"
-  default     = "oregon"
-}
-
 variable "environment" {
   type        = string
   description = "Environment name (production, staging, etc)"
   default     = "production"
 }
 
-variable "frontend_plan" {
-  type        = string
-  description = "Render plan for frontend service"
-  default     = "starter"
-}
+# Note: frontend_plan and render_region removed - frontend is now deployed via Vercel.
+# backend_plan retained for future backend Terraform management if needed.
 
 variable "backend_plan" {
   type        = string

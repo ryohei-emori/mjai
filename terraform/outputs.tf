@@ -1,5 +1,5 @@
 output "backend_service_name" {
-  description = "Name of the backend service (existing)"
+  description = "Name of the backend service (existing, managed outside Terraform)"
   value       = "mjai"
 }
 
@@ -8,24 +8,15 @@ output "backend_service_url" {
   value       = "https://mjai.onrender.com"
 }
 
-output "frontend_service_name" {
-  description = "Name of the frontend service"
-  value       = render_static_site.frontend.name
-}
-
-output "frontend_service_url" {
-  description = "URL of the deployed frontend service"
-  value       = "https://${var.project_name}-frontend.onrender.com"
-}
+# Frontend outputs removed - frontend is now deployed via Vercel (git-integrated).
+# Frontend URL is managed in Vercel dashboard, not Terraform.
 
 output "deployment_info" {
   description = "Deployment information"
   value = {
-    backend_name  = "mjai"
-    frontend_name = render_static_site.frontend.name
-    backend_url   = "https://mjai.onrender.com"
-    frontend_url  = "https://${var.project_name}-frontend.onrender.com"
-    region        = var.render_region
-    environment   = var.environment
+    backend_name = "mjai"
+    backend_url  = "https://mjai.onrender.com"
+    environment  = var.environment
+    note         = "Frontend deployed via Vercel (not managed by Terraform)"
   }
 }
