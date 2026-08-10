@@ -75,7 +75,7 @@ type QueuedJob = {
   source?: 'api' | 'webllm'
 }
 
-const MAX_CONCURRENT_API_JOBS = 5
+const MAX_CONCURRENT_API_JOBS = 30
 const MAX_CONCURRENT_WEBLLM_JOBS = 1
 
 type Session = {
@@ -298,6 +298,12 @@ export default function TextCorrectionApp() {
             throw new Error("クラウドAPIに接続できませんでした。WebGPUも非対応のため、AI提案機能を利用できません。")
           }
 
+          // WebLLMフォールバックをユーザーに通知
+          toast({
+            title: "APIエラー",
+            description: "クラウドAPIに接続できませんでした。ローカルAI（WebLLM）にフォールバックします。",
+          })
+
           // WebLLMにフォールバック
           source = 'webllm'
           const data = await generateWebLLMSuggestions(
@@ -414,7 +420,7 @@ export default function TextCorrectionApp() {
     addJobAndProcess(currentSession.targetText)
     // テキストエリアをクリアして次の入力を待つ
     updateCurrentSession({ targetText: "" })
-  }, [currentSession, addJobAndProcess])
+  }, [currentSession, addJobAndProcess, updateCurrentSession])
 
   // セッション詳細をオンデマンドで取得
   const loadSessionDetails = useCallback(async (sessionId: string) => {
@@ -498,7 +504,7 @@ export default function TextCorrectionApp() {
       title: "確認中",
       description: "ジョブ結果をロードしました。内容を確認してください。",
     })
-  }, [currentSession, jobQueue, toast])
+  }, [currentSession, jobQueue, toast, updateCurrentSession])
 
 
   // セッション一覧をAPIから取得
@@ -576,12 +582,12 @@ export default function TextCorrectionApp() {
   }
 
   // セッション更新をAPIに実行
-  const updateCurrentSession = (updates: Partial<Session>) => {
+  const updateCurrentSession = useCallback((updates: Partial<Session>) => {
     if (!currentSessionId) return
     setSessions((prev) =>
       prev.map((session) => (session.id === currentSessionId ? { ...session, ...updates } : session)),
     )
-  }
+  }, [currentSessionId])
 
   const toggleSuggestionSelection = (suggestionId: string) => {
     if (!currentSession) return
