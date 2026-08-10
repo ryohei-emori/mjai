@@ -6,6 +6,9 @@ const nextConfig = {
   output: 'export',
   trailingSlash: true,
 
+  // Disable Next.js dev indicators (floating badge) in all environments
+  devIndicators: false,
+
   // Vercel's Image Optimization is available, but keeping unoptimized: true
   // until next/image usage is reviewed. Flip to false as a follow-up to
   // enable Vercel's native image optimization.
