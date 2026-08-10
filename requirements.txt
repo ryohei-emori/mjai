@@ -1,0 +1,13 @@
+# Root-level requirements for Vercel Python runtime
+# This file references the same dependencies as backend/requirements.txt
+# Vercel reads this to detect Python project and install dependencies
+
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic>=2.13.0
+pytest==8.3.0
+httpx==0.28.0
+python-dotenv==1.0.1
+asyncpg==0.30.0
+requests==2.32.0
+PyJWT==2.10.1

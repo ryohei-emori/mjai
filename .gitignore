@@ -12,6 +12,17 @@ dist/
 # Environment variables
 .env*
 !.env.example
+# Keep conf/.env.example trackable even if nested under conf/
+!conf/.env.example
+
+# Vercel CLI link metadata (org/project ids); recreate with `vercel link`
+.vercel/
+
+# Google OAuth client secrets (never commit)
+conf/client_secret*.json
+**/client_secret*.json
+*apps.googleusercontent.com.json
+
 
 # Logs
 *.log
@@ -64,6 +75,11 @@ Thumbs.db
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+*.tfplan
+tfplan
+crash.log
+crash.*.log
 
 # TypeScript
 *.tsbuildinfo
+.vercel

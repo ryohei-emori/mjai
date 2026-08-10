@@ -1,0 +1,27 @@
+## Purpose
+
+Ensures the project maintains a Google-style architecture design document that describes the system as it is actually built today, so contributors and reviewers have a single, current reference for how MJAI's components fit together.
+
+## ADDED Requirements
+
+### Requirement: Maintain a current-architecture design document
+The project SHALL maintain a Google-style **engineering** design document at `docs/DESIGN.md` describing the current (as-built) system architecture (not a UI/visual design-system document). The document SHALL cover, at minimum: context and goals, a system overview, and a detailed design covering components, the data model, the API surface, and deployment.
+
+#### Scenario: Design document exists and describes the current system
+- **WHEN** a contributor opens `docs/DESIGN.md`
+- **THEN** it describes the architecture of the system as currently implemented (not a proposed or future architecture), organized into clearly labeled sections covering context/goals, system overview, and detailed design (components, data model, API, deployment)
+
+#### Scenario: Design document distinguishes current state from proposed changes
+- **WHEN** an architecture change is under active proposal (e.g. an in-progress OpenSpec change) but has not yet been implemented
+- **THEN** `docs/DESIGN.md` SHALL describe only the currently implemented architecture, and MAY reference the proposed change as future work without describing it as already built
+
+### Requirement: Keep the design document in sync with architecture changes
+Whenever a change to the project's architecture is implemented (new deployment target, database/persistence backend swap, new or removed external service dependency, new major component, or similar), `docs/DESIGN.md` SHALL be reviewed and updated to match, mirroring the maintenance expectation already established for `AGENTS.md`.
+
+#### Scenario: Architecture change lands without a design doc update
+- **WHEN** a change that alters the system's architecture (e.g. swapping the database backend, changing the deployment target, or adding/removing an external service dependency) is merged
+- **THEN** `docs/DESIGN.md` is reviewed as part of that change and updated if it no longer accurately reflects the system, so it does not silently go stale
+
+#### Scenario: Known inconsistencies are documented rather than hidden
+- **WHEN** the current codebase contains a known inconsistency between documented intent and actual behavior (for example, a configuration mismatch already flagged in `AGENTS.md`)
+- **THEN** `docs/DESIGN.md` SHALL note the inconsistency as a known caveat rather than presenting an idealized architecture that does not match reality
