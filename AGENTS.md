@@ -6,6 +6,50 @@ Agent-facing environment/operational constraints for MJAI (Japanese text-correct
 
 `README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). There is still no ngrok tunnel-provisioning tooling in-repo; `*_NGROK_URL` vars remain optional CORS allow-list entries. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions are client-side WebLLM — do **not** configure `GEMINI_*`.
 
+## Multi-Environment Architecture: Shared DB, Environment-Aware Auth
+
+MJAI uses a **single Supabase project** for both local development and production. This provides:
+
+| Aspect | Implementation |
+|--------|---------------|
+| **DB共有 (Shared DB)** | Same `DATABASE_URL` for local and production; all app data in one Postgres instance |
+| **認証分け (Environment-Aware Auth)** | Same Supabase Auth project, but frontend uses `window.location.origin` to dynamically set OAuth redirect URLs |
+
+### Environment Matrix
+
+| Setting | Local Development | Production (Vercel) |
+|---------|-------------------|---------------------|
+| Frontend URL | `http://localhost:3000` | `https://mjai-nine.vercel.app` |
+| API URL | `http://localhost:8000` | `/api` (same-origin) |
+| `DATABASE_URL` | Same Supabase Postgres | Same Supabase Postgres |
+| `NEXT_PUBLIC_SUPABASE_URL` | Same | Same |
+| `SUPABASE_JWT_SECRET` | Same | Same |
+| OAuth `redirectTo` | `http://localhost:3000` (auto via `window.location.origin`) | `https://mjai-nine.vercel.app` (auto) |
+| `ALLOWED_USER_EMAIL` | Same | Same |
+
+### What "認証分け" means in this architecture
+
+- **Same user pool**: The allow-listed user can log in from either environment (auth.users is shared)
+- **Environment-specific redirects**: OAuth flow redirects to the correct domain based on where sign-in was initiated
+- **Same Google OAuth client**: One client ID with multiple authorized origins/redirect URIs
+
+This is the simplest architecture for a single-user app. True auth separation (separate user pools) would require two Supabase projects, breaking DB sharing unless using an external Postgres.
+
+### External configuration required (manual setup)
+
+**Google Cloud Console** (Credentials → OAuth 2.0 Client):
+1. Authorized JavaScript origins: `http://localhost:3000`, `https://mjai-nine.vercel.app`
+2. Authorized redirect URIs: `https://[supabase-project-ref].supabase.co/auth/v1/callback`
+
+**Supabase Dashboard** (Authentication → URL Configuration):
+1. Site URL: `https://mjai-nine.vercel.app` (production)
+2. Redirect URLs: `http://localhost:3000/**`, `http://127.0.0.1:3000/**`, `https://mjai-nine.vercel.app/**`
+
+**Supabase Dashboard** (Authentication → Providers → Google):
+1. Client ID and Client Secret from the Google OAuth client above
+
+See `backend/supabase/config.toml` for local Supabase CLI config (`site_url`, `additional_redirect_urls`).
+
 ## Required environment variables / secrets
 
 Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit the real file):

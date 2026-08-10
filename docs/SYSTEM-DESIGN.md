@@ -191,6 +191,87 @@ The frontend is a static-exported Next.js app that: (1) gates the workspace on S
 
 ## 6. Cross-Cutting Concerns
 
+### 6.0 Multi-Environment Architecture (Shared DB, Environment-Aware Auth)
+
+MJAI uses a **single Supabase project** for both local development and production, providing:
+- **Shared Database**: One Postgres instance (`DATABASE_URL`) for all environments
+- **Shared Auth User Pool**: One `auth.users` table (same allow-listed user can log in from any environment)
+- **Environment-Aware OAuth Redirects**: Different redirect URLs per environment, same Google OAuth client
+
+```mermaid
+flowchart TB
+    subgraph Environments["Deployment Environments"]
+        Local["Local Dev<br/>http://localhost:3000"]
+        Prod["Production<br/>https://mjai-nine.vercel.app"]
+    end
+
+    subgraph Supabase["Single Supabase Project"]
+        Auth["Auth Service<br/>site_url: mjai-nine.vercel.app<br/>additional_redirect_urls:<br/>• localhost:3000<br/>• 127.0.0.1:3000<br/>• mjai-nine.vercel.app"]
+        DB["Postgres<br/>sessions, histories, proposals<br/>(shared across environments)"]
+        JWT["JWT Secret<br/>(same for all environments)"]
+    end
+
+    subgraph GoogleCloud["Google Cloud Project"]
+        OAuth["Web OAuth Client<br/>Authorized origins:<br/>• http://localhost:3000<br/>• https://mjai-nine.vercel.app<br/>Authorized redirects:<br/>• Supabase callback URL"]
+    end
+
+    Local -- "signInWithOAuth<br/>redirectTo: localhost:3000" --> Auth
+    Prod -- "signInWithOAuth<br/>redirectTo: mjai-nine.vercel.app" --> Auth
+    Auth -- "Google OAuth flow" --> OAuth
+    Auth -- "issues JWT" --> JWT
+    Local & Prod -- "DATABASE_URL<br/>(same connection string)" --> DB
+```
+
+#### Why This Architecture?
+
+| Requirement | Implementation | Trade-off |
+|---|---|---|
+| **DB共有 (Shared DB)** | Single `DATABASE_URL` for both local and production | App data is shared; use caution with destructive operations |
+| **認証分け (Separate Auth)** | Environment-aware redirect URLs; code uses `window.location.origin` | User pool (`auth.users`) is shared, but OAuth flow respects current environment |
+
+**"認証分け" in this context means:**
+- Each environment has its own OAuth redirect URL (localhost vs production domain)
+- Frontend code dynamically determines redirect based on `window.location.origin`
+- Supabase and Google OAuth are configured to allow both origins
+- The same user account works in both environments (intentional for single-user app)
+
+**What "認証分け" does NOT mean here:**
+- Separate Supabase projects (would break shared DB)
+- Separate Google OAuth clients (Supabase dashboard only stores one client ID/secret)
+- Separate user pools (not practical with shared Supabase project)
+
+#### Environment Matrix
+
+| Setting | Local Development | Production (Vercel) |
+|---|---|---|
+| **Frontend URL** | `http://localhost:3000` | `https://mjai-nine.vercel.app` |
+| **API URL** | `http://localhost:8000` | `/api` (same-origin) |
+| **DATABASE_URL** | Same Supabase Postgres | Same Supabase Postgres |
+| **SUPABASE_URL** | Same (`https://[project-ref].supabase.co`) | Same |
+| **SUPABASE_ANON_KEY** | Same | Same |
+| **SUPABASE_JWT_SECRET** | Same | Same |
+| **OAuth redirectTo** | `http://localhost:3000` (via `window.location.origin`) | `https://mjai-nine.vercel.app` |
+| **ALLOWED_USER_EMAIL** | Same | Same |
+
+#### Alternative: True Environment Separation
+
+For apps requiring fully isolated auth (separate user pools), the architecture would be:
+
+```
+Option: Two Supabase Projects
+├── dev-project  → dev DB + dev auth.users
+└── prod-project → prod DB + prod auth.users
+    └── Problem: DB is NOT shared (breaks "DB共有" requirement)
+
+Option: External Postgres + Two Supabase Projects
+├── External Postgres (shared app data)
+├── dev-supabase  → dev auth only
+└── prod-supabase → prod auth only
+    └── Problem: Complex setup, auth.uid() references break across projects
+```
+
+For MJAI's single-user, allow-listed model, the simpler shared-project architecture is appropriate.
+
 ### 6.1 Security and privacy
 
 - **AuthN/Z:** Every non-`/health` route requires a valid Supabase JWT and allow-listed `email`. Frontend obtains the token via Google OAuth; `401` forces sign-out (`authEvents` bridge from `api.ts` into `AuthProvider`).
