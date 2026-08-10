@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useCallback, useRef } from "react"
+import { useEffect, useCallback } from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,7 +22,6 @@ import {
   Loader2,
   Copy,
   CheckCircle,
-  RotateCcw,
   MessageSquare,
   LogOut,
 } from "lucide-react"
@@ -72,11 +71,16 @@ type QueuedJob = {
   id: string
   targetText: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
-  result?: SavedData
+  suggestions?: CorrectionSuggestion[]
+  overallComment?: string
   error?: string
   queuedAt: Date
   completedAt?: Date
+  source?: 'api' | 'webllm'
 }
+
+const MAX_CONCURRENT_API_JOBS = 3
+const MAX_CONCURRENT_WEBLLM_JOBS = 1
 
 type Session = {
   id: string
@@ -209,7 +213,6 @@ export default function TextCorrectionApp() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true) // 新しく追加
-  const [isProcessing, setIsProcessing] = useState(false)
   const [customCorrection, setCustomCorrection] = useState({ original: "", reason: "" })
   const [showCustomForm, setShowCustomForm] = useState(false)
   const [selectionCounter, setSelectionCounter] = useState(0)
@@ -231,12 +234,10 @@ export default function TextCorrectionApp() {
     }
   }, [])
 
-  // Periodic timer updates during processing
+  // Periodic timer updates during WebLLM processing
   // This fixes the "0ms" display bug by polling the tracker for fresh timing data
   useEffect(() => {
-    if (!isProcessing) return
-    
-    // Only update when in active processing states
+    // Only update when in active WebLLM processing states
     const activeStates = ["loading", "generating", "checking_webgpu"]
     if (!activeStates.includes(webllmStatus.state)) return
 
@@ -252,10 +253,103 @@ export default function TextCorrectionApp() {
     }, 100) // Update every 100ms for smooth timer display
 
     return () => clearInterval(intervalId)
-  }, [isProcessing, webllmStatus.state])
+  }, [webllmStatus.state])
 
-  // ジョブをキューに追加する関数
-  const addToQueue = useCallback((targetText: string) => {
+  // 単一ジョブを非同期処理する関数（並列実行可能）
+  const processJobAsync = useCallback(async (jobId: string, targetText: string, originalText: string) => {
+    // ジョブをprocessingに更新
+    setJobQueue(prev => prev.map(j => 
+      j.id === jobId ? { ...j, status: 'processing' as const } : j
+    ))
+
+    toast({
+      title: "処理開始",
+      description: `ジョブ ${jobId.slice(-4)} を処理中...`,
+    })
+
+    try {
+      let suggestions: CorrectionSuggestion[] = []
+      let overallComment = ''
+      let source: 'api' | 'webllm' = 'api'
+
+      if (offlineMode) {
+        // WebLLMモード
+        source = 'webllm'
+        if (!webgpuSupported) {
+          throw new Error(webgpuUnsupportedReason || "WebGPU非対応")
+        }
+        
+        const data = await generateWebLLMSuggestions(
+          { originalText, targetText, instructionPrompt: "CCTalkからの添削指示" },
+          (status) => setWebllmStatus(status)
+        )
+        suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
+        overallComment = data.overallComment
+      } else {
+        // APIモード（並列実行可能）
+        try {
+          const data = await suggestionsAPI.generate(originalText, targetText)
+          suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
+          overallComment = data.overallComment
+          source = 'api'
+        } catch (apiError) {
+          console.warn("[suggestions] API failed, falling back to WebLLM:", apiError)
+          
+          if (!webgpuSupported) {
+            throw new Error("クラウドAPIに接続できませんでした。WebGPUも非対応のため、AI提案機能を利用できません。")
+          }
+
+          // WebLLMにフォールバック
+          source = 'webllm'
+          const data = await generateWebLLMSuggestions(
+            { originalText, targetText, instructionPrompt: "CCTalkからの添削指示" },
+            (status) => setWebllmStatus(status)
+          )
+          suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
+          overallComment = data.overallComment
+        }
+      }
+
+      // ジョブを完了に更新
+      setJobQueue(prev => prev.map(j => 
+        j.id === jobId 
+          ? { 
+              ...j, 
+              status: 'completed' as const, 
+              suggestions,
+              overallComment,
+              source,
+              completedAt: new Date() 
+            } 
+          : j
+      ))
+
+      toast({
+        title: "完了",
+        description: `ジョブ ${jobId.slice(-4)} が完了しました`,
+      })
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "不明なエラー"
+      
+      setJobQueue(prev => prev.map(j => 
+        j.id === jobId 
+          ? { ...j, status: 'failed' as const, error: errorMessage, completedAt: new Date() } 
+          : j
+      ))
+
+      toast({
+        title: "エラー",
+        description: `ジョブ ${jobId.slice(-4)}: ${errorMessage}`,
+        variant: "destructive",
+      })
+    }
+  }, [offlineMode, webgpuSupported, webgpuUnsupportedReason, toast])
+
+  // ジョブをキューに追加し、並列処理を開始する関数
+  const addJobAndProcess = useCallback((targetText: string) => {
+    if (!currentSession) return false
+    
     const MAX_QUEUE_SIZE = 10
     const currentQueueSize = jobQueue.filter(j => j.status === 'queued' || j.status === 'processing').length
     
@@ -277,86 +371,93 @@ export default function TextCorrectionApp() {
     
     setJobQueue(prev => [...prev, newJob])
     
-    const queuedCount = currentQueueSize + 1
+    // 即座にジョブ処理を開始（並列処理対応）
+    const processingCount = jobQueue.filter(j => j.status === 'processing').length
+    const maxConcurrent = offlineMode ? MAX_CONCURRENT_WEBLLM_JOBS : MAX_CONCURRENT_API_JOBS
+    
+    if (processingCount < maxConcurrent) {
+      // スロットが空いているので即座に処理開始
+      processJobAsync(newJob.id, targetText, currentSession.originalText)
+    }
+    
     toast({
       title: "キューに追加",
-      description: `ジョブをキューに追加しました（待機中: ${queuedCount}件）`,
+      description: `ジョブをキューに追加しました`,
     })
     
     return true
-  }, [jobQueue, toast])
+  }, [jobQueue, currentSession, offlineMode, processJobAsync, toast])
 
-  // キュー消化ループ - queuedジョブをprocessingに移行して処理
+  // キュー消化ループ - 空きスロットがあればqueuedジョブをprocessingに移行
   useEffect(() => {
-    const processNextJob = async () => {
-      // 処理中の場合は何もしない
-      if (isProcessing) return
-      
-      // 処理中のジョブがあれば何もしない
-      const processingJob = jobQueue.find(j => j.status === 'processing')
-      if (processingJob) return
+    if (!currentSession) return
+    
+    const processingCount = jobQueue.filter(j => j.status === 'processing').length
+    const maxConcurrent = offlineMode ? MAX_CONCURRENT_WEBLLM_JOBS : MAX_CONCURRENT_API_JOBS
+    const availableSlots = maxConcurrent - processingCount
+    
+    if (availableSlots <= 0) return
+    
+    // 次に処理すべきqueuedジョブを取得
+    const queuedJobs = jobQueue.filter(j => j.status === 'queued')
+    const jobsToStart = queuedJobs.slice(0, availableSlots)
+    
+    // 各ジョブを並列で処理開始
+    jobsToStart.forEach(job => {
+      processJobAsync(job.id, job.targetText, currentSession.originalText)
+    })
+  }, [jobQueue, currentSession, offlineMode, processJobAsync])
 
-      // 次のqueuedジョブを取得
-      const nextJob = jobQueue.find(j => j.status === 'queued')
-      if (!nextJob || !currentSession) return
-
-      // ジョブをprocessingに更新
-      setJobQueue(prev => prev.map(j => 
-        j.id === nextJob.id ? { ...j, status: 'processing' as const } : j
-      ))
-
-      // セッションのターゲットテキストを更新
-      updateCurrentSession({ targetText: nextJob.targetText })
-
-      // 処理中の通知
-      const queuedCount = jobQueue.filter(j => j.status === 'queued').length - 1
-      toast({
-        title: "処理中",
-        description: queuedCount > 0 
-          ? `AI添削を実行中...（残り: ${queuedCount}件）`
-          : "AI添削を実行中...",
-      })
-    }
-
-    processNextJob()
-  }, [jobQueue, currentSession, isProcessing, toast])
-
-  // ジョブ処理完了時のハンドラー
-  const completeCurrentJob = useCallback((success: boolean, error?: string) => {
-    const processingJob = jobQueue.find(j => j.status === 'processing')
-    if (!processingJob) return
-
-    setJobQueue(prev => prev.map(j => 
-      j.id === processingJob.id 
-        ? { 
-            ...j, 
-            status: success ? 'completed' as const : 'failed' as const,
-            completedAt: new Date(),
-            error: error,
-          } 
-        : j
-    ))
-
-    if (success) {
-      toast({
-        title: "完了",
-        description: "AI添削が完了しました",
-      })
-    }
-  }, [jobQueue, toast])
-
-  // ボタンクリックハンドラー - 処理中ならキューに追加、そうでなければ直接実行
+  // ボタンクリックハンドラー - 常にキューに追加して処理開始
   const handleGenerateClick = useCallback(() => {
     if (!currentSession?.targetText.trim()) return
+    
+    addJobAndProcess(currentSession.targetText)
+    // テキストエリアをクリアして次の入力を待つ
+    updateCurrentSession({ targetText: "" })
+  }, [currentSession, addJobAndProcess])
 
-    if (isProcessing) {
-      // 処理中の場合はキューに追加
-      addToQueue(currentSession.targetText)
-      // テキストエリアをクリアして次の入力を待つ
-      updateCurrentSession({ targetText: "" })
+  // セッション切り替えハンドラー - 処理中ジョブがある場合は確認
+  const handleSessionSwitch = useCallback((sessionId: string) => {
+    const hasActiveJobs = jobQueue.some(j => j.status === 'queued' || j.status === 'processing')
+    
+    if (hasActiveJobs) {
+      const confirmed = window.confirm(
+        '処理中または待機中のジョブがあります。セッションを切り替えると、これらのジョブは中断されます。続行しますか？'
+      )
+      if (!confirmed) return
+      
+      // キューをクリア
+      setJobQueue([])
     }
-    // 処理中でない場合は、ボタンのonClickでgenerateAISuggestionsが呼ばれる
-  }, [currentSession, isProcessing, addToQueue])
+    
+    setCurrentSessionId(sessionId)
+    setSidebarOpen(false)
+    loadSessionDetails(sessionId)
+  }, [jobQueue, loadSessionDetails])
+
+  // 完了したジョブを確認（HITLフロー）
+  const confirmJob = useCallback((job: QueuedJob) => {
+    if (!currentSession || job.status !== 'completed' || !job.suggestions) return
+    
+    // ジョブの結果を現在のセッションにロード
+    updateCurrentSession({
+      targetText: job.targetText,
+      suggestions: job.suggestions,
+      overallComment: job.overallComment || '',
+    })
+    
+    setShowCustomForm(true)
+    setSelectionCounter(0)
+    
+    // 確認中のジョブIDを記録
+    setConfirmingHistoryIndex(jobQueue.findIndex(j => j.id === job.id))
+    
+    toast({
+      title: "確認中",
+      description: "ジョブ結果をロードしました。内容を確認してください。",
+    })
+  }, [currentSession, jobQueue, toast])
 
   const mockSuggestions: CorrectionSuggestion[] = [
     {
@@ -521,180 +622,6 @@ export default function TextCorrectionApp() {
     )
   }
 
-  // AI提案生成: API優先、WebLLMフォールバック（既存の選択状態を保持）
-  const generateAISuggestions = async () => {
-    if (!currentSession?.targetText.trim()) return
-
-    setIsProcessing(true)
-    setLastSuggestionSource(null)
-
-    // 既存の選択状態とカスタム修正を保存
-    const existingSelections = new Map()
-    const existingCustomCorrections: CorrectionSuggestion[] = []
-
-    if (currentSession.suggestions.length > 0) {
-      currentSession.suggestions.forEach((suggestion) => {
-        if (suggestion.isCustom) {
-          existingCustomCorrections.push(suggestion)
-        } else if (suggestion.selected || suggestion.userModifiedReason) {
-          existingSelections.set(suggestion.original, {
-            selected: suggestion.selected,
-            selectedOrder: suggestion.selectedOrder,
-            userModifiedReason: suggestion.userModifiedReason,
-          })
-        }
-      })
-    }
-
-    if (FRONTEND_MODE === "mock") {
-      // 既存の選択状態を復元
-      const restoredSuggestions = mockSuggestions.map((s) => {
-        const existing = existingSelections.get(s.original)
-        return existing ? { ...s, ...existing } : { ...s, selected: false, selectedOrder: undefined }
-      })
-
-      // カスタム修正を追加
-      const allSuggestions = [...restoredSuggestions, ...existingCustomCorrections]
-
-      updateCurrentSession({
-        suggestions: allSuggestions,
-        overallComment: mockOverallComment,
-      })
-      setShowCustomForm(true)
-
-      // 選択カウンターを復元
-      const selectedCount = allSuggestions.filter((s) => s.selected).length
-      setSelectionCounter(selectedCount)
-
-      setIsProcessing(false)
-      return
-    }
-
-    // Helper function to apply suggestions
-    const applySuggestions = (data: { suggestions: Array<{ id: string; original: string; reason: string }>; overallComment: string }) => {
-      const restoredSuggestions = data.suggestions.map((s) => {
-        const existing = existingSelections.get(s.original)
-        return existing
-          ? { ...s, ...existing, selected: existing.selected || false }
-          : { ...s, selected: false, selectedOrder: undefined }
-      })
-
-      const allSuggestions = [...restoredSuggestions, ...existingCustomCorrections]
-
-      updateCurrentSession({
-        suggestions: allSuggestions,
-        overallComment: data.overallComment,
-      })
-      setShowCustomForm(true)
-
-      const selectedCount = allSuggestions.filter((s) => s.selected).length
-      setSelectionCounter(selectedCount)
-    }
-
-    // オフラインモードの場合はWebLLMを直接使用
-    if (offlineMode) {
-      if (!webgpuSupported) {
-        toast({
-          title: "WebGPU非対応",
-          description: webgpuUnsupportedReason || "このブラウザではオフラインモードを利用できません",
-          variant: "destructive",
-        })
-        setIsProcessing(false)
-        return
-      }
-
-      try {
-        const data = await generateWebLLMSuggestions(
-          {
-            originalText: currentSession.originalText,
-            targetText: currentSession.targetText,
-            instructionPrompt: "CCTalkからの添削指示",
-          },
-          (status) => setWebllmStatus(status)
-        )
-        applySuggestions(data)
-        setLastSuggestionSource("webllm")
-      } catch (error) {
-        let errorMessage = "AI提案の生成に失敗しました"
-        if (error instanceof WebGPUUnsupportedError) {
-          errorMessage = error.message
-          setWebgpuSupported(false)
-          setWebgpuUnsupportedReason(error.message)
-        } else if (error instanceof TimeoutError) {
-          errorMessage = error.message
-        } else if (error instanceof ModelLoadError) {
-          errorMessage = `モデルの読み込みに失敗しました: ${error.message}`
-        } else if (error instanceof InferenceError) {
-          errorMessage = `推論に失敗しました: ${error.message}`
-        }
-        toast({ title: "エラー", description: errorMessage, variant: "destructive" })
-        setWebllmStatus({ state: "idle" })
-      } finally {
-        setIsProcessing(false)
-      }
-      return
-    }
-
-    // API優先モード: まずAPIを試し、失敗したらWebLLMにフォールバック
-    try {
-      setWebllmStatus({ state: "generating", progress: 0, text: "クラウドAPI接続中..." })
-      const data = await suggestionsAPI.generate(currentSession.originalText, currentSession.targetText)
-      applySuggestions(data)
-      setLastSuggestionSource("api")
-      setWebllmStatus({ state: "idle" })
-    } catch (apiError) {
-      console.warn("[suggestions] API failed, falling back to WebLLM:", apiError)
-      
-      // WebGPUがサポートされていない場合はエラーを表示して終了
-      if (!webgpuSupported) {
-        toast({
-          title: "API接続エラー",
-          description: "クラウドAPIに接続できませんでした。WebGPUも非対応のため、AI提案機能を利用できません。",
-          variant: "destructive",
-        })
-        setWebllmStatus({ state: "idle" })
-        setIsProcessing(false)
-        return
-      }
-
-      // WebLLMにフォールバック
-      toast({
-        title: "オフラインモードに切り替え",
-        description: "クラウドAPIに接続できませんでした。ローカルAIモデルを使用します。",
-      })
-
-      try {
-        const data = await generateWebLLMSuggestions(
-          {
-            originalText: currentSession.originalText,
-            targetText: currentSession.targetText,
-            instructionPrompt: "CCTalkからの添削指示",
-          },
-          (status) => setWebllmStatus(status)
-        )
-        applySuggestions(data)
-        setLastSuggestionSource("webllm")
-      } catch (webllmError) {
-        let errorMessage = "AI提案の生成に失敗しました"
-        if (webllmError instanceof WebGPUUnsupportedError) {
-          errorMessage = webllmError.message
-          setWebgpuSupported(false)
-          setWebgpuUnsupportedReason(webllmError.message)
-        } else if (webllmError instanceof TimeoutError) {
-          errorMessage = webllmError.message
-        } else if (webllmError instanceof ModelLoadError) {
-          errorMessage = `モデルの読み込みに失敗しました: ${(webllmError as Error).message}`
-        } else if (webllmError instanceof InferenceError) {
-          errorMessage = `推論に失敗しました: ${(webllmError as Error).message}`
-        }
-        toast({ title: "エラー", description: errorMessage, variant: "destructive" })
-        setWebllmStatus({ state: "idle" })
-      }
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
   const toggleSuggestionSelection = (suggestionId: string) => {
     if (!currentSession) return
 
@@ -852,32 +779,52 @@ export default function TextCorrectionApp() {
       await copyToClipboard(combinedComment)
 
       // フロントエンドの状態を更新
-      const savedData: SavedData = {
-        originalText: currentSession.originalText,
-        instructionPrompt: "CCTalkからの添削指示",
-        targetText: currentSession.targetText,
-        aiSuggestions: currentSession.suggestions,
-        selectedCorrections: selectedSuggestions,
-        overallComment: currentSession.overallComment,
-        combinedComment,
-        timestamp: new Date(),
-      }
+      if (confirmingHistoryIndex !== null) {
+        // 確認フロー: 既存の履歴を確認済みにマーク
+        const updatedSavedData = currentSession.savedData.map((data, idx) => 
+          idx === confirmingHistoryIndex ? { ...data, confirmed: true } : data
+        )
+        updateCurrentSession({
+          savedData: updatedSavedData,
+          targetText: "",
+          suggestions: [],
+          overallComment: "",
+        })
+        setConfirmingHistoryIndex(null)
+        toast({
+          title: "確認完了",
+          description: "履歴を確認済みにしました。クリップボードにコピーしました。",
+        })
+      } else {
+        // 新規保存フロー
+        const savedData: SavedData = {
+          originalText: currentSession.originalText,
+          instructionPrompt: "CCTalkからの添削指示",
+          targetText: currentSession.targetText,
+          aiSuggestions: currentSession.suggestions,
+          selectedCorrections: selectedSuggestions,
+          overallComment: currentSession.overallComment,
+          combinedComment,
+          timestamp: new Date(),
+          confirmed: true,
+        }
 
-      updateCurrentSession({
-        savedData: [...currentSession.savedData, savedData],
-        targetText: "",
-        suggestions: [],
-        overallComment: "",
-      })
+        updateCurrentSession({
+          savedData: [...currentSession.savedData, savedData],
+          targetText: "",
+          suggestions: [],
+          overallComment: "",
+        })
+        
+        toast({
+          title: "保存完了",
+          description: "修正内容が保存され、クリップボードにコピーされました",
+        })
+      }
 
       setShowCustomForm(false)
       setCustomCorrection({ original: "", reason: "" })
       setSelectionCounter(0)
-
-      toast({
-        title: "保存完了",
-        description: "修正内容が保存され、クリップボードにコピーされました",
-      })
     } catch (error) {
       console.error("Failed to save corrections:", error)
       toast({
@@ -910,8 +857,8 @@ export default function TextCorrectionApp() {
     setShowCustomForm(true)
 
     toast({
-      title: "履歴を復元しました",
-      description: "選択した履歴データが現在のセッションに復元されました",
+      title: "確認中",
+      description: "履歴データをロードしました。内容を確認して「確定してコピー・保存」を実行してください。",
     })
   }
 
@@ -961,11 +908,7 @@ export default function TextCorrectionApp() {
               className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
                 currentSessionId === session.id ? "bg-blue-50 border-blue-200" : "hover:bg-gray-50"
               } ${collapsed ? 'p-1' : ''}`}
-              onClick={() => {
-                setCurrentSessionId(session.id)
-                setSidebarOpen(false)
-                loadSessionDetails(session.id)
-              }}
+              onClick={() => handleSessionSwitch(session.id)}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
@@ -1185,44 +1128,31 @@ export default function TextCorrectionApp() {
                           )}
                           
                           <Button
-                            onClick={() => {
-                              if (isProcessing) {
-                                handleGenerateClick()
-                              } else {
-                                generateAISuggestions()
-                              }
-                            }}
+                            onClick={handleGenerateClick}
                             disabled={!currentSession.targetText.trim() || (offlineMode && webgpuSupported === false)}
                             className="w-full"
                           >
-                            {isProcessing ? (
-                              <>
-                                <Plus className="w-4 h-4 mr-2" />
-                                キューに追加
-                                {jobQueue.filter(j => j.status === 'queued').length > 0 && (
-                                  <Badge variant="secondary" className="ml-2 text-xs">
-                                    待機: {jobQueue.filter(j => j.status === 'queued').length}
-                                  </Badge>
-                                )}
-                              </>
-                            ) : offlineMode ? (
-                              isEngineReady() ? (
+                            {(() => {
+                              const processingCount = jobQueue.filter(j => j.status === 'processing').length
+                              const queuedCount = jobQueue.filter(j => j.status === 'queued').length
+                              
+                              return (
                                 <>
                                   <Bot className="w-4 h-4 mr-2" />
-                                  AI提案を生成（オフライン）
-                                </>
-                              ) : (
-                                <>
-                                  <Bot className="w-4 h-4 mr-2" />
-                                  AI提案を生成（初回は{WEBLLM_MODEL_DISPLAY_NAME}をDL）
+                                  AI提案を生成
+                                  {(processingCount > 0 || queuedCount > 0) && (
+                                    <Badge variant="secondary" className="ml-2 text-xs">
+                                      {processingCount > 0 && `処理中: ${processingCount}`}
+                                      {processingCount > 0 && queuedCount > 0 && ' / '}
+                                      {queuedCount > 0 && `待機: ${queuedCount}`}
+                                    </Badge>
+                                  )}
+                                  {offlineMode && !isEngineReady() && (
+                                    <span className="ml-1 text-xs">（初回DL）</span>
+                                  )}
                                 </>
                               )
-                            ) : (
-                              <>
-                                <Bot className="w-4 h-4 mr-2" />
-                                AI提案を生成
-                              </>
-                            )}
+                            })()}
                           </Button>
                         </CardContent>
                       </Card>
@@ -1369,29 +1299,133 @@ export default function TextCorrectionApp() {
                         </Card>
                       )}
 
+                      {/* Job Queue - Active Jobs */}
+                      {jobQueue.length > 0 && (
+                        <Card>
+                          <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                              <Loader2 className="w-5 h-5 text-blue-600" />
+                              ジョブキュー
+                              <Badge variant="secondary" className="ml-2">
+                                {jobQueue.filter(j => j.status === 'processing').length} 処理中 / {jobQueue.filter(j => j.status === 'queued').length} 待機
+                              </Badge>
+                            </CardTitle>
+                            <CardDescription>
+                              {offlineMode 
+                                ? "WebLLMモード: 逐次処理（1件ずつ）" 
+                                : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
+                            </CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="space-y-3">
+                              {jobQueue.map((job) => (
+                                <div 
+                                  key={job.id} 
+                                  className={`border rounded-lg p-4 space-y-2 ${
+                                    job.status === 'processing' 
+                                      ? 'bg-blue-50 border-blue-200' 
+                                      : job.status === 'completed'
+                                      ? 'bg-green-50 border-green-200'
+                                      : job.status === 'failed'
+                                      ? 'bg-red-50 border-red-200'
+                                      : 'bg-gray-50 border-gray-200'
+                                  }`}
+                                >
+                                  <div className="flex justify-between items-start">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        {job.status === 'processing' && <Loader2 className="w-4 h-4 animate-spin text-blue-600" />}
+                                        {job.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-600" />}
+                                        {job.status === 'failed' && <span className="text-red-600">✕</span>}
+                                        {job.status === 'queued' && <span className="text-gray-400">○</span>}
+                                        <Badge variant={
+                                          job.status === 'processing' ? 'default' :
+                                          job.status === 'completed' ? 'outline' :
+                                          job.status === 'failed' ? 'destructive' : 'secondary'
+                                        }>
+                                          {job.status === 'processing' ? '処理中' :
+                                           job.status === 'completed' ? '完了' :
+                                           job.status === 'failed' ? '失敗' : '待機中'}
+                                        </Badge>
+                                        {job.source && (
+                                          <Badge variant="outline" className="text-xs">
+                                            {job.source === 'api' ? 'API' : 'WebLLM'}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <p className="text-xs text-gray-500 mt-1 truncate">
+                                        {job.targetText.slice(0, 50)}{job.targetText.length > 50 ? '...' : ''}
+                                      </p>
+                                      <p className="text-xs text-gray-400">
+                                        {job.queuedAt.toLocaleTimeString()}
+                                        {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
+                                      </p>
+                                      {job.error && (
+                                        <p className="text-xs text-red-600 mt-1">{job.error}</p>
+                                      )}
+                                    </div>
+                                    {job.status === 'completed' && job.suggestions && (
+                                      <Button 
+                                        variant="outline" 
+                                        size="sm" 
+                                        onClick={() => confirmJob(job)}
+                                      >
+                                        <CheckCircle className="w-3 h-3 mr-1" />
+                                        確認
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )}
+
                       {/* Saved Data History */}
                       {currentSession.savedData.length > 0 && (
                         <Card>
                           <CardHeader>
                             <CardTitle className="flex items-center gap-2">
                               <CheckCircle className="w-5 h-5 text-green-600" />
-                              保存履歴
+                              実行履歴
                             </CardTitle>
                             <CardDescription>このセッションで保存された添削データ</CardDescription>
                           </CardHeader>
                           <CardContent>
                             <div className="space-y-3">
                               {currentSession.savedData.map((data, index) => (
-                                <div key={index} className="border rounded-lg p-4 space-y-3">
+                                <div 
+                                  key={index} 
+                                  className={`border rounded-lg p-4 space-y-3 ${
+                                    data.confirmed 
+                                      ? 'bg-green-50 border-green-200' 
+                                      : 'bg-yellow-50 border-yellow-200'
+                                  }`}
+                                >
                                   <div className="flex justify-between items-start">
                                     <div>
-                                      <h4 className="font-medium text-sm">添削データ #{index + 1}</h4>
+                                      <div className="flex items-center gap-2">
+                                        <h4 className="font-medium text-sm">添削データ #{index + 1}</h4>
+                                        {!data.confirmed && (
+                                          <Badge variant="outline" className="text-yellow-700 border-yellow-400 text-xs">
+                                            未確認
+                                          </Badge>
+                                        )}
+                                      </div>
                                       <p className="text-xs text-gray-500">{data.timestamp.toLocaleString()}</p>
                                     </div>
                                     <div className="flex gap-2">
-                                      <Button variant="outline" size="sm" onClick={() => restoreFromHistory(data)}>
-                                        <RotateCcw className="w-3 h-3 mr-1" />
-                                        復元
+                                      <Button 
+                                        variant={data.confirmed ? "ghost" : "outline"} 
+                                        size="sm" 
+                                        onClick={() => {
+                                          restoreFromHistory(data)
+                                          setConfirmingHistoryIndex(index)
+                                        }}
+                                      >
+                                        <CheckCircle className={`w-3 h-3 mr-1 ${data.confirmed ? 'text-green-600' : ''}`} />
+                                        {data.confirmed ? '確認済み' : '確認'}
                                       </Button>
                                       <Button
                                         variant="outline"
