@@ -1276,10 +1276,10 @@ export default function TextCorrectionApp() {
 
                             {/* Overall Comment */}
                             {currentSession.overallComment && (
-                              <div className="border rounded-lg p-4 bg-yellow-50">
+                              <div className="border rounded-lg p-4 bg-blue-50 border-blue-200">
                                 <div className="flex items-center gap-2 mb-3">
-                                  <MessageSquare className="w-4 h-4 text-yellow-600" />
-                                  <Label className="text-sm font-medium text-yellow-700">全体総括コメント</Label>
+                                  <MessageSquare className="w-4 h-4 text-blue-600" />
+                                  <Label className="text-sm font-medium text-blue-700">全体総括コメント</Label>
                                 </div>
                                 <Textarea
                                   value={currentSession.overallComment}
@@ -1401,7 +1401,7 @@ export default function TextCorrectionApp() {
                                   className={`border rounded-lg p-4 space-y-3 ${
                                     data.confirmed 
                                       ? 'bg-green-50 border-green-200' 
-                                      : 'bg-yellow-50 border-yellow-200'
+                                      : 'bg-gray-50 border-gray-200'
                                   }`}
                                 >
                                   <div className="flex justify-between items-start">
@@ -1409,7 +1409,7 @@ export default function TextCorrectionApp() {
                                       <div className="flex items-center gap-2">
                                         <h4 className="font-medium text-sm">添削データ #{index + 1}</h4>
                                         {!data.confirmed && (
-                                          <Badge variant="outline" className="text-yellow-700 border-yellow-400 text-xs">
+                                          <Badge variant="outline" className="text-gray-600 border-gray-300 text-xs">
                                             未確認
                                           </Badge>
                                         )}
