@@ -13,14 +13,17 @@ describe("prompts exports", () => {
   it("exports SYSTEM_PROMPT with expected content", () => {
     expect(SYSTEM_PROMPT).toBeDefined();
     expect(typeof SYSTEM_PROMPT).toBe("string");
-    expect(SYSTEM_PROMPT).toContain("纯JSON");
-    expect(SYSTEM_PROMPT).toContain("加油〜");
+    // Ultra-short SmolLM2-optimized prompt: JSON-only output, no markdown fences, no trailing commas
+    expect(SYSTEM_PROMPT).toContain("JSON");
+    expect(SYSTEM_PROMPT).toContain("禁止");
+    expect(SYSTEM_PROMPT).toContain("指摘");
   });
 
   it("exports FEW_SHOT_EXAMPLES with expected structure", () => {
     expect(FEW_SHOT_EXAMPLES).toBeDefined();
     expect(typeof FEW_SHOT_EXAMPLES).toBe("string");
-    expect(FEW_SHOT_EXAMPLES).toContain("## 例");
+    // Ultra-short example showing JSON structure
+    expect(FEW_SHOT_EXAMPLES).toContain("例");
     expect(FEW_SHOT_EXAMPLES).toContain("指摘");
     expect(FEW_SHOT_EXAMPLES).toContain("全体講評");
   });

@@ -10,7 +10,8 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("今日は天気がいいです");
     expect(prompt).toContain("今天天气很好");
     expect(prompt).toContain("## 問題");
-    expect(prompt).toContain("纯JSON");
+    // Ultra-short SmolLM2-optimized prompt contains JSON instruction
+    expect(prompt).toContain("JSON");
   });
 
   it("includes instructionPrompt when provided", () => {

@@ -53,7 +53,6 @@ That's my analysis.`;
     const result = parseModelOutput(input);
 
     expect(result.suggestions).toHaveLength(0);
-    // The regex doesn't match malformed JSON, so it returns the "no JSON found" message
     expect(result.overallComment).toContain("JSON");
   });
 
@@ -82,5 +81,205 @@ That's my analysis.`;
     const result = parseModelOutput(input);
 
     expect(result.suggestions).toHaveLength(3);
+  });
+
+  // === HARDENED PARSER TESTS ===
+  // These tests verify the parser never throws SyntaxError to break the UI
+
+  describe("hardened parsing - trailing commas", () => {
+    it("handles trailing comma in array", () => {
+      const input = `{"指摘":[{"番号":1,"箇所":"test","コメント":"comment"},],"全体講評":"OK"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("test");
+    });
+
+    it("handles trailing comma in object", () => {
+      const input = `{"指摘":[{"番号":1,"箇所":"test","コメント":"comment",}],"全体講評":"OK",}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+    });
+
+    it("handles multiple trailing commas", () => {
+      const input = `{
+        "指摘": [
+          { "番号": 1, "箇所": "a", "コメント": "b", },
+          { "番号": 2, "箇所": "c", "コメント": "d", },
+        ],
+        "全体講評": "test",
+      }`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(2);
+    });
+  });
+
+  describe("hardened parsing - truncated JSON", () => {
+    it("handles JSON truncated at ~position 299 (real error scenario)", () => {
+      // Simulate the actual error: "SyntaxError at position 299"
+      // Build a string that's truncated around position 299
+      const truncatedInput = `{"指摘":[{"番号":1,"箇所":"これはテストの文章です","コメント":"この部分に問題があります"},{"番号":2,"箇所":"もう一つのテスト文","コメント":"ここも修正が必要です"},{"番号":3,"箇所":"三番目の指摘箇所","コメント":"詳細なコメントがここに入りま`;
+      // This is truncated mid-string, simulating model output cutoff
+
+      const result = parseModelOutput(truncatedInput);
+
+      // Should not throw, should return gracefully
+      expect(result).toBeDefined();
+      expect(result.suggestions).toBeDefined();
+      expect(Array.isArray(result.suggestions)).toBe(true);
+    });
+
+    it("handles truncated array mid-object", () => {
+      const input = `{"指摘":[{"番号":1,"箇所":"test","コメント":"comment"},{"番号":2,"箇所":"test2","コメント":`;
+
+      const result = parseModelOutput(input);
+
+      expect(result).toBeDefined();
+      // May or may not extract partial data, but must not throw
+      expect(Array.isArray(result.suggestions)).toBe(true);
+    });
+
+    it("handles truncated after opening brace only", () => {
+      const input = `{"指摘":[`;
+
+      const result = parseModelOutput(input);
+
+      expect(result).toBeDefined();
+      expect(result.suggestions).toHaveLength(0);
+    });
+  });
+
+  describe("hardened parsing - markdown fences", () => {
+    it("handles JSON wrapped in ```json fence", () => {
+      const input = "```json\n{\"指摘\":[{\"番号\":1,\"箇所\":\"test\",\"コメント\":\"comment\"}],\"全体講評\":\"OK\"}\n```";
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("test");
+    });
+
+    it("handles JSON wrapped in plain ``` fence", () => {
+      const input = "```\n{\"指摘\":[],\"全体講評\":\"完璧です\"}\n```";
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(0);
+      expect(result.overallComment).toBe("完璧です");
+    });
+
+    it("handles uppercase ```JSON fence", () => {
+      const input = "```JSON\n{\"指摘\":[{\"番号\":1,\"箇所\":\"x\",\"コメント\":\"y\"}],\"全体講評\":\"z\"}\n```";
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+    });
+  });
+
+  describe("hardened parsing - preamble and postamble text", () => {
+    it("handles preamble text before JSON", () => {
+      const input = `Here is my analysis of the translation:
+
+{\"指摘\":[{\"番号\":1,\"箇所\":\"問題箇所\",\"コメント\":\"修正案\"}],\"全体講評\":\"Good\"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("問題箇所");
+    });
+
+    it("handles postamble text after JSON", () => {
+      const input = `{\"指摘\":[],\"全体講評\":\"Perfect\"}
+
+I hope this helps! Let me know if you need anything else.`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.overallComment).toBe("Perfect");
+    });
+
+    it("handles both preamble and postamble", () => {
+      const input = `Analysis result:
+{\"指摘\":[{\"番号\":1,\"箇所\":\"a\",\"コメント\":\"b\"}],\"全体講評\":\"Done\"}
+End of analysis.`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.overallComment).toBe("Done");
+    });
+  });
+
+  describe("hardened parsing - never throws SyntaxError", () => {
+    const malformedInputs = [
+      `{ "指摘": [ { broken`,
+      `{"指摘":[{"番号":1,"箇所":"test"`,
+      `not json at all`,
+      `{"指摘": undefined}`,
+      `{"指摘": [null, null]}`,
+      `{"指摘": "not an array"}`,
+      `{incomplete`,
+      `[]`, // array instead of object
+      `null`,
+      ``,
+      `   `,
+      `{"指摘":[{"番号":1,"箇所":"has "quotes" inside","コメント":"bad"}]}`,
+    ];
+
+    malformedInputs.forEach((input, index) => {
+      it(`does not throw on malformed input #${index + 1}`, () => {
+        expect(() => parseModelOutput(input)).not.toThrow();
+        const result = parseModelOutput(input);
+        expect(result).toBeDefined();
+        expect(result.suggestions).toBeDefined();
+        expect(Array.isArray(result.suggestions)).toBe(true);
+      });
+    });
+  });
+
+  describe("hardened parsing - edge cases", () => {
+    it("handles 指摘 as non-array gracefully", () => {
+      const input = `{"指摘": "not an array", "全体講評": "test"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(0);
+      expect(result.overallComment).toBe("test");
+    });
+
+    it("handles missing 全体講評 field", () => {
+      const input = `{"指摘":[{"番号":1,"箇所":"x","コメント":"y"}]}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.overallComment).toBe("");
+    });
+
+    it("handles null values in suggestions array", () => {
+      const input = `{"指摘":[null,{"番号":1,"箇所":"x","コメント":"y"},null],"全体講評":"test"}`;
+
+      const result = parseModelOutput(input);
+
+      // Should skip null entries
+      expect(result.suggestions).toHaveLength(1);
+    });
+
+    it("handles suggestions with missing fields", () => {
+      const input = `{"指摘":[{"番号":1},{"箇所":"x"},{"コメント":"y"}],"全体講評":"test"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(3);
+      // All should have empty strings for missing fields
+      expect(result.suggestions[0].original).toBe("");
+      expect(result.suggestions[0].reason).toBe("");
+    });
   });
 });
