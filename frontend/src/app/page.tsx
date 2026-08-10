@@ -33,10 +33,6 @@ import {
   generateSuggestions as generateWebLLMSuggestions,
   checkWebGPUSupport,
   isEngineReady,
-  WebGPUUnsupportedError,
-  ModelLoadError,
-  InferenceError,
-  TimeoutError,
   WEBLLM_MODEL_DISPLAY_NAME,
   formatElapsedTime,
   formatDownloadProgress,
@@ -113,7 +109,7 @@ type ProposalAPIResponse = {
   isCustom: number
 }
 
-const FRONTEND_MODE = process.env.NEXT_PUBLIC_FRONTEND_MODE || "real"
+
 
 /**
  * AI Diagnostics Panel Component
@@ -220,7 +216,7 @@ export default function TextCorrectionApp() {
   const [webgpuSupported, setWebgpuSupported] = useState<boolean | null>(null)
   const [webgpuUnsupportedReason, setWebgpuUnsupportedReason] = useState<string | null>(null)
   const [offlineMode, setOfflineMode] = useState(false)
-  const [lastSuggestionSource, setLastSuggestionSource] = useState<"api" | "webllm" | null>(null)
+  const [lastSuggestionSource] = useState<"api" | "webllm" | null>(null)
   const [jobQueue, setJobQueue] = useState<QueuedJob[]>([])
   const [confirmingHistoryIndex, setConfirmingHistoryIndex] = useState<number | null>(null)
   const { toast } = useToast()
@@ -504,42 +500,6 @@ export default function TextCorrectionApp() {
     })
   }, [currentSession, jobQueue, toast])
 
-  const mockSuggestions: CorrectionSuggestion[] = [
-    {
-      id: "1",
-      original: "我并不想回复",
-      reason:
-        "ようがない并非不想的含义，这里可以再看一下这个文法的含义\nようがない：〜できない / 〜したくても手段がない\n不可能であることを強調して言う時に使う。",
-      selected: false,
-    },
-    {
-      id: "2",
-      original: "どんな担任にあったか",
-      reason: "担任指的是学校的老师哦\n担任：学校で，教師があるクラス・教科などを受け持つこと。また，その教師。",
-      selected: false,
-    },
-    {
-      id: "3",
-      original: "有个孩子霸凌年纪比较小的孩子",
-      reason: "这里最好把問題行為译出来哦",
-      selected: false,
-    },
-    {
-      id: "4",
-      original: "",
-      reason: "",
-      selected: false,
-    },
-    {
-      id: "5",
-      original: "",
-      reason: "",
-      selected: false,
-    },
-  ]
-
-  const mockOverallComment =
-    "译文整体的流畅性和对原意翻译处理和展现比较不错，可以再看一下以上几点，注意积累一下ようがない和担任的含义，加油～"
 
   // セッション一覧をAPIから取得
   const loadSessions = useCallback(async () => {

@@ -103,7 +103,7 @@ function extractJson(text: string): string | null {
  */
 function safeJsonParse(text: string): Record<string, unknown> | null {
   // Clean up the text
-  let cleaned = stripMarkdownFences(text);
+  const cleaned = stripMarkdownFences(text);
   
   // Try to extract JSON
   const jsonStr = extractJson(cleaned);
