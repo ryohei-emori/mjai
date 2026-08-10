@@ -1,10 +1,24 @@
-name: Database Migration to Render
+# ============================================================================
+# ⚠️  WARNING: MANUAL DISPATCH ONLY - DO NOT AUTO-TRIGGER
+# ============================================================================
+# This workflow performs LIVE DATA MIGRATION to Supabase Postgres.
+# Running this against the wrong target can cause DATA LOSS.
+#
+# Before running:
+# 1. Verify TARGET_DATABASE_URL points to the correct Supabase project
+# 2. Confirm you have a recent backup
+# 3. Test in staging first if available
+#
+# This is a one-time migration tool, not a routine deployment step.
+# ============================================================================
+
+name: Database Migration (Manual Only)
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to run migration in (staging/production)'
+        description: '⚠️ Target environment (verify TARGET_DATABASE_URL secret!)'
         required: true
         default: 'staging'
         type: choice
