@@ -24,9 +24,27 @@ import {
   CheckCircle,
   RotateCcw,
   MessageSquare,
+  LogOut,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { sessionAPI, historyAPI, proposalAPI, suggestionsAPI } from "./api"
+import { sessionAPI, historyAPI, proposalAPI } from "./api"
+import { useAuth } from "./auth-provider"
+import { LoginScreen } from "./login-screen"
+import {
+  generateSuggestions as generateWebLLMSuggestions,
+  checkWebGPUSupport,
+  isEngineReady,
+  WebGPUUnsupportedError,
+  ModelLoadError,
+  InferenceError,
+  TimeoutError,
+  WEBLLM_MODEL_DISPLAY_NAME,
+  formatElapsedTime,
+  formatDownloadProgress,
+  PHASE_LABELS,
+  getDiagnosticsTracker,
+  type EngineStatus,
+} from "@/lib/webllm"
 
 type CorrectionSuggestion = {
   id: string
@@ -82,7 +100,100 @@ type ProposalAPIResponse = {
 
 const FRONTEND_MODE = process.env.NEXT_PUBLIC_FRONTEND_MODE || "real"
 
+/**
+ * AI Diagnostics Panel Component
+ * Displays detailed phase, timing, and progress information during AI inference
+ */
+function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
+  const diagnostics = status.diagnostics
+  
+  // Determine background color based on state
+  const bgClass = status.state === "error" 
+    ? "bg-red-50 border-red-200" 
+    : "bg-blue-50 border-blue-200"
+  const textClass = status.state === "error"
+    ? "text-red-800"
+    : "text-blue-800"
+  const textMutedClass = status.state === "error"
+    ? "text-red-700"
+    : "text-blue-700"
+  const progressBgClass = status.state === "error"
+    ? "bg-red-200"
+    : "bg-blue-200"
+  const progressFgClass = status.state === "error"
+    ? "bg-red-600"
+    : "bg-blue-600"
+
+  return (
+    <div className={`p-3 border rounded-lg ${bgClass}`}>
+      {/* Header: Model info + current phase */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Loader2 className={`w-4 h-4 animate-spin ${textClass}`} />
+          <span className={`text-sm font-medium ${textClass}`}>
+            {diagnostics?.phaseLabel || (status.state === "loading" ? "準備中" : status.state === "generating" ? "分析中" : "処理中")}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={`font-mono ${textMutedClass}`}>
+            {WEBLLM_MODEL_DISPLAY_NAME}
+          </span>
+        </div>
+      </div>
+      
+      {/* Progress bar for model download */}
+      {status.state === "loading" && (
+        <>
+          <div className={`w-full ${progressBgClass} rounded-full h-2 mb-1`}>
+            <div 
+              className={`${progressFgClass} h-2 rounded-full transition-all duration-300`}
+              style={{ width: `${Math.round(status.progress * 100)}%` }}
+            />
+          </div>
+          <p className={`text-xs ${textMutedClass}`}>
+            {status.text || formatDownloadProgress(status.progress)}
+          </p>
+        </>
+      )}
+      
+      {/* Timing info */}
+      {diagnostics && (
+        <div className={`flex gap-4 text-xs ${textMutedClass} mt-2`}>
+          <span>
+            現在フェーズ: {formatElapsedTime(diagnostics.currentPhaseElapsedMs)}
+          </span>
+          <span>
+            合計: {formatElapsedTime(diagnostics.totalElapsedMs)}
+          </span>
+        </div>
+      )}
+      
+      {/* Timeout info */}
+      {diagnostics?.timeoutPhase && (
+        <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800">
+          <strong>タイムアウト:</strong> {PHASE_LABELS[diagnostics.timeoutPhase]} フェーズでタイムアウトしました
+        </div>
+      )}
+      
+      {/* Error message */}
+      {status.state === "error" && (
+        <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800">
+          <strong>エラー:</strong> {"error" in status ? status.error : "不明なエラー"}
+        </div>
+      )}
+      
+      {/* DevTools hint (only in development) */}
+      {process.env.NODE_ENV === "development" && (
+        <p className={`text-xs ${textMutedClass} mt-2 opacity-60`}>
+          DevTools: window.__webllmDiagnostics.getState()
+        </p>
+      )}
+    </div>
+  )
+}
+
 export default function TextCorrectionApp() {
+  const { session, isLoading: isAuthLoading, signOut } = useAuth()
   const [sessions, setSessions] = useState<Session[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -91,7 +202,42 @@ export default function TextCorrectionApp() {
   const [customCorrection, setCustomCorrection] = useState({ original: "", reason: "" })
   const [showCustomForm, setShowCustomForm] = useState(false)
   const [selectionCounter, setSelectionCounter] = useState(0)
+  const [webllmStatus, setWebllmStatus] = useState<EngineStatus>({ state: "idle" })
+  const [webgpuSupported, setWebgpuSupported] = useState<boolean | null>(null)
+  const [webgpuUnsupportedReason, setWebgpuUnsupportedReason] = useState<string | null>(null)
   const { toast } = useToast()
+
+  // Check WebGPU support on mount
+  useEffect(() => {
+    const check = checkWebGPUSupport()
+    setWebgpuSupported(check.supported)
+    if (!check.supported) {
+      setWebgpuUnsupportedReason(check.reason || "WebGPU is not supported")
+    }
+  }, [])
+
+  // Periodic timer updates during processing
+  // This fixes the "0ms" display bug by polling the tracker for fresh timing data
+  useEffect(() => {
+    if (!isProcessing) return
+    
+    // Only update when in active processing states
+    const activeStates = ["loading", "generating", "checking_webgpu"]
+    if (!activeStates.includes(webllmStatus.state)) return
+
+    const intervalId = setInterval(() => {
+      const tracker = getDiagnosticsTracker()
+      const freshDiagnostics = tracker.getState()
+      
+      // Update the status with fresh timing data while preserving other status properties
+      setWebllmStatus(prev => ({
+        ...prev,
+        diagnostics: freshDiagnostics,
+      }))
+    }, 100) // Update every 100ms for smooth timer display
+
+    return () => clearInterval(intervalId)
+  }, [isProcessing, webllmStatus.state])
 
   const mockSuggestions: CorrectionSuggestion[] = [
     {
@@ -256,9 +402,19 @@ export default function TextCorrectionApp() {
     )
   }
 
-  // AI提案生成をAPIから取得（既存の選択状態を保持）
+  // AI提案生成をWebLLMで実行（既存の選択状態を保持）
   const generateAISuggestions = async () => {
     if (!currentSession?.targetText.trim()) return
+
+    // Check WebGPU support first
+    if (!webgpuSupported) {
+      toast({
+        title: "WebGPU非対応",
+        description: webgpuUnsupportedReason || "このブラウザではAI提案機能を利用できません",
+        variant: "destructive",
+      })
+      return
+    }
 
     setIsProcessing(true)
 
@@ -305,18 +461,22 @@ export default function TextCorrectionApp() {
     }
 
     try {
-      const data = await suggestionsAPI.generateSuggestions({
-        originalText: currentSession.originalText,
-        targetText: currentSession.targetText,
-        instructionPrompt: "CCTalkからの添削指示",
-        sessionId: currentSession.id,
-        engine: "gemini",
-      })
+      // Use client-side WebLLM for suggestion generation
+      const data = await generateWebLLMSuggestions(
+        {
+          originalText: currentSession.originalText,
+          targetText: currentSession.targetText,
+          instructionPrompt: "CCTalkからの添削指示",
+        },
+        (status) => setWebllmStatus(status)
+      )
 
       // 既存の選択状態を復元
-      const restoredSuggestions = data.suggestions.map((s: CorrectionSuggestion) => {
+      const restoredSuggestions = data.suggestions.map((s) => {
         const existing = existingSelections.get(s.original)
-        return existing ? { ...s, ...existing } : { ...s, selected: false, selectedOrder: undefined }
+        return existing
+          ? { ...s, ...existing, selected: existing.selected || false }
+          : { ...s, selected: false, selectedOrder: undefined }
       })
 
       // カスタム修正を追加
@@ -331,12 +491,27 @@ export default function TextCorrectionApp() {
       // 選択カウンターを復元
       const selectedCount = allSuggestions.filter((s) => s.selected).length
       setSelectionCounter(selectedCount)
-    } catch {
+    } catch (error) {
+      let errorMessage = "AI提案の生成に失敗しました"
+      
+      if (error instanceof WebGPUUnsupportedError) {
+        errorMessage = error.message
+        setWebgpuSupported(false)
+        setWebgpuUnsupportedReason(error.message)
+      } else if (error instanceof TimeoutError) {
+        errorMessage = error.message
+      } else if (error instanceof ModelLoadError) {
+        errorMessage = `モデルの読み込みに失敗しました: ${error.message}`
+      } else if (error instanceof InferenceError) {
+        errorMessage = `推論に失敗しました: ${error.message}`
+      }
+      
       toast({
-        title: "APIエラー",
-        description: "AI提案の取得に失敗しました",
+        title: "エラー",
+        description: errorMessage,
         variant: "destructive",
       })
+      setWebllmStatus({ state: "idle" })
     } finally {
       setIsProcessing(false)
     }
@@ -655,10 +830,26 @@ export default function TextCorrectionApp() {
     </div>
   )
 
-  // セッション一覧を初期化時に読み込み
+  // セッション一覧を初期化時に読み込み（認証済みの場合のみ）
   useEffect(() => {
-    loadSessions()
-  }, [loadSessions])
+    if (session) {
+      loadSessions()
+    }
+  }, [session, loadSessions])
+
+  // 認証状態を確認中はローディング表示
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
+    )
+  }
+
+  // 未認証の場合はログイン画面を表示し、保護されたエンドポイントへのアクセスを行わない
+  if (!session) {
+    return <LoginScreen />
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -699,7 +890,17 @@ export default function TextCorrectionApp() {
         )}
 
         {/* Main Content */}
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto relative">
+          {/* Global Logout Button - Top Right */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => signOut()}
+            className="fixed top-4 right-4 z-50 bg-white shadow-md"
+            title="ログアウト"
+          >
+            <LogOut className="w-4 h-4" />
+          </Button>
           <div className="p-4 lg:p-8">
             <div className="max-w-7xl mx-auto">
               {/* Header for mobile */}
@@ -766,20 +967,47 @@ export default function TextCorrectionApp() {
                             onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
                             className="min-h-[250px] text-base leading-relaxed"
                           />
+                          {/* WebGPU unsupported message */}
+                          {webgpuSupported === false && (
+                            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                              <p className="font-medium">AI提案機能を利用できません</p>
+                              <p className="text-xs mt-1">{webgpuUnsupportedReason}</p>
+                              <p className="text-xs mt-1">手動でカスタム修正を追加してください。</p>
+                            </div>
+                          )}
+                          
+                          {/* AI Diagnostics Panel - shows during any processing */}
+                          {(webllmStatus.state === "loading" || 
+                            webllmStatus.state === "generating" || 
+                            webllmStatus.state === "checking_webgpu" ||
+                            webllmStatus.state === "error") && (
+                            <AIDiagnosticsPanel status={webllmStatus} />
+                          )}
+                          
                           <Button
                             onClick={generateAISuggestions}
-                            disabled={!currentSession.targetText.trim() || isProcessing}
+                            disabled={!currentSession.targetText.trim() || isProcessing || webgpuSupported === false}
                             className="w-full"
                           >
                             {isProcessing ? (
                               <>
                                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                AI分析中...
+                                {webllmStatus.diagnostics?.phaseLabel || 
+                                  (webllmStatus.state === "loading" 
+                                    ? `${WEBLLM_MODEL_DISPLAY_NAME} 準備中...` 
+                                    : webllmStatus.state === "generating"
+                                    ? `${WEBLLM_MODEL_DISPLAY_NAME} 分析中...`
+                                    : "処理中...")}
+                              </>
+                            ) : isEngineReady() ? (
+                              <>
+                                <Bot className="w-4 h-4 mr-2" />
+                                AI提案を生成
                               </>
                             ) : (
                               <>
                                 <Bot className="w-4 h-4 mr-2" />
-                                AI提案を生成
+                                AI提案を生成（初回は{WEBLLM_MODEL_DISPLAY_NAME}をDL）
                               </>
                             )}
                           </Button>

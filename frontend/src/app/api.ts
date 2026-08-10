@@ -2,6 +2,8 @@
 // All data access is via the backend REST API
 // No direct database client usage in frontend for security
 
+import { supabase } from "@/lib/supabaseClient";
+import { notifyUnauthorized } from "@/lib/authEvents";
 
 // API設定
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -19,12 +21,19 @@ console.log('=====================');
 const apiFetch = async (url: string, options?: RequestInit) => {
   const fullUrl = `${API_BASE_URL}${url}`;
   console.log('Fetching:', fullUrl, options);
-  
+
+  // 現在のSupabaseセッションからアクセストークンを取得し、Authorizationヘッダーに付与する
+  const { data: { session } } = await supabase.auth.getSession();
+  const authHeaders: Record<string, string> = session?.access_token
+    ? { Authorization: `Bearer ${session.access_token}` }
+    : {};
+
   try {
     const response = await fetch(fullUrl, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders,
         ...options?.headers,
       },
     });
@@ -35,6 +44,10 @@ const apiFetch = async (url: string, options?: RequestInit) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('API Error:', response.status, errorText);
+      if (response.status === 401) {
+        // トークンが失効/不正: ログイン画面に戻す
+        notifyUnauthorized();
+      }
       throw new Error(`API Error: ${response.status} - ${errorText}`);
     }
     
@@ -146,18 +159,7 @@ export const proposalAPI = {
   }
 };
 
-// AI提案生成API（既存）
-export const suggestionsAPI = {
-  generateSuggestions: async (requestData: {
-    originalText: string;
-    targetText: string;
-    instructionPrompt?: string;
-    sessionId?: string;
-    engine?: string;
-  }) => {
-    return await apiFetch('/suggestions', {
-      method: 'POST',
-      body: JSON.stringify(requestData)
-    });
-  }
-}; 
+// AI提案生成API (REMOVED)
+// Suggestion generation has been migrated to client-side WebLLM.
+// The backend /suggestions endpoint and suggestionsAPI have been removed.
+// See frontend/src/lib/webllm/ for the client-side implementation.

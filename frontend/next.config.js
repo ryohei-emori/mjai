@@ -2,11 +2,13 @@ const path = require('path')
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Static export設定
+  // Static export for Vercel monorepo deployment (frontend in subdirectory)
   output: 'export',
   trailingSlash: true,
-  
-  // 静的エクスポート用の画像設定
+
+  // Vercel's Image Optimization is available, but keeping unoptimized: true
+  // until next/image usage is reviewed. Flip to false as a follow-up to
+  // enable Vercel's native image optimization.
   images: {
     unoptimized: true
   },

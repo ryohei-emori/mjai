@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+import { AuthProvider } from "./auth-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,11 +24,14 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // suppressHydrationWarning: browser extensions (e.g. UI.Vision/Kantu) inject attrs like data-kantu on <html>
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`bg-background text-foreground ${geistSans.variable} ${geistMono.variable}`}>
-        <Toaster />
-        {children}
+        <AuthProvider>
+          <Toaster />
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );
