@@ -112,6 +112,34 @@ Current state:
 
 **Rollback:** Remove env vars from Vercel → endpoint returns 503 → frontend auto-falls back to WebLLM (existing behavior).
 
+### Decision 8: JSON-parse-failure retry — retry the whole failover-chain pass, not a single provider call
+
+**Choice:** When a generate+parse pass produces unparseable content, retry the *entire* `generate_suggestions` pass (Groq → Cloudflare failover chain, same as a fresh top-level call) up to `MAX_PARSE_RETRY_ATTEMPTS = 3` total passes, rather than (a) retrying only the same single provider call in a tight loop, or (b) immediately jumping to Cloudflare on the first parse failure.
+
+**Rationale:**
+- This retry axis is orthogonal to the existing network-level retry (Groq in-provider model rotation on 429/5xx/timeout, then Cloudflare fallback on a non-retriable/exhausted Groq failure). Composing them by retrying the *whole pass* keeps the two axes independent and easy to reason about — no special-casing needed inside `groq_provider.py` or `cloudflare_provider.py`.
+- Groq is the primary/fastest path and already has model rotation (`select_groq_models`), so re-entering the Groq branch on a retry pass has a good chance of landing on a different model than the failed attempt, without prematurely spending the Cloudflare fallback slot on what may just be Groq-model-specific noise (e.g. a Preview-tier model's occasional malformed output).
+- If Groq is not configured, each retry pass naturally goes straight to Cloudflare (unaffected — the pass structure is unchanged, only repeated).
+- A genuine network-level failure (`SuggestionsError`, both providers failed at the HTTP layer even after their own retries) is NOT retried by this axis — it propagates immediately, since retrying a fully-down network path would not help and would only add latency.
+
+**Bounded worst case:** `MAX_PARSE_RETRY_ATTEMPTS (3) × (Groq's own up-to-2-model rotation + 1 Cloudflare attempt if Groq raises)` — in practice, most passes succeed at parsing on attempt 1 (parse failures are rare), so this worst case is a deliberate, documented trade-off favoring eventual success over strict latency bounds for the rare parse-failure case. See `backend/app/llm/suggestions.py` module docstring for the precise accounting.
+
+**Alternatives considered:**
+- Retry only the same provider call directly (bypass the failover chain): simpler, but loses the "fall through to Cloudflare on repeated Groq parse failure" safety net entirely if Groq is configured, since a plain retry loop around `call_groq_with_rotation` alone would never try Cloudflare for a parse failure.
+- Jump straight to Cloudflare after the first Groq parse failure: gives up on Groq's model rotation diversity too early; Cloudflare's single fixed model (`@cf/meta/llama-3.1-8b-instruct`) has no internal retry diversity of its own.
+
+### Decision 9: Suggestion count reversed to "at least 5" (2026-08)
+
+**Choice:** Revert the prior "up to 3, no padding" prompt guidance (Decision documented in tasks.md §7) back to "at least 5 genuine suggestions, no padding/fabrication," per explicit user direction. The anti-fabrication guardrail from the "up to 3" era is kept unchanged — only the target count and the instruction to search more dimensions (word choice, register, punctuation, phrasing, structure) before concluding there are fewer than 5 issues.
+
+**Rationale:** For a correction-exercise product, under-reporting issues (capping at 3) was judged lower-value than thoroughness; almost any non-trivial piece of text has 5+ legitimate points worth flagging across grammar/register/naturalness/structure.
+
+### Decision 10: Chinese explanations, Japanese corrected text (2026-08)
+
+**Choice:** Explicitly split field-level language in the backend prompt (`backend/app/llm/prompts.py`): `reason` and `overallComment` → Simplified Chinese; `original` (the flagged/corrected Japanese excerpt) → stays Japanese. Both the system prompt's explicit field-level rules and the few-shot example are updated to demonstrate this exact mixed-language pattern.
+
+**Rationale:** Restores the intended UX (Chinese-speaking users get explanations in their native language) without reintroducing the earlier garbled-mixed-language bug in the *corrected text itself* — the original bug was in over-applying Chinese to the whole response including the Japanese content field, not in having Chinese explanations per se. Field-level (not whole-prompt-level) language instructions avoid repeating that mistake.
+
 ## Open Questions
 
 None - all design decisions are resolved.

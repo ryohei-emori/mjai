@@ -10,7 +10,9 @@
  * - Required features: shader-f16
  * 
  * ## Generation Parameters
- * - max_tokens: 512 (sufficient for JSON with up to 3 suggestions + overall comment)
+ * - max_tokens: 1024 (bumped 2026-08 from 512 to fit the "at least 5 suggestions"
+ *   target — see prompts/system.ts; 512 could truncate JSON mid-response once the
+ *   count target moved up from the earlier "up to 3" cap)
  * - temperature: 0.2 (low for consistent structured output)
  * - Input truncation: ~3000 tokens for SOURCE+TARGET (leaving headroom for system prompt)
  * 

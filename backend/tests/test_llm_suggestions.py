@@ -197,3 +197,66 @@ class TestGenerateSuggestionsCloudflareOnly:
                 
                 assert len(result["suggestions"]) == 1
                 mock_cf.assert_called_once()
+
+
+UNPARSEABLE_LLM_RESPONSE = "I'm sorry, I cannot help with that request."
+
+
+@pytest.mark.asyncio
+class TestGenerateSuggestionsParseFailureRetry:
+    """
+    Tests for the JSON-parse-failure retry axis in generate_suggestions()
+    (MAX_PARSE_RETRY_ATTEMPTS). This is distinct from the network-level
+    retry covered by TestGenerateSuggestionsGroqFailCFSuccess above: here
+    call_groq_with_rotation always succeeds at the network level, but its
+    *content* sometimes fails to parse as JSON.
+    """
+
+    async def test_parse_fails_twice_then_succeeds_on_third_attempt(self):
+        """Attempts 1 and 2 return unparseable content; attempt 3 succeeds."""
+        with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                mock_groq.side_effect = [
+                    UNPARSEABLE_LLM_RESPONSE,
+                    UNPARSEABLE_LLM_RESPONSE,
+                    VALID_LLM_RESPONSE,
+                ]
+
+                result = await generate_suggestions("原文", "訳文")
+
+                assert len(result["suggestions"]) == 1
+                assert result["suggestions"][0]["original"] == "テスト箇所"
+                assert mock_groq.call_count == 3
+
+    async def test_gives_up_after_max_parse_retry_attempts(self):
+        """Every attempt fails to parse -> returns parse-failure placeholder
+        after exactly MAX_PARSE_RETRY_ATTEMPTS attempts, without raising."""
+        with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                mock_groq.return_value = UNPARSEABLE_LLM_RESPONSE
+
+                result = await generate_suggestions("原文", "訳文")
+
+                assert result["suggestions"] == []
+                assert "抽出できませんでした" in result["overallComment"]
+                assert mock_groq.call_count == 3
+
+    async def test_parse_failure_retry_does_not_affect_network_failure_raising(self):
+        """A genuine network-level failure (both providers down) still
+        raises immediately on the first attempt, without consuming the
+        parse-retry budget (these are independent, composable axes)."""
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok'
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    mock_groq.side_effect = GroqRateLimitError("Rate limit", status_code=429)
+                    mock_cf.side_effect = CloudflareError("CF error")
+
+                    with pytest.raises(SuggestionsError):
+                        await generate_suggestions("原文", "訳文")
+
+                    mock_groq.assert_called_once()
+                    mock_cf.assert_called_once()

@@ -315,8 +315,8 @@ describe("SmolLM2 specific tests", () => {
     resetEngine();
   });
 
-  it("handles SmolLM2 max_tokens=512 bounded output", async () => {
-    // SmolLM2 with max_tokens=512 should produce reasonable output
+  it("handles SmolLM2 bounded max_tokens output", async () => {
+    // SmolLM2 with a bounded max_tokens budget should produce reasonable output
     const longButValidOutput = `{"指摘":[{"番号":1,"箇所":"${"x".repeat(100)}","コメント":"${"y".repeat(200)}"}],"全体講評":"${"z".repeat(100)}"}`;
     
     mockEngine.chat.completions.create.mockResolvedValue({

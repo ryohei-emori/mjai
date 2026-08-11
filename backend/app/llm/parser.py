@@ -8,6 +8,15 @@ Hardened to handle common LLM output issues:
 - Markdown code fences wrapping JSON
 - Preamble/postamble text around JSON
 - Both Japanese (指摘/全体講評) and English (suggestions/overallComment) keys
+
+This parser is field-content-language-agnostic: it extracts whatever string
+values are present in the `original`/`reason` (or their Japanese/legacy
+field-name equivalents) and `overallComment` keys without validating or
+transforming their language. As of 2026-08 the prompts (see
+backend/app/llm/prompts.py) instruct the model to write `original` in
+Japanese and `reason`/`overallComment` in Simplified Chinese — this parser
+does not need to change for that split since it only handles JSON
+structure, not content language.
 """
 
 from __future__ import annotations
@@ -18,6 +27,14 @@ import logging
 from typing import TypedDict, Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Exact placeholder message returned in `overallComment` when JSON extraction
+# from the raw model output fails entirely (as opposed to a genuinely valid
+# response with zero suggestions). Exposed as a constant so callers (e.g.
+# backend/app/llm/suggestions.py's parse-failure retry loop, and the
+# frontend's `isParseFailure` check) can detect this specific failure mode
+# without re-deriving/duplicating the string.
+JSON_EXTRACTION_FAILURE_MESSAGE = "AIの応答からJSONを抽出できませんでした。再度お試しください。"
 
 
 class CorrectionSuggestion(TypedDict):
@@ -197,7 +214,7 @@ def parse_model_output(text: str) -> ParsedResponse:
         logger.warning(f"[parser] Failed to extract JSON from response. Raw text (first 1000 chars): {text[:1000]!r}")
         return {
             "suggestions": [],
-            "overallComment": "AIの応答からJSONを抽出できませんでした。再度お試しください。",
+            "overallComment": JSON_EXTRACTION_FAILURE_MESSAGE,
         }
     
     logger.debug(f"[parser] Parsed JSON keys: {list(parsed.keys())}")
@@ -264,3 +281,15 @@ def parse_model_output(text: str) -> ParsedResponse:
         "suggestions": suggestions,
         "overallComment": overall_comment,
     }
+
+
+def is_json_extraction_failure(result: ParsedResponse) -> bool:
+    """
+    True if `result` is the specific "could not extract JSON" placeholder
+    produced by parse_model_output(), as opposed to a genuinely valid
+    response with zero suggestions (e.g. clean text with no issues found).
+
+    Used by backend/app/llm/suggestions.py to decide whether a generate+parse
+    attempt should be retried (see MAX_PARSE_RETRY_ATTEMPTS there).
+    """
+    return not result["suggestions"] and result["overallComment"] == JSON_EXTRACTION_FAILURE_MESSAGE

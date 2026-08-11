@@ -263,7 +263,9 @@ export async function generateSuggestions(
       const inferencePromise = engine.chat.completions.create({
         messages,
         temperature: 0.2,
-        max_tokens: 512,
+        // Bumped 512 -> 1024 (2026-08) to fit the "at least 5 suggestions"
+        // prompt target; see frontend/src/lib/webllm/config.ts.
+        max_tokens: 1024,
       });
 
       response = await withTimeout(

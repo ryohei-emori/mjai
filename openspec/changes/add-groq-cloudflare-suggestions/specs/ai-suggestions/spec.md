@@ -56,22 +56,31 @@ The system SHALL automatically failover to Cloudflare Workers AI when Groq retur
 - **WHEN** both Groq and Cloudflare Workers AI fail or are unavailable
 - **THEN** system returns HTTP 503 with error message indicating service unavailable
 
-### Requirement: Suggestion count targets quality over a fixed quantity
+### Requirement: Suggestion count targets thoroughness over an artificial cap
 
-The system SHALL prompt the model to identify and return **up to 3** suggestions per request, prioritizing the most important issues when more are found. The system SHALL NOT pad, fabricate, or duplicate entries to force the count up to 3 (or any other number) — if the model genuinely finds fewer than 3 issues, the response SHALL contain only that smaller number of suggestions (including zero, when the text has no issues).
+The system SHALL prompt the model to identify and return **at least 5** suggestions per request, actively searching across word choice, register/politeness, punctuation, natural phrasing, and structure rather than stopping at the first few obvious issues. The system SHALL NOT pad, fabricate, or duplicate entries to force the count up to 5 (or any other number) — if the model genuinely finds fewer than 5 issues after a thorough pass, the response SHALL contain only that smaller number of suggestions (including zero, when the text has no issues).
 
-This intentionally supersedes the older (Gemini-era, now-removed) `ai-suggestion-generation` spec's "always exactly five, padded with empty placeholders" behavior: padding with empty/fake entries produces low-quality, misleading output and is explicitly disallowed. "3" is a target/max guideline for prompt engineering (per user direction: "AIの提案は3件でOK"), not a mandatory exact count enforced by application logic.
+This reverses the previous "up to 3, no padding" direction (see superseded scenarios below) per explicit user direction ("AIによる提案内容は５個以上にしてください" — 2026-08): the "up to 3" cap was found to under-deliver value for a correction-exercise use case where there is almost always more than 3 genuine points worth noting. The anti-fabrication rule from the "up to 3" era is preserved unchanged: quality/authenticity of each suggestion still takes priority over hitting any specific number.
 
-#### Scenario: Model finds 3 or more genuine issues
+#### Scenario: Model finds 5 or more genuine issues
 
-- **WHEN** the model identifies 3 or more correction points in the input text
-- **THEN** the prompt guides it to return at most 3, focused on the most important/impactful issues
+- **WHEN** the model identifies 5 or more correction points in the input text
+- **THEN** the prompt guides it to return all of them (no upper cap), or at minimum the 5 most impactful, rather than truncating early
 
-#### Scenario: Model finds fewer than 3 genuine issues
+#### Scenario: Model finds fewer than 5 genuine issues on a first pass
 
-- **WHEN** the model identifies fewer than 3 correction points (including zero)
+- **WHEN** the input text is short or superficially clean
+- **THEN** the prompt directs the model to look harder across additional dimensions (word choice, register/politeness, punctuation, natural phrasing, structure) before concluding fewer than 5 issues exist
+
+#### Scenario: Model genuinely finds fewer than 5 issues after a thorough pass
+
+- **WHEN** the model, after being prompted to search thoroughly, still identifies fewer than 5 correction points (including zero)
 - **THEN** the response contains only the genuinely-found suggestions
-- **AND** the system does not add empty or fabricated placeholder entries to reach 3
+- **AND** the system does not add empty or fabricated placeholder entries to reach 5
+
+#### Scenario (superseded, kept for history): "up to 3" era behavior
+
+- Previously: the system prompted for **up to 3** suggestions, prioritizing the most important issues when more were found, with no padding to reach 3. This is no longer current behavior as of this revision — see "Model finds 5 or more genuine issues" above — but is kept here as a record of the requirement's evolution (Gemini-era "always exactly five, padded" → "up to 3, no padding" → "at least 5, no padding").
 
 ### Requirement: Consistent JSON response schema
 
@@ -81,6 +90,48 @@ The system SHALL return suggestions in the same JSON schema used by WebLLM: `{"s
 
 - **WHEN** suggestion generation succeeds
 - **THEN** response body contains `suggestions` array with `id`, `original`, `reason` fields and `overallComment` string
+
+### Requirement: Bilingual field content — Chinese explanations, Japanese corrected text
+
+The system's users are Chinese speakers correcting/learning Japanese text. The system SHALL prompt the model so that explanation-oriented fields (`reason` on each suggestion, and `overallComment`) are written in **Chinese (Simplified)**, while the `original` field (the excerpt of corrected/flagged Japanese text itself) remains in **Japanese**, matching the language of the input `originalText`/`targetText`. Field names and the JSON schema itself are unchanged — only the prompted content language differs per field.
+
+This corrects a prior overcorrection: an earlier bug caused the *entire* response (including the corrected Japanese text) to come out as garbled mixed-language output, because the backend system prompt had been ported from the frontend's Chinese WebLLM prompt without adapting it to the backend's Japanese-only proofreading task. The fix at the time rewrote the entire backend prompt to Japanese, which also flipped the explanation fields to Japanese — overcorrecting, since the target audience (Chinese speakers) benefits from Chinese explanations. This requirement restores Chinese explanations while explicitly keeping the corrected-text field in Japanese, avoiding a repeat of the original garbled-output bug.
+
+#### Scenario: Suggestion reason is in Chinese
+
+- **WHEN** suggestion generation succeeds
+- **THEN** each suggestion's `reason` field is written in Simplified Chinese
+
+#### Scenario: Overall comment is in Chinese
+
+- **WHEN** suggestion generation succeeds
+- **THEN** the `overallComment` field is written in Simplified Chinese
+
+#### Scenario: Corrected/flagged text stays in Japanese
+
+- **WHEN** suggestion generation succeeds
+- **THEN** each suggestion's `original` field remains in Japanese (the same language as the input text) and is NOT translated into Chinese
+
+### Requirement: Automatic retry on JSON parse failure
+
+The system SHALL automatically retry suggestion generation up to a bounded total number of attempts when a provider's response fails to parse as valid JSON (i.e. `extract_json`/`repair_truncated_json` both fail to produce parseable content), before giving up and returning the existing parse-failure placeholder response. This is a distinct retry axis from the existing network-level retry (Groq 429/5xx/timeout in-provider model rotation, and the Groq→Cloudflare provider failover): it exists to handle cases where a provider responds successfully at the HTTP level but the *content* is not valid/parseable JSON (e.g. a small/preview model emitting reasoning tokens, prose, or truncated output instead of clean JSON).
+
+#### Scenario: Parse fails on early attempts, succeeds on a later attempt
+
+- **WHEN** the first attempt's response fails to parse as JSON, and a retry is issued
+- **AND** a subsequent attempt (within the bounded retry budget) returns a response that parses successfully
+- **THEN** the system returns the successfully-parsed suggestions from that attempt, without surfacing the earlier parse failures to the caller
+
+#### Scenario: All retry attempts fail to parse
+
+- **WHEN** every attempt within the bounded retry budget fails to parse as JSON
+- **THEN** the system gives up and returns the existing parse-failure placeholder response (empty `suggestions`, explanatory `overallComment`) rather than retrying indefinitely
+
+#### Scenario: Retry axis is additive with, not a replacement for, network-level retry
+
+- **WHEN** a provider request fails at the network/HTTP level (429/5xx/timeout)
+- **THEN** it is handled by the existing network-level retry/failover logic (Groq model rotation, then Cloudflare), unaffected by the JSON-parse retry budget
+- **AND** the JSON-parse retry budget only applies to responses that succeeded at the network level but failed to parse as content
 
 ### Requirement: WebLLM remains as offline fallback
 

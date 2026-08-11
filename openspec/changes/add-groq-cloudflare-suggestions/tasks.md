@@ -52,3 +52,16 @@
 
 - [x] 8.1 Commit and push changes to main
 - [x] 8.2 Add env vars to Vercel production environment — **GROQ_API_KEY** + **CLOUDFLARE_API_TOKEN** set (Production + Preview via CLI); **CLOUDFLARE_ACCOUNT_ID** still required for Workers AI fallback (paste from Cloudflare dashboard Overview)
+
+## 9. Suggestion count reversal + bilingual content + parse-failure retry (2026-08 `/opsx-apply`)
+
+- [x] 9.1 Reverse suggestion-count guidance in `backend/app/llm/prompts.py` from "up to 3, no padding" back to "at least 5, no padding" — bias the model to search word choice/register/punctuation/phrasing/structure before concluding fewer than 5 issues exist
+- [x] 9.2 Apply the same "at least 5" reversal to `frontend/src/lib/webllm/prompts/system.ts` and `fewShot.ts` for cloud/offline consistency
+- [x] 9.3 Split field-level language in `backend/app/llm/prompts.py`: `reason` + `overallComment` → Simplified Chinese; `original` → stays Japanese. Update the few-shot example to demonstrate this exact split
+- [x] 9.4 Verify/fix `frontend/src/lib/webllm/prompts/system.ts` + `fewShot.ts` explicitly distinguish Japanese `original` vs Chinese `reason`/`overallComment` (WebLLM prompt was already Chinese-only; add the explicit split instruction)
+- [x] 9.5 Update `backend/app/llm/parser.py` docstring to reflect the current field-level language expectations (no parsing logic changes needed — parser is language-agnostic)
+- [x] 9.6 Bump WebLLM `max_tokens` (512 → 1024) in `frontend/src/lib/webllm/engine.ts` and update `config.ts` docstring, since 5+ suggestions need more output budget than the old "up to 3" target
+- [x] 9.7 Implement bounded JSON-parse-failure retry (up to 3 total passes) in `backend/app/llm/suggestions.py`, additive with existing network-level retry/failover (see design.md Decision 8)
+- [x] 9.8 Add tests in `backend/tests/test_llm_suggestions.py` covering: parse failure on attempts 1–2 then success on attempt 3; giving up after 3 failed parse attempts
+- [x] 9.9 Update `specs/ai-suggestions/spec.md` (count, bilingual content, retry requirements) and `design.md` (Decisions 8–10) to reflect all of the above
+- [x] 9.10 Run `backend pytest` to confirm no regressions from the retry loop or prompt changes
