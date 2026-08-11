@@ -122,10 +122,12 @@ def parse_model_output(text: str) -> ParsedResponse:
     HARDENED: Never raises - returns empty on parse failure.
     
     Supports two key formats:
-    1. Japanese keys (preferred prompt format): {"指摘": [...], "全体講評": "..."}
-       - Item keys: {"番号", "箇所", "コメント"}
-    2. English keys (some models output this): {"suggestions": [...], "overallComment": "..."}
-       - Item keys: {"id", "original", "reason"}
+    1. Japanese keys (legacy): {"指摘": [...], "全体講評": "..."}
+    2. English keys (canonical, per prompt): {"suggestions": [...], "overallComment": "..."}
+    
+    Item field fallbacks (tries in order):
+    - original: original, 箇所, text, content, excerpt
+    - reason: reason, コメント, comment, suggestion, fix
     """
     logger.debug(f"[parser] Raw input (first 500 chars): {text[:500]}")
     
@@ -166,9 +168,25 @@ def parse_model_output(text: str) -> ParsedResponse:
     suggestions: List[CorrectionSuggestion] = []
     for i, item in enumerate(shiteki_list):
         if item and isinstance(item, dict):
-            # Try Japanese keys first, then English
-            original = item.get("箇所") or item.get("original", "")
-            reason = item.get("コメント") or item.get("reason", "")
+            # Try multiple possible field names for robustness
+            # Models may use: original, text, content, excerpt, 箇所
+            original = (
+                item.get("original") or 
+                item.get("箇所") or 
+                item.get("text") or 
+                item.get("content") or 
+                item.get("excerpt") or 
+                ""
+            )
+            # Models may use: reason, comment, suggestion, fix, コメント
+            reason = (
+                item.get("reason") or 
+                item.get("コメント") or 
+                item.get("comment") or 
+                item.get("suggestion") or 
+                item.get("fix") or 
+                ""
+            )
             
             suggestions.append({
                 "id": str(i + 1),

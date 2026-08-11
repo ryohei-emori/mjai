@@ -199,11 +199,23 @@ export function parseModelOutput(text: string): ParsedResponse {
     const item = suggestionsList[i];
     if (item && typeof item === 'object') {
       const entry = item as Record<string, unknown>;
-      // Try English keys first, then Japanese
-      const original = typeof entry["original"] === 'string' ? entry["original"]
-        : typeof entry["箇所"] === 'string' ? entry["箇所"] : "";
-      const reason = typeof entry["reason"] === 'string' ? entry["reason"]
-        : typeof entry["コメント"] === 'string' ? entry["コメント"] : "";
+      // Try multiple possible field names for robustness
+      // Models may use: original, text, content, excerpt, 箇所
+      const original = 
+        (typeof entry["original"] === 'string' ? entry["original"] : null) ||
+        (typeof entry["箇所"] === 'string' ? entry["箇所"] : null) ||
+        (typeof entry["text"] === 'string' ? entry["text"] : null) ||
+        (typeof entry["content"] === 'string' ? entry["content"] : null) ||
+        (typeof entry["excerpt"] === 'string' ? entry["excerpt"] : null) ||
+        "";
+      // Models may use: reason, comment, suggestion, fix, コメント
+      const reason = 
+        (typeof entry["reason"] === 'string' ? entry["reason"] : null) ||
+        (typeof entry["コメント"] === 'string' ? entry["コメント"] : null) ||
+        (typeof entry["comment"] === 'string' ? entry["comment"] : null) ||
+        (typeof entry["suggestion"] === 'string' ? entry["suggestion"] : null) ||
+        (typeof entry["fix"] === 'string' ? entry["fix"] : null) ||
+        "";
       
       suggestions.push({
         id: String(i + 1),

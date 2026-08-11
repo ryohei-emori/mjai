@@ -354,4 +354,55 @@ Hope this helps!`;
       expect(result.overallComment).toBe("English comment");
     });
   });
+
+  // === Tests for alternative field name fallbacks ===
+  describe("Alternative field name fallbacks", () => {
+    it("handles text/comment as alternative field names", () => {
+      const input = `{"suggestions":[{"id":"1","text":"問題箇所","comment":"修正理由"}],"overallComment":"OK"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("問題箇所");
+      expect(result.suggestions[0].reason).toBe("修正理由");
+    });
+
+    it("handles content/suggestion as alternative field names", () => {
+      const input = `{"suggestions":[{"id":"1","content":"箇所A","suggestion":"理由B"}],"overallComment":"Done"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("箇所A");
+      expect(result.suggestions[0].reason).toBe("理由B");
+    });
+
+    it("handles excerpt/fix as alternative field names", () => {
+      const input = `{"suggestions":[{"id":"1","excerpt":"抜粋","fix":"修正"}],"overallComment":"完了"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("抜粋");
+      expect(result.suggestions[0].reason).toBe("修正");
+    });
+
+    it("prefers original over text when both present", () => {
+      const input = `{"suggestions":[{"original":"優先","text":"非優先","reason":"理由"}],"overallComment":""}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions[0].original).toBe("優先");
+    });
+
+    it("returns empty strings when content fields are missing", () => {
+      const input = `{"suggestions":[{"id":"1"}],"overallComment":""}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("");
+      expect(result.suggestions[0].reason).toBe("");
+    });
+  });
 });

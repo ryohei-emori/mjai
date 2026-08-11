@@ -223,3 +223,48 @@ Hope this helps!'''
         
         assert len(result["suggestions"]) == 1
         assert result["suggestions"][0]["original"] == "error"
+    
+    # === Tests for alternative field name fallbacks ===
+    
+    def test_text_comment_keys(self):
+        """Test that parser handles text/comment as alternative field names."""
+        text = '''{"suggestions": [{"id": "1", "text": "問題箇所", "comment": "修正理由"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "問題箇所"
+        assert result["suggestions"][0]["reason"] == "修正理由"
+    
+    def test_content_suggestion_keys(self):
+        """Test that parser handles content/suggestion as alternative field names."""
+        text = '''{"suggestions": [{"id": "1", "content": "箇所A", "suggestion": "理由B"}], "overallComment": "Done"}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "箇所A"
+        assert result["suggestions"][0]["reason"] == "理由B"
+    
+    def test_excerpt_fix_keys(self):
+        """Test that parser handles excerpt/fix as alternative field names."""
+        text = '''{"suggestions": [{"id": "1", "excerpt": "抜粋", "fix": "修正"}], "overallComment": "完了"}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "抜粋"
+        assert result["suggestions"][0]["reason"] == "修正"
+    
+    def test_priority_original_over_text(self):
+        """Test that original key takes priority over text."""
+        text = '''{"suggestions": [{"original": "優先", "text": "非優先", "reason": "理由"}], "overallComment": ""}'''
+        result = parse_model_output(text)
+        
+        assert result["suggestions"][0]["original"] == "優先"
+    
+    def test_missing_content_fields(self):
+        """Test that missing content fields result in empty strings."""
+        text = '''{"suggestions": [{"id": "1"}], "overallComment": ""}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == ""
+        assert result["suggestions"][0]["reason"] == ""
