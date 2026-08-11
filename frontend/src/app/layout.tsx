@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MJAI - CCTalk 添削システム",
+  title: "MJAI - 日本語添削アシスタント",
   description: "日本語テキスト添削支援アプリケーション",
 };
 
