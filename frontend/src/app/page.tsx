@@ -491,9 +491,28 @@ export default function TextCorrectionApp() {
     loadSessionDetails(sessionId)
   }, [jobQueue, loadSessionDetails])
 
+  // 確認中のジョブID（ジョブキューからの確認用）
+  const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null)
+
   // 完了したジョブを確認（HITLフロー）
   const confirmJob = useCallback((job: QueuedJob) => {
-    if (!currentSession || job.status !== 'completed' || !job.suggestions) return
+    if (!currentSession || job.status !== 'completed') {
+      toast({
+        title: "エラー",
+        description: "確認するジョブが見つかりません",
+        variant: "destructive",
+      })
+      return
+    }
+    
+    if (!job.suggestions || job.suggestions.length === 0) {
+      toast({
+        title: "エラー",
+        description: "このジョブにはAI提案がありません",
+        variant: "destructive",
+      })
+      return
+    }
     
     // ジョブの結果を現在のセッションにロード
     updateCurrentSession({
@@ -505,14 +524,24 @@ export default function TextCorrectionApp() {
     setShowCustomForm(true)
     setSelectionCounter(0)
     
-    // 確認中のジョブIDを記録
-    setConfirmingHistoryIndex(jobQueue.findIndex(j => j.id === job.id))
+    // 確認中のジョブIDを記録（ジョブキュー用）
+    setConfirmingJobId(job.id)
+    // 実行履歴の確認インデックスをクリア
+    setConfirmingHistoryIndex(null)
+    
+    // AI提案カードにスクロール
+    setTimeout(() => {
+      const suggestionsCard = document.querySelector('[data-suggestions-card]')
+      if (suggestionsCard) {
+        suggestionsCard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }, 100)
     
     toast({
       title: "確認中",
-      description: "ジョブ結果をロードしました。内容を確認してください。",
+      description: `${job.suggestions.length}件のAI提案をロードしました。内容を確認してください。`,
     })
-  }, [currentSession, jobQueue, toast, updateCurrentSession])
+  }, [currentSession, toast, updateCurrentSession])
 
 
   // セッション一覧をAPIから取得
@@ -746,8 +775,37 @@ export default function TextCorrectionApp() {
       await copyToClipboard(combinedComment)
 
       // フロントエンドの状態を更新
-      if (confirmingHistoryIndex !== null) {
-        // 確認フロー: 既存の履歴を確認済みにマーク
+      if (confirmingJobId !== null) {
+        // ジョブキューからの確認フロー: ジョブを完了済みとしてマーク、履歴に保存
+        const savedData: SavedData = {
+          originalText: currentSession.originalText,
+          instructionPrompt: "CCTalkからの添削指示",
+          targetText: currentSession.targetText,
+          aiSuggestions: currentSession.suggestions,
+          selectedCorrections: selectedSuggestions,
+          overallComment: currentSession.overallComment,
+          combinedComment,
+          timestamp: new Date(),
+          confirmed: true,
+        }
+
+        updateCurrentSession({
+          savedData: [...currentSession.savedData, savedData],
+          targetText: "",
+          suggestions: [],
+          overallComment: "",
+        })
+        
+        // 確認済みジョブをキューから削除
+        setJobQueue(prev => prev.filter(j => j.id !== confirmingJobId))
+        setConfirmingJobId(null)
+        
+        toast({
+          title: "確認完了",
+          description: "ジョブを確認済みにしました。クリップボードにコピーしました。",
+        })
+      } else if (confirmingHistoryIndex !== null) {
+        // 実行履歴からの確認フロー: 既存の履歴を確認済みにマーク
         const updatedSavedData = currentSession.savedData.map((data, idx) => 
           idx === confirmingHistoryIndex ? { ...data, confirmed: true } : data
         )
@@ -1129,11 +1187,16 @@ export default function TextCorrectionApp() {
                     <div className="space-y-6">
                       {/* AI Suggestions */}
                       {currentSession.suggestions.length > 0 && (
-                        <Card>
+                        <Card data-suggestions-card>
                           <CardHeader>
                             <CardTitle className="flex items-center gap-2">
                               <Bot className="w-5 h-5 text-blue-600" />
                               AI修正提案
+                              {confirmingJobId && (
+                                <Badge variant="outline" className="ml-2 text-blue-600 border-blue-300">
+                                  確認中
+                                </Badge>
+                              )}
                             </CardTitle>
                             <CardDescription>
                               以下の提案から3つ以上選択してください。修正内容とコメントは編集可能です。
