@@ -79,8 +79,11 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
         try:
             logger.info("Attempting Groq inference...")
             raw_output = await call_groq(messages)
-            logger.info("Groq inference successful")
-            return parse_model_output(raw_output)
+            logger.info(f"Groq inference successful, raw output length: {len(raw_output)}")
+            logger.debug(f"Groq raw output: {raw_output[:500]}...")
+            result = parse_model_output(raw_output)
+            logger.info(f"Parsed result: {len(result['suggestions'])} suggestions")
+            return result
         except (GroqRateLimitError, GroqServerError, GroqTimeoutError) as e:
             logger.warning(f"Groq failed with retriable error, falling back to Cloudflare: {e}")
             groq_error = str(e)
@@ -96,8 +99,11 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
         try:
             logger.info("Attempting Cloudflare Workers AI inference...")
             raw_output = await call_cloudflare(messages)
-            logger.info("Cloudflare inference successful")
-            return parse_model_output(raw_output)
+            logger.info(f"Cloudflare inference successful, raw output length: {len(raw_output)}")
+            logger.debug(f"Cloudflare raw output: {raw_output[:500]}...")
+            result = parse_model_output(raw_output)
+            logger.info(f"Parsed result: {len(result['suggestions'])} suggestions")
+            return result
         except CloudflareError as e:
             logger.error(f"Cloudflare also failed: {e}")
             cf_error = str(e)

@@ -288,6 +288,11 @@ export default function TextCorrectionApp() {
         // APIモード（並列実行可能）
         try {
           const data = await suggestionsAPI.generate(originalText, targetText)
+          console.log("[processJobAsync] API response received:", {
+            suggestionsCount: data.suggestions?.length ?? 0,
+            suggestions: data.suggestions,
+            overallComment: data.overallComment?.substring(0, 100),
+          })
           suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
           overallComment = data.overallComment
           source = 'api'
@@ -505,11 +510,33 @@ export default function TextCorrectionApp() {
       return
     }
     
+    // Debug logging for HITL flow
+    console.log("[confirmJob] Job data:", {
+      id: job.id,
+      status: job.status,
+      source: job.source,
+      suggestionsCount: job.suggestions?.length ?? 0,
+      overallComment: job.overallComment?.substring(0, 100),
+    })
+    
     if (!job.suggestions || job.suggestions.length === 0) {
+      // Distinguish between parse failure and "no issues found"
+      const isParseFailure = job.overallComment?.includes("抽出できませんでした")
+      const errorMessage = isParseFailure
+        ? "AI応答のパースに失敗しました。再度お試しください。"
+        : job.overallComment
+          ? `AIが問題を検出しませんでした: ${job.overallComment}`
+          : "このジョブにはAI提案がありません"
+      
+      console.warn("[confirmJob] No suggestions found:", {
+        isParseFailure,
+        overallComment: job.overallComment,
+      })
+      
       toast({
-        title: "エラー",
-        description: "このジョブにはAI提案がありません",
-        variant: "destructive",
+        title: isParseFailure ? "パースエラー" : "提案なし",
+        description: errorMessage,
+        variant: isParseFailure ? "destructive" : "default",
       })
       return
     }

@@ -159,3 +159,67 @@ That's the response.'''
         assert len(result["suggestions"]) == 1
         assert result["suggestions"][0]["original"] == ""
         assert result["suggestions"][0]["reason"] == ""
+    
+    # === Tests for English key format (Groq/Cloudflare may output this) ===
+    
+    def test_parses_english_keys(self):
+        """Test that parser handles English key format from some LLMs."""
+        text = '''{"suggestions": [{"id": "1", "original": "テスト箇所", "reason": "修正理由"}], "overallComment": "全体的に良い"}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["id"] == "1"
+        assert result["suggestions"][0]["original"] == "テスト箇所"
+        assert result["suggestions"][0]["reason"] == "修正理由"
+        assert result["overallComment"] == "全体的に良い"
+    
+    def test_parses_english_keys_multiple(self):
+        """Test English format with multiple suggestions."""
+        text = '''{"suggestions": [
+            {"id": "1", "original": "箇所1", "reason": "理由1"},
+            {"id": "2", "original": "箇所2", "reason": "理由2"}
+        ], "overallComment": "総評コメント"}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 2
+        assert result["suggestions"][0]["original"] == "箇所1"
+        assert result["suggestions"][1]["original"] == "箇所2"
+        assert result["overallComment"] == "総評コメント"
+    
+    def test_english_keys_with_markdown_fence(self):
+        """Test English format wrapped in markdown code fence."""
+        text = '''```json
+{"suggestions": [{"id": "1", "original": "test", "reason": "fix it"}], "overallComment": "ok"}
+```'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "test"
+        assert result["overallComment"] == "ok"
+    
+    def test_english_keys_empty_suggestions(self):
+        """Test English format with empty suggestions array."""
+        text = '''{"suggestions": [], "overallComment": "No issues found"}'''
+        result = parse_model_output(text)
+        
+        assert result["suggestions"] == []
+        assert result["overallComment"] == "No issues found"
+    
+    def test_mixed_keys_prefers_japanese(self):
+        """Test that Japanese keys take precedence when both present."""
+        text = '''{"指摘": [{"箇所": "日本語", "コメント": "日本語コメント"}], "全体講評": "日本語総評", "suggestions": [], "overallComment": "English"}'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "日本語"
+        assert result["overallComment"] == "日本語総評"
+    
+    def test_english_keys_with_preamble(self):
+        """Test English format with preamble text."""
+        text = '''Here is the analysis:
+{"suggestions": [{"id": "1", "original": "error", "reason": "should be fixed"}], "overallComment": "Good overall"}
+Hope this helps!'''
+        result = parse_model_output(text)
+        
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "error"
