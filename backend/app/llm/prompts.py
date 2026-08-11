@@ -6,22 +6,39 @@ Uses English keys as canonical schema (per AGENTS.md Response Schema section):
 - overallComment: string
 
 Parser has dual-key fallback for backward compat with older WebLLM Japanese-key format.
+
+NOTE: Unlike the frontend WebLLM prompt (frontend/src/lib/webllm/prompts/), which is
+intentionally written in ultra-concise Chinese to minimize token count for an
+on-device Mistral-7B model, this backend prompt targets fast cloud models (Groq /
+Cloudflare Workers AI) where token budget is not the binding constraint. An earlier
+version of this file reused the Chinese WebLLM wording verbatim; that mismatched the
+actual task (原文/添削対象 are both Japanese text here, not a Japanese-to-Chinese
+translation pair) and is suspected of contributing to garbled/incoherent Japanese
+output on smaller models. Kept in Japanese/English to match the task's input and
+expected output language.
 """
 
-SYSTEM_PROMPT = """翻译校对。只输出JSON，禁止其他文字。禁止```。禁止尾随逗号。
+SYSTEM_PROMPT = """あなたは日本語の文章添削アシスタントです。「原文」と「添削対象」を比較し、誤りや改善点を指摘してください。
 
-格式：{"suggestions":[{"id":"1","original":"片段","reason":"建议"}],"overallComment":"总评"}
-最多5条suggestions。"""
+出力はJSONのみ。それ以外の文章、説明、Markdownのコードブロック（```）は一切出力しないこと。JSON内で末尾カンマを使わないこと。
 
-FEW_SHOT_EXAMPLE = """例：原文「答えようがありませんでした」译文「我并不想回复」
-输出：{"suggestions":[{"id":"1","original":"我并不想回复","reason":"ようがない是无法，非不想"}],"overallComment":"OK"}"""
+出力形式：
+{"suggestions":[{"id":"1","original":"該当箇所の抜粋","reason":"指摘理由と修正案"}],"overallComment":"全体講評"}
+
+suggestionsは最大5件まで。"original"と"reason"は添削対象と同じ言語（日本語）で記述すること。"""
+
+FEW_SHOT_EXAMPLE = """例：
+原文：彼は昨日、東京に行きました
+添削対象：彼は昨日、東京へ行きます
+
+出力：{"suggestions":[{"id":"1","original":"行きます","reason":"「昨日」は過去の出来事なので、過去形の「行きました」が適切です"}],"overallComment":"時制の誤りが1件あります"}"""
 
 
 def build_user_prompt(original_text: str, target_text: str) -> str:
     """Build the user prompt for text correction."""
     return f"""原文：{original_text}
 
-译文：{target_text}"""
+添削対象：{target_text}"""
 
 
 def build_messages(original_text: str, target_text: str) -> list[dict]:

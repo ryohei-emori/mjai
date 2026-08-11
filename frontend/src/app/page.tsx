@@ -102,11 +102,11 @@ type ProposalAPIResponse = {
   proposalId: string
   originalAfterText: string
   originalReason?: string
-  isSelected: number
+  isSelected: boolean
   selectedOrder?: number
-  isModified: number
+  isModified: boolean
   modifiedReason?: string
-  isCustom: number
+  isCustom: boolean
 }
 
 
@@ -460,10 +460,12 @@ export default function TextCorrectionApp() {
           id: proposal.proposalId,
           original: proposal.originalAfterText,
           reason: proposal.originalReason || "",
-          selected: proposal.isSelected === 1,
+          // API(Postgres BOOLEAN列)はJSONの true/false を返す。
+          // 以前は `=== 1` で比較しており常にfalseになっていた。
+          selected: !!proposal.isSelected,
           selectedOrder: proposal.selectedOrder,
           userModifiedReason: proposal.modifiedReason,
-          isCustom: proposal.isCustom === 1,
+          isCustom: !!proposal.isCustom,
         }))
 
         savedData.push({
@@ -802,9 +804,9 @@ export default function TextCorrectionApp() {
           originalReason: suggestion.reason,
           modifiedAfterText: suggestion.userModifiedReason ? suggestion.original : suggestion.original,
           modifiedReason: suggestion.userModifiedReason || suggestion.reason,
-          isSelected: suggestion.selected ? 1 : 0,
-          isModified: suggestion.userModifiedReason ? 1 : 0,
-          isCustom: suggestion.isCustom ? 1 : 0,
+          isSelected: !!suggestion.selected,
+          isModified: !!suggestion.userModifiedReason,
+          isCustom: !!suggestion.isCustom,
           selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
         }
         await proposalAPI.createProposal(proposalData)

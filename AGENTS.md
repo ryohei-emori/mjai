@@ -73,6 +73,7 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | Variable | Purpose |
 |---|---|
 | `GROQ_API_KEY` | Primary AI provider for fast inference (~1-3s). Get from [console.groq.com](https://console.groq.com) |
+| `GROQ_MODEL` | Optional. Overrides the Groq model id (default: `llama-3.3-70b-versatile`, set in `backend/app/llm/groq_provider.py`) |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers AI access |
 
@@ -226,7 +227,7 @@ User Request → POST /api/suggestions (authenticated)
 
 | Path | Provider | Latency | When Used |
 |------|----------|---------|-----------|
-| **Default** | Groq (llama-3.1-8b-instant) | ~1-3s | API keys configured, Groq available |
+| **Default** | Groq (llama-3.3-70b-versatile, overridable via `GROQ_MODEL`) | ~1-3s | API keys configured, Groq available |
 | **Failover** | Cloudflare Workers AI | ~2-5s | Groq rate-limited/error/timeout |
 | **Offline** | WebLLM (Mistral 7B) | ~10-30s | API unavailable OR user enables オフラインモード |
 
@@ -245,6 +246,7 @@ User Request → POST /api/suggestions (authenticated)
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GROQ_API_KEY` | Recommended | Primary provider. Get from [console.groq.com](https://console.groq.com) → API Keys |
+| `GROQ_MODEL` | Optional | Overrides default Groq model (`llama-3.3-70b-versatile`) without a code change |
 | `CLOUDFLARE_ACCOUNT_ID` | Optional | Fallback provider. Get from Cloudflare dashboard → Overview |
 | `CLOUDFLARE_API_TOKEN` | Optional | Fallback provider. Create token with Workers AI read access |
 

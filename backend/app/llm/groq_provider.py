@@ -10,7 +10,12 @@ import httpx
 from typing import Any, Optional, List, Dict
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.1-8b-instant"
+# llama-3.1-8b-instant produced garbled/incoherent Japanese and occasional
+# malformed JSON on this task (small model + strict JSON schema + Japanese
+# text correction). llama-3.3-70b-versatile is still well within the 10s
+# Groq timeout and has 2x the TPM headroom (12K vs 6K), at the cost of a
+# lower RPD ceiling (1K/day) that a single-user app won't approach.
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_TIMEOUT = 10.0  # seconds
 
 
@@ -41,6 +46,11 @@ def get_groq_api_key() -> Optional[str]:
     return os.environ.get("GROQ_API_KEY")
 
 
+def get_groq_model() -> str:
+    """Get Groq model id, overridable via GROQ_MODEL env var."""
+    return os.environ.get("GROQ_MODEL") or DEFAULT_GROQ_MODEL
+
+
 async def call_groq(messages: list[dict[str, str]]) -> str:
     """
     Call Groq API with the given messages.
@@ -67,7 +77,7 @@ async def call_groq(messages: list[dict[str, str]]) -> str:
     }
     
     payload: dict[str, Any] = {
-        "model": GROQ_MODEL,
+        "model": get_groq_model(),
         "messages": messages,
         # 512 was too tight and could truncate JSON mid-string for responses
         # with multiple suggestions over Japanese text, causing parse failures.

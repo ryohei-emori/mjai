@@ -186,13 +186,50 @@ async def fetch_proposals_by_history(history_id):
         )
         return [dict(row) for row in rows]
 
+# camelCase/snake_case のどちらのキーでも値を取得するヘルパー。
+# `or` によるフォールバックだと空文字列(falsy)が誤って捨てられ、次のキーの
+# 値（大抵は未設定でNone）に置き換わってしまうため、値の有無は `is not None` で判定する。
+def _pick(d: dict, *keys, default=None):
+    for key in keys:
+        value = d.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+# asyncpgはBOOLEAN列に対してPythonのint(0/1)を渡すと
+# `asyncpg.exceptions.DataError: invalid input ... (a boolean is required (got type int))`
+# を送出し、INSERT文全体が失敗する。フロントエンドが1/0を送ってくるケースに備えて
+# 明示的にPythonのboolへ変換する。
+def _coerce_bool(value, default=False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 # 提案追加（フル field set）
 async def insert_proposal(proposal):
     async with get_db() as conn:
         # Map camelCase to snake_case
-        proposal_id = proposal.get('proposalId') or proposal.get('proposal_id')
-        history_id = proposal.get('historyId') or proposal.get('history_id')
-        
+        proposal_id = _pick(proposal, 'proposalId', 'proposal_id')
+        history_id = _pick(proposal, 'historyId', 'history_id')
+        proposal_type = _pick(proposal, 'type')
+        original_after_text = _pick(proposal, 'originalAfterText', 'original_after_text')
+        original_reason = _pick(proposal, 'originalReason', 'original_reason')
+        modified_after_text = _pick(proposal, 'modifiedAfterText', 'modified_after_text')
+        modified_reason = _pick(proposal, 'modifiedReason', 'modified_reason')
+        is_selected = _coerce_bool(_pick(proposal, 'isSelected', 'is_selected'))
+        is_modified = _coerce_bool(_pick(proposal, 'isModified', 'is_modified'))
+        is_custom = _coerce_bool(_pick(proposal, 'isCustom', 'is_custom'))
+        selected_order = _pick(proposal, 'selectedOrder', 'selected_order')
+        created_at = _pick(proposal, 'createdAt', 'created_at', default=datetime.now())
+
         await conn.execute(
             '''
             INSERT INTO ai_proposals (
@@ -205,28 +242,28 @@ async def insert_proposal(proposal):
             ''',
             proposal_id,
             history_id,
-            proposal.get('type'),
-            proposal.get('originalAfterText') or proposal.get('original_after_text'),
-            proposal.get('originalReason') or proposal.get('original_reason'),
-            proposal.get('modifiedAfterText') or proposal.get('modified_after_text'),
-            proposal.get('modifiedReason') or proposal.get('modified_reason'),
-            proposal.get('isSelected', False) or proposal.get('is_selected', False),
-            proposal.get('isModified', False) or proposal.get('is_modified', False),
-            proposal.get('isCustom', False) or proposal.get('is_custom', False),
-            proposal.get('selectedOrder') or proposal.get('selected_order'),
-            proposal.get('createdAt') or proposal.get('created_at') or datetime.now()
+            proposal_type,
+            original_after_text,
+            original_reason,
+            modified_after_text,
+            modified_reason,
+            is_selected,
+            is_modified,
+            is_custom,
+            selected_order,
+            created_at,
         )
         # Return camelCase dict
         return {
             'proposalId': proposal_id,
             'historyId': history_id,
-            'type': proposal.get('type'),
-            'originalAfterText': proposal.get('originalAfterText') or proposal.get('original_after_text'),
-            'originalReason': proposal.get('originalReason') or proposal.get('original_reason'),
-            'modifiedAfterText': proposal.get('modifiedAfterText') or proposal.get('modified_after_text'),
-            'modifiedReason': proposal.get('modifiedReason') or proposal.get('modified_reason'),
-            'isSelected': proposal.get('isSelected', False) or proposal.get('is_selected', False),
-            'isModified': proposal.get('isModified', False) or proposal.get('is_modified', False),
-            'isCustom': proposal.get('isCustom', False) or proposal.get('is_custom', False),
-            'selectedOrder': proposal.get('selectedOrder') or proposal.get('selected_order')
+            'type': proposal_type,
+            'originalAfterText': original_after_text,
+            'originalReason': original_reason,
+            'modifiedAfterText': modified_after_text,
+            'modifiedReason': modified_reason,
+            'isSelected': is_selected,
+            'isModified': is_modified,
+            'isCustom': is_custom,
+            'selectedOrder': selected_order,
         }

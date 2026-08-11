@@ -58,7 +58,19 @@ class _FakeRecord(dict):
 
 
 class _FakeConnection:
-    """Fake asyncpg connection recording executed queries/params."""
+    """Fake asyncpg connection recording executed queries/params.
+
+    Mimics real asyncpg's strict type checking for BOOLEAN columns: passing a
+    Python `int` (e.g. 0/1) instead of an actual `bool` raises an error, just
+    like `asyncpg.exceptions.DataError` does against a real Postgres
+    connection. Without this, a mock that accepts anything would hide the
+    real production bug where `insert_proposal()` forwarded raw 0/1 ints for
+    the `is_selected`/`is_modified`/`is_custom` BOOLEAN columns.
+    """
+
+    # Positional index (0-based) of the is_selected/is_modified/is_custom
+    # params in the `INSERT INTO ai_proposals (...)` call in db_helper.py.
+    _AI_PROPOSALS_BOOL_PARAM_INDICES = (7, 8, 9)
 
     def __init__(self):
         self.executed = []
@@ -66,6 +78,14 @@ class _FakeConnection:
 
     async def execute(self, query, *params):
         self.executed.append((query, params))
+        if "INSERT INTO ai_proposals" in query:
+            for idx in self._AI_PROPOSALS_BOOL_PARAM_INDICES:
+                if idx < len(params) and not isinstance(params[idx], bool):
+                    raise TypeError(
+                        f"invalid input for query argument ${idx + 1}: "
+                        f"{params[idx]!r} (a boolean is required (got type "
+                        f"{type(params[idx]).__name__}))"
+                    )
         return "INSERT 0 1"
 
     async def fetch(self, query, *params):
@@ -210,3 +230,116 @@ def test_get_proposals_empty_result(client, auth_headers, fake_pg_connection):
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_create_selected_proposal_does_not_crash_on_boolean_columns(client, auth_headers, fake_pg_connection):
+    """Regression test: POST /proposals with isSelected=1 (int) must not 500.
+
+    Root cause: `insert_proposal()` forwarded `suggestion.selected ? 1 : 0`
+    (a Python int, per the old frontend contract) directly as the asyncpg
+    bind parameter for the `is_selected` BOOLEAN column. Real asyncpg raises
+    `asyncpg.exceptions.DataError: ... (a boolean is required (got type
+    int))` for this, which aborts the whole INSERT — meaning every proposal
+    a user actually selects (required for the "3+ selected" HITL save flow)
+    failed to persist, while unselected proposals (which happened to coerce
+    to `False` via the old `x or False` fallback) saved fine.
+
+    This test's fake connection enforces the same strict boolean typing as
+    real asyncpg, so this only passes once `insert_proposal()` coerces
+    isSelected/isModified/isCustom to real `bool` before binding.
+    """
+    payload = {
+        "historyId": "test-history-id",
+        "type": "AI",
+        "originalAfterText": "corrected text",
+        "originalReason": "grammar fix",
+        "isSelected": 1,
+        "isModified": 0,
+        "isCustom": 0,
+        "selectedOrder": 1,
+    }
+
+    response = client.post("/proposals", json=payload, headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["isSelected"] is True
+    assert body["isModified"] is False
+    assert body["isCustom"] is False
+
+    # Verify the bound params really are Python bool, not int.
+    _, params = fake_pg_connection.executed[0]
+    assert params[7] is True
+    assert params[8] is False
+    assert params[9] is False
+
+
+def test_create_proposal_preserves_empty_string_content_fields(client, auth_headers, fake_pg_connection):
+    """Regression test: empty-string content fields must not be nulled out.
+
+    Root cause: `insert_proposal()` picked between the camelCase and
+    snake_case variant of a field with `proposal.get('originalAfterText') or
+    proposal.get('original_after_text')`. Because `or` treats an empty
+    string as falsy, a legitimately-empty (but present) `originalAfterText`
+    fell through to the snake_case fallback key, which is never populated by
+    `main.py` and is therefore `None` — silently turning "" into NULL in the
+    database instead of preserving the empty string.
+    """
+    payload = {
+        "historyId": "test-history-id",
+        "type": "AI",
+        "originalAfterText": "",
+        "originalReason": "",
+        "modifiedAfterText": "",
+        "modifiedReason": "",
+        "isSelected": 1,
+    }
+
+    response = client.post("/proposals", json=payload, headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["originalAfterText"] == ""
+    assert body["originalReason"] == ""
+    assert body["modifiedAfterText"] == ""
+    assert body["modifiedReason"] == ""
+
+
+def test_insert_proposal_accepts_snake_case_keys_with_boolean_flags():
+    """`insert_proposal()` should also accept snake_case input keys (used
+    internally/by scripts) and still coerce boolean-like flags correctly."""
+    import asyncio
+
+    from app import db_helper as _db_helper
+
+    conn = _FakeConnection()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *exc):
+            return False
+
+    original_get_db = _db_helper.get_db
+    _db_helper.get_db = lambda: _Ctx()
+    try:
+        result = asyncio.run(
+            _db_helper.insert_proposal(
+                {
+                    "proposal_id": "p1",
+                    "history_id": "h1",
+                    "type": "Custom",
+                    "original_after_text": "text",
+                    "is_selected": 1,
+                    "is_custom": 1,
+                }
+            )
+        )
+    finally:
+        _db_helper.get_db = original_get_db
+
+    assert result["isSelected"] is True
+    assert result["isCustom"] is True
+    assert result["isModified"] is False
+    assert result["originalAfterText"] == "text"

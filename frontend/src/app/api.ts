@@ -161,9 +161,9 @@ export const proposalAPI = {
     originalReason?: string;
     modifiedAfterText?: string;
     modifiedReason?: string;
-    isSelected: number;
-    isModified: number;
-    isCustom?: number;
+    isSelected: boolean;
+    isModified: boolean;
+    isCustom?: boolean;
     selectedOrder?: number;
   }) => {
     return await apiFetch('/proposals', {
