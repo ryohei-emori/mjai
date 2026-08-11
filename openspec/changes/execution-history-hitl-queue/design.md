@@ -175,3 +175,55 @@ useEffect(() => {
 - ジョブキューからの確認 → AI修正提案カードを表示 + スクロール
 - 実行履歴からの確認 → 同上
 - 通常の生成フロー → 同上（スクロールは任意）
+
+## 2026-08 `/opsx-apply` 追加分（要件4・5・6）
+
+### Decision 8: 添削データのグルーピングキー
+
+**調査結果**: `page.tsx`のコードを精査した結果、「添削データ」のグルーピングは**既に正しく実装されている**ことを確認した。`saveCorrections()`は呼び出しごとに厳密に1件の`SavedData`オブジェクトを生成し（`selectedCorrections`フィールドに採用した全提案を配列として保持）、`currentSession.savedData`配列にpushする。バックエンド側も対応して、1回の`saveCorrections()`実行につき1件の`correction_histories`行（`history_id`）が作成され、そのラウンドの全AI提案（選択・非選択問わず）が同じ`history_id`で`ai_proposals`テーブルに紐付く。`fetch_sessions()`の`correctionCount`も`COUNT(h.history_id)`（ラウンド数）でありAI提案数ではない。
+
+**選択**: 既存のグルーピングキー（フロントエンド: `SavedData`オブジェクト1件 = 1ラウンド、バックエンド: `history_id`）を正式な設計上の不変条件として明文化する（spec.md参照）。加えて、この不変条件を壊しうる唯一の現実的なリスクとして「確定してコピー・保存」ボタンの二重クリック（非同期処理中の連打）によるラウンド重複を防ぐガードを追加する（`isSaving`状態でボタンを無効化）。
+
+**判断根拠**: ユーザー報告の症状（「1ラウンドの複数採用が別々の`添削データ #N`として表示される」）を再現するコードパスは見つからなかった。既存の単体テスト・型定義からも、意図した設計は既にラウンド単位グルーピングである。実装上の追加バグではなく、二重送信という別のエッジケースが最も plausible な原因と判断し、そちらを防御的に修正した。
+
+### Decision 9: エラーラウンドの再試行
+
+**選択**: 失敗した特定のジョブをキューから削除し、同じターゲットテキストで`addJobAndProcess()`を再呼び出しする`retryJob()`関数を追加する。これにより既存の並列/逐次処理ロジック、同時実行上限、キューサイズ上限を含む全てのジョブ処理経路をそのまま再利用する。
+
+**理由**: 新しいジョブとして再投入することで、既存の`processJobAsync`のオフライン/オンライン分岐、フォールバック処理、通知処理をすべてそのまま利用でき、専用の再試行パスを別途実装する必要がない。
+
+### Decision 10: 「Saved」ステータス再訪バグの根本原因
+
+**根本原因**: `loadSessionDetails()`内でバックエンドの`correction_histories`から`SavedData`を再構築する際、`confirmed`フィールドが設定されていなかった（未定義 = falsy）。バックエンドに永続化されている`correction_histories`行は、その存在自体が「ユーザーが確定・保存を実行した」ことを意味するため、復元時は常に`confirmed: true`であるべきだが、このフィールドが漏れていたため、セッション再訪時に全ての履歴エントリが「未確認」として表示されていた。
+
+**修正**: `loadSessionDetails()`の`savedData.push(...)`に`confirmed: true`を追加。
+
+**ラベル変更**: 「保存済み」（セッションヘッダーのバッジ）を英語の「Saved」に変更し、既存のブルータリストUI刷新で確立された英語ラベル規則（Session/History/Job Queue等）と統一する。実行履歴リスト内の確認済みエントリにも、色分けだけでなく明示的な「Saved」バッジを追加する。
+
+## 2026-08 `/opsx-update /opsx-apply` 追加分（要件7・8: Historyカードのアーカイブ機能とクリック範囲拡大）
+
+ユーザー報告のバグ2件: (1) 「添削データ #N」カードのゴミ箱アイコンが `onClick={() => console.log("削除機能未実装")}` という文字通りのno-opで機能していない、(2) チェックマークボタンの当たり判定が小さすぎて復元操作がしづらい。
+
+### Decision 11: 削除ではなく「アーカイブ」（ソフトデリート）
+
+**選択**: ゴミ箱ボタンを実装するにあたり、完全削除ではなく**アーカイブ**（ソフトデリート）として実装する。これは本コードベースの既存パターンと一致する: `backend/app/db_helper.py`の`delete_session()`は`UPDATE sessions SET status = 'archived'`を実行するソフトデリートであり、`DELETE /sessions/{session_id}`エンドポイントも`{"message": "Session archived", ...}`を返す。同様に、`correction_histories`テーブルに`is_archived BOOLEAN NOT NULL DEFAULT false`列を追加し（マイグレーション`004_add_history_archive.sql`）、個々の添削ラウンド単位でアーカイブできるようにする。
+
+**理由**:
+- セッション削除で確立済みのソフトデリート規約を、より粒度の細かい履歴ラウンド単位にも一貫して適用する
+- 誤操作によるデータ完全消失を防ぐ（`ai_proposals`テーブルの関連提案データも`history_id`外部キー経由で保持され続ける）
+- 将来的な「アーカイブ済み履歴の復元」機能の余地を残す（本変更のスコープ外）
+
+**実装**:
+- DB: `correction_histories.is_archived`列 + `(session_id, is_archived)`複合インデックス
+- バックエンド: `DELETE /histories/{history_id}`エンドポイント（`db_helper.archive_history()`を呼び出し、`UPDATE ... SET is_archived = true`を実行）。`GET /sessions/{session_id}/histories`（`fetch_histories_by_session()`）はデフォルトで`WHERE is_archived = false`を適用し、アーカイブ済みラウンドを除外する。`fetch_sessions()`の`correctionCount`集計も同様に`is_archived = false`のみをカウントするよう統一する
+- フロントエンド: `historyAPI.archiveHistory(historyId)`を追加。`SavedData`型に`historyId?: string`フィールドを追加し（`saveCorrections()`でのラウンド作成時、および`loadSessionDetails()`でのセッション再訪時の両方でバックエンドの`historyId`を保持）、アーカイブボタンのクリック時にこのIDでAPIを呼び出した上で、ローカル状態（`currentSession.savedData`）から楽観的に該当ラウンドを除去する
+- UI: ゴミ箱アイコン（`delete`）をアーカイブアイコン（`archive`、Material Symbols）に変更し、トースト通知で「添削データをアーカイブしました」と表示。アーカイブ失敗時は既存のtry/catch + エラートーストパターンを踏襲する
+
+### Decision 12: Historyカード全体のクリック可能化（Issue Bと同一パターンの再適用）
+
+**選択**: 「添削データ #N」カードの外側`<div>`全体をクリック可能にし、既存の「確認」ボタンと同じ`restoreFromHistory(data); setConfirmingHistoryIndex(index)`をトリガーする。これは同ファイル内で既に適用済みのJob Queueカードのクリック範囲拡大（Issue B、Decision参照）と全く同じパターンである。
+
+**実装**:
+- カード外側の`<div>`に`onClick`（復元処理）、`cursor-pointer`、ホバー時のスタイル変更（`hover:bg-green-100`/`hover:border-md3-primary`、確認済み/未確認の状態に応じて既存のボーダー・背景色トークンを踏襲）、`role="button"`、`tabIndex={0}`、`onKeyDown`（Enter/Spaceキー対応）を追加
+- カード内の「確認」ボタンと新しい「アーカイブ」ボタンの両方の`onClick`ハンドラーで`e.stopPropagation()`を呼び出し、ボタンクリックがカード全体のクリックイベントと二重発火しないようにする（Job Queueカードの`retryJob`ボタンと同一パターン）
+- 「確認」ボタン自体は視覚的アフォーダンスとして維持する（冗長だが無害）

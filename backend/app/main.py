@@ -38,11 +38,12 @@ from .db_helper import (
     fetch_session as db_fetch_session,
     fetch_histories_by_session, insert_history,
     fetch_proposals_by_history, insert_proposal,
+    archive_history as db_archive_history,
 )
 from uuid import uuid4
 from datetime import datetime
 from fastapi import APIRouter
-from fastapi import Body, Depends
+from fastapi import Body, Depends, HTTPException
 
 from .auth import get_current_user
 
@@ -212,18 +213,35 @@ async def create_history(payload: dict = Body(...)):
             'custom_proposals': payload.get('customProposals'),
         }
         # 必須項目チェック
+        # NOTE: this must raise (not `return {"error": ...}`) so the response is a
+        # non-2xx status the frontend's apiFetch() treats as a failure. Previously
+        # this returned 200 OK with an error-shaped body; historyAPI.createHistory()
+        # then resolved successfully with no `historyId` field, and the caller
+        # (saveCorrections()) went on to call proposalAPI.createProposal() with
+        # `historyId: undefined` for every suggestion — JSON.stringify drops
+        # undefined-valued keys, so the backend received no "historyId" key at all
+        # and crashed with an unhandled KeyError (surfaced to the user as a generic
+        # browser "Failed to fetch" on the /proposals request, with no indication
+        # the real problem was the earlier /histories call).
         if not history['session_id'] or not history['original_text'] or not history['target_text']:
             print(f"[create_history] Missing required field in payload: {payload}")
-            return {"error": "Missing required field in payload", "payload": payload}
+            raise HTTPException(status_code=400, detail="Missing required field in payload (sessionId, originalText, targetText)")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[create_history] Exception: {e}, payload: {payload}")
-        return {"error": str(e), "payload": payload}
+        raise HTTPException(status_code=400, detail=str(e))
 
     created = await insert_history(history)
     # Serialize timestamp as ISO string for the frontend
     if isinstance(created.get('timestamp'), datetime):
         created['timestamp'] = now_iso
     return created
+
+@router.delete("/histories/{history_id}")
+async def archive_history(history_id: str):
+    await db_archive_history(history_id)
+    return {"message": "History archived", "historyId": history_id}
 
 @router.get("/histories/{history_id}/proposals")
 async def get_proposals(history_id: str):
@@ -232,6 +250,18 @@ async def get_proposals(history_id: str):
 @router.post("/proposals")
 async def create_proposal(payload: dict = Body(...)):
     from uuid import uuid4
+    # Validate required keys explicitly instead of raw dict indexing: a missing
+    # key previously raised an unhandled KeyError -> 500 with no clear message,
+    # which surfaces to the browser as an opaque "TypeError: Failed to fetch".
+    # `originalAfterText` may legitimately be "" (empty string is a valid,
+    # meaningful value here - see test_create_proposal_preserves_empty_string_
+    # content_fields), so only its *absence* (None/missing key) is invalid;
+    # `historyId`/`type` reject both absence and "" since neither is ever a
+    # meaningful empty value (a blank history FK or proposal type is always a bug).
+    missing = [k for k in ("historyId", "type", "originalAfterText") if payload.get(k) is None]
+    empty_invalid = [k for k in ("historyId", "type") if payload.get(k) == "" and k not in missing]
+    if missing or empty_invalid:
+        raise HTTPException(status_code=400, detail=f"Missing required field(s) in payload: {', '.join(missing + empty_invalid)}")
     proposal = {
         'proposalId': payload.get('proposalId', str(uuid4())),
         'historyId': payload['historyId'],

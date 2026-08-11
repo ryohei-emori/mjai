@@ -143,6 +143,13 @@ export const historyAPI = {
       method: 'POST',
       body: JSON.stringify(historyData)
     });
+  },
+
+  // 履歴のアーカイブ（ソフトデリート、セッション削除と同じパターン）
+  archiveHistory: async (historyId: string) => {
+    return await apiFetch(`/histories/${historyId}`, {
+      method: 'DELETE'
+    });
   }
 };
 

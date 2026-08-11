@@ -57,6 +57,7 @@ type SavedData = {
   combinedComment: string
   timestamp: Date
   confirmed?: boolean
+  historyId?: string
 }
 
 type QueuedJob = {
@@ -105,7 +106,130 @@ type ProposalAPIResponse = {
   isCustom: boolean
 }
 
+// --- Draft/JobQueue永続化 (localStorage) ---
+// AIのSuggestions(Draft状態)とジョブキューはページ再読み込みで消えるべきではない
+// という設計意図に基づき、セッション単位でlocalStorageへ永続化する。
+// 参照パターン: RIGHT_PANE_STORAGE_KEY（上部）と同様、try/catchでプライベート
+// ブラウジング/クォータ超過時もクラッシュせずメモリのみ動作にフォールバックする。
+const DRAFT_STORAGE_PREFIX = 'mjai:draft:'
+const JOB_QUEUE_STORAGE_PREFIX = 'mjai:jobQueue:'
+const DRAFT_PERSIST_DEBOUNCE_MS = 500
 
+type PersistedDraft = {
+  originalText: string
+  targetText: string
+  suggestions: CorrectionSuggestion[]
+  overallComment: string
+  confirmingHistoryIndex: number | null
+  confirmingJobId: string | null
+}
+
+type PersistedQueuedJob = Omit<QueuedJob, 'queuedAt' | 'completedAt'> & {
+  queuedAt: string
+  completedAt?: string
+}
+
+function loadDraftFromStorage(sessionId: string): PersistedDraft | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(`${DRAFT_STORAGE_PREFIX}${sessionId}`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PersistedDraft>
+    return {
+      originalText: parsed.originalText || '',
+      targetText: parsed.targetText || '',
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+      overallComment: parsed.overallComment || '',
+      confirmingHistoryIndex:
+        typeof parsed.confirmingHistoryIndex === 'number' ? parsed.confirmingHistoryIndex : null,
+      confirmingJobId: parsed.confirmingJobId || null,
+    }
+  } catch (error) {
+    console.warn('[persistence] Failed to load draft from localStorage:', error)
+    return null
+  }
+}
+
+function saveDraftToStorage(sessionId: string, draft: PersistedDraft) {
+  if (typeof window === 'undefined') return
+  try {
+    const key = `${DRAFT_STORAGE_PREFIX}${sessionId}`
+    const isEmpty =
+      !draft.originalText &&
+      !draft.targetText &&
+      draft.suggestions.length === 0 &&
+      !draft.overallComment &&
+      draft.confirmingHistoryIndex === null &&
+      !draft.confirmingJobId
+    if (isEmpty) {
+      // Draftが何も無ければ空エントリを残さずキーごと削除する
+      window.localStorage.removeItem(key)
+      return
+    }
+    window.localStorage.setItem(key, JSON.stringify(draft))
+  } catch (error) {
+    console.warn('[persistence] Failed to save draft to localStorage:', error)
+  }
+}
+
+function clearDraftFromStorage(sessionId: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(`${DRAFT_STORAGE_PREFIX}${sessionId}`)
+  } catch (error) {
+    console.warn('[persistence] Failed to clear draft from localStorage:', error)
+  }
+}
+
+function loadJobQueueFromStorage(sessionId: string): QueuedJob[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(`${JOB_QUEUE_STORAGE_PREFIX}${sessionId}`)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as PersistedQueuedJob[]
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((job) => ({
+      ...job,
+      // 再読み込み時点で「処理中」だったジョブはネットワーク要求を再開できない
+      // ため、キュー消化useEffectが再取得できるようqueuedへ戻す（ジョブを
+      // サイレントに失うことはしない）
+      status: job.status === 'processing' ? 'queued' : job.status,
+      queuedAt: new Date(job.queuedAt),
+      completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
+    }))
+  } catch (error) {
+    console.warn('[persistence] Failed to load job queue from localStorage:', error)
+    return []
+  }
+}
+
+function saveJobQueueToStorage(sessionId: string, jobs: QueuedJob[]) {
+  if (typeof window === 'undefined') return
+  try {
+    const key = `${JOB_QUEUE_STORAGE_PREFIX}${sessionId}`
+    if (jobs.length === 0) {
+      window.localStorage.removeItem(key)
+      return
+    }
+    const serializable: PersistedQueuedJob[] = jobs.map((job) => ({
+      ...job,
+      queuedAt: job.queuedAt.toISOString(),
+      completedAt: job.completedAt ? job.completedAt.toISOString() : undefined,
+    }))
+    window.localStorage.setItem(key, JSON.stringify(serializable))
+  } catch (error) {
+    console.warn('[persistence] Failed to save job queue to localStorage:', error)
+  }
+}
+
+function clearJobQueueFromStorage(sessionId: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(`${JOB_QUEUE_STORAGE_PREFIX}${sessionId}`)
+  } catch (error) {
+    console.warn('[persistence] Failed to clear job queue from localStorage:', error)
+  }
+}
 
 /**
  * AI Diagnostics Panel Component
@@ -213,6 +337,9 @@ export default function TextCorrectionApp() {
   const [offlineMode, setOfflineMode] = useState(false)
   const [lastSuggestionSource] = useState<"api" | "webllm" | null>(null)
   const [jobQueue, setJobQueue] = useState<QueuedJob[]>([])
+  // 「確定してコピー・保存」の二重送信を防止し、1生成ラウンドにつき
+  // 添削データ(History)エントリが1件だけ作成されることを保証する
+  const [isSaving, setIsSaving] = useState(false)
   const [confirmingHistoryIndex, setConfirmingHistoryIndex] = useState<number | null>(null)
   const [activeNav, setActiveNav] = useState<ActiveNav>('sessions')
   const [bellShake, setBellShake] = useState(false)
@@ -222,6 +349,12 @@ export default function TextCorrectionApp() {
   const [isLgScreen, setIsLgScreen] = useState(false)
   const bellShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  // このブラウザタブのセッションでDraft/ジョブキューを既に復元済みのセッションID
+  // （同一セッションへ何度も切り替えるたびに復元し直してユーザーの最新編集を
+  // 巻き戻してしまうことを防ぐ）
+  const restoredDraftSessionIdsRef = useRef<Set<string>>(new Set())
+  const draftSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const jobQueueSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { toast } = useToast()
 
   // Load persisted right pane width and detect screen size on mount
@@ -484,6 +617,14 @@ export default function TextCorrectionApp() {
     return true
   }, [jobQueue, currentSession, offlineMode, processJobAsync, toast])
 
+  // 失敗したジョブを再試行する関数（ジョブキュー/実行履歴から直接呼び出し可能）
+  // 既存のaddJobAndProcess/processJobAsyncパスをそのまま再利用し、
+  // 同一のターゲットテキストで新しいジョブを開始する（重複ロジックを避ける）
+  const retryJob = useCallback((job: QueuedJob) => {
+    setJobQueue(prev => prev.filter(j => j.id !== job.id))
+    addJobAndProcess(job.targetText)
+  }, [addJobAndProcess])
+
   // キュー消化ループ - 空きスロットがあればqueuedジョブをprocessingに移行
   useEffect(() => {
     if (!currentSession) return
@@ -552,6 +693,12 @@ export default function TextCorrectionApp() {
           overallComment: history.combinedComment,
           combinedComment: history.combinedComment,
           timestamp: new Date(history.timestamp),
+          // Any history persisted to the backend was, by definition, already
+          // confirmed via saveCorrections() — reopening a session must not
+          // regress it back to "未確認"/unconfirmed (see execution-history-
+          // hitl-queue spec.md "Savedステータスの正確な永続化と表示").
+          confirmed: true,
+          historyId: history.historyId,
         })
       }
 
@@ -581,8 +728,55 @@ export default function TextCorrectionApp() {
     
     setCurrentSessionId(sessionId)
     setSidebarOpen(false)
+
+    // このタブでこのセッションを開くのが初めての場合のみ、ページ再読み込み等で
+    // 失われたDraft状態（未確定のAI提案・原文/添削対象テキスト・ジョブキュー）を
+    // localStorageから復元する。savedData（サーバー由来）はloadSessionDetailsが
+    // 別途フェッチするため、ここでは触れない
+    if (!restoredDraftSessionIdsRef.current.has(sessionId)) {
+      restoredDraftSessionIdsRef.current.add(sessionId)
+
+      const draft = loadDraftFromStorage(sessionId)
+      if (draft) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  originalText: draft.originalText || s.originalText,
+                  targetText: draft.targetText || s.targetText,
+                  suggestions: draft.suggestions.length > 0 ? draft.suggestions : s.suggestions,
+                  overallComment: draft.overallComment || s.overallComment,
+                }
+              : s,
+          ),
+        )
+        if (draft.confirmingHistoryIndex !== null) {
+          setConfirmingHistoryIndex(draft.confirmingHistoryIndex)
+        }
+        if (draft.confirmingJobId) {
+          setConfirmingJobId(draft.confirmingJobId)
+        }
+        if (draft.suggestions.length > 0) {
+          toast({
+            title: "Draftを復元しました",
+            description: "前回保存されなかったAI提案（Draft状態）を復元しました",
+          })
+        }
+      }
+
+      const restoredJobs = loadJobQueueFromStorage(sessionId)
+      if (restoredJobs.length > 0) {
+        setJobQueue(restoredJobs)
+        toast({
+          title: "ジョブキューを復元しました",
+          description: `${restoredJobs.length}件のジョブを復元しました（中断されていた処理は再開待ちに戻しました）`,
+        })
+      }
+    }
+
     loadSessionDetails(sessionId)
-  }, [jobQueue, loadSessionDetails])
+  }, [jobQueue, loadSessionDetails, toast])
 
   // 確認中のジョブID（ジョブキューからの確認用）
   const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null)
@@ -602,6 +796,51 @@ export default function TextCorrectionApp() {
       return () => clearTimeout(timeoutId)
     }
   }, [confirmingJobId, currentSession?.suggestions])
+
+  // Draft状態（未確定のAI提案・原文/添削対象テキスト等）をlocalStorageへ永続化する。
+  // キー入力/選択のたびに書き込まないよう500msデバウンスする
+  useEffect(() => {
+    if (!currentSessionId || !currentSession) return
+
+    if (draftSaveTimeoutRef.current) {
+      clearTimeout(draftSaveTimeoutRef.current)
+    }
+    draftSaveTimeoutRef.current = setTimeout(() => {
+      saveDraftToStorage(currentSessionId, {
+        originalText: currentSession.originalText,
+        targetText: currentSession.targetText,
+        suggestions: currentSession.suggestions,
+        overallComment: currentSession.overallComment,
+        confirmingHistoryIndex,
+        confirmingJobId,
+      })
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+
+    return () => {
+      if (draftSaveTimeoutRef.current) {
+        clearTimeout(draftSaveTimeoutRef.current)
+      }
+    }
+  }, [currentSessionId, currentSession, confirmingHistoryIndex, confirmingJobId])
+
+  // ジョブキューをセッション単位でlocalStorageへ永続化する（同じデバウンス方針）。
+  // processingで中断されたジョブはloadJobQueueFromStorage側でqueuedへ戻される
+  useEffect(() => {
+    if (!currentSessionId) return
+
+    if (jobQueueSaveTimeoutRef.current) {
+      clearTimeout(jobQueueSaveTimeoutRef.current)
+    }
+    jobQueueSaveTimeoutRef.current = setTimeout(() => {
+      saveJobQueueToStorage(currentSessionId, jobQueue)
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+
+    return () => {
+      if (jobQueueSaveTimeoutRef.current) {
+        clearTimeout(jobQueueSaveTimeoutRef.current)
+      }
+    }
+  }, [currentSessionId, jobQueue])
 
   // 完了したジョブを確認（HITLフロー）
   const confirmJob = useCallback((job: QueuedJob) => {
@@ -732,6 +971,10 @@ export default function TextCorrectionApp() {
         const remainingSessions = sessions.filter((s) => s.id !== sessionId)
         setCurrentSessionId(remainingSessions.length > 0 ? remainingSessions[0].id : null)
       }
+      // セッション削除時は、そのセッションのDraft/ジョブキューも永続化領域から破棄する
+      clearDraftFromStorage(sessionId)
+      clearJobQueueFromStorage(sessionId)
+      restoredDraftSessionIdsRef.current.delete(sessionId)
     } catch (error) {
       console.error("Failed to delete session:", error)
       toast({
@@ -842,6 +1085,11 @@ export default function TextCorrectionApp() {
   const saveCorrections = async () => {
     if (!currentSession) return
 
+    // 二重クリック/連続送信ガード: 保存処理が完了するまで再入を防ぎ、
+    // 同一の生成ラウンドから複数の「添削データ」エントリが誤って
+    // 作成されることを防止する
+    if (isSaving) return
+
     const selectedSuggestions = currentSession.suggestions
       .filter((s) => s.selected)
       .sort((a, b) => (a.selectedOrder || 0) - (b.selectedOrder || 0))
@@ -855,6 +1103,19 @@ export default function TextCorrectionApp() {
       return
     }
 
+    // 原文/添削対象テキストが保存時点で空だと、バックエンドの/historiesが
+    // 400を返し、以降の/proposals呼び出しがhistoryId欠落でエラーになる
+    // （ブラウザ上は「Failed to fetch」としか見えない）。ここで先に検知する。
+    if (!currentSession.originalText.trim() || !currentSession.targetText.trim()) {
+      toast({
+        title: "テキストが空です",
+        description: "原文と添削対象テキストの両方が必要です",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsSaving(true)
     try {
       // 履歴データを作成
       const historyData = {
@@ -869,6 +1130,9 @@ export default function TextCorrectionApp() {
 
       // 履歴をAPIに保存
       const savedHistory = await historyAPI.createHistory(historyData)
+      if (!savedHistory?.historyId) {
+        throw new Error("履歴の保存に失敗しました（historyIdが返却されませんでした）")
+      }
 
       // すべての提案をAPIに保存（選択されたものも選択されていないものも）
       for (const suggestion of currentSession.suggestions) {
@@ -911,6 +1175,7 @@ export default function TextCorrectionApp() {
           combinedComment,
           timestamp: new Date(),
           confirmed: true,
+          historyId: savedHistory.historyId,
         }
 
         updateCurrentSession({
@@ -923,6 +1188,8 @@ export default function TextCorrectionApp() {
         // 確認済みジョブをキューから削除
         setJobQueue(prev => prev.filter(j => j.id !== confirmingJobId))
         setConfirmingJobId(null)
+        // Draftが実データ（History）として確定したため、永続化していたDraftを削除する
+        clearDraftFromStorage(currentSession.id)
         
         toast({
           title: "確認完了",
@@ -940,6 +1207,8 @@ export default function TextCorrectionApp() {
           overallComment: "",
         })
         setConfirmingHistoryIndex(null)
+        // Draftが実データ（History）として確定したため、永続化していたDraftを削除する
+        clearDraftFromStorage(currentSession.id)
         toast({
           title: "確認完了",
           description: "履歴を確認済みにしました。クリップボードにコピーしました。",
@@ -956,6 +1225,7 @@ export default function TextCorrectionApp() {
           combinedComment,
           timestamp: new Date(),
           confirmed: true,
+          historyId: savedHistory.historyId,
         }
 
         updateCurrentSession({
@@ -964,6 +1234,8 @@ export default function TextCorrectionApp() {
           suggestions: [],
           overallComment: "",
         })
+        // Draftが実データ（History）として確定したため、永続化していたDraftを削除する
+        clearDraftFromStorage(currentSession.id)
         
         toast({
           title: "保存完了",
@@ -981,6 +1253,8 @@ export default function TextCorrectionApp() {
         description: "修正内容の保存に失敗しました",
         variant: "destructive",
       })
+    } finally {
+      setIsSaving(false)
     }
   }
 
@@ -1009,6 +1283,38 @@ export default function TextCorrectionApp() {
       title: "確認中",
       description: "履歴データをロードしました。内容を確認して「確定してコピー・保存」を実行してください。",
     })
+  }
+
+  // 添削データ（履歴ラウンド）のアーカイブ（ソフトデリート、完全削除ではない）
+  const archiveHistoryRound = async (data: SavedData, index: number) => {
+    if (!currentSession) return
+
+    try {
+      if (data.historyId) {
+        await historyAPI.archiveHistory(data.historyId)
+      }
+
+      // 楽観的UI更新: ローカル状態からラウンドを除去
+      updateCurrentSession({
+        savedData: currentSession.savedData.filter((_, idx) => idx !== index),
+      })
+
+      if (confirmingHistoryIndex === index) {
+        setConfirmingHistoryIndex(null)
+      }
+
+      toast({
+        title: "アーカイブ完了",
+        description: "添削データをアーカイブしました",
+      })
+    } catch (error) {
+      console.error("Failed to archive history:", error)
+      toast({
+        title: "エラー",
+        description: "添削データのアーカイブに失敗しました",
+        variant: "destructive",
+      })
+    }
   }
 
   const selectedCount = currentSession?.suggestions.filter((s) => s.selected).length || 0
@@ -1360,7 +1666,7 @@ export default function TextCorrectionApp() {
                       <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
                     {currentSession.savedData.length > 0 && (
-                      <Badge className="bg-session-complete text-white">保存済み: {currentSession.savedData.length}件</Badge>
+                      <Badge className="bg-session-complete text-white">Saved: {currentSession.savedData.length}</Badge>
                     )}
                   </div>
 
@@ -1600,6 +1906,20 @@ export default function TextCorrectionApp() {
                                     確認
                                   </div>
                                 )}
+                                {job.status === 'failed' && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 px-2 border-error text-error hover:bg-red-100 flex-shrink-0"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      retryJob(job)
+                                    }}
+                                  >
+                                    <span className="material-symbols-outlined md-18 mr-1">refresh</span>
+                                    再試行
+                                  </Button>
+                                )}
                               </div>
                             </div>
                           )
@@ -1778,12 +2098,14 @@ export default function TextCorrectionApp() {
 
                       <Button
                         onClick={saveCorrections}
-                        disabled={!canSave}
+                        disabled={!canSave || isSaving}
                         className="w-full bg-md3-primary text-on-primary hover:bg-md3-primary/90"
                         size="lg"
                       >
-                        <span className="material-symbols-outlined md-18 mr-2">content_copy</span>
-                        確定してコピー・保存 ({selectedCount}/3)
+                        <span className="material-symbols-outlined md-18 mr-2">
+                          {isSaving ? "progress_activity" : "content_copy"}
+                        </span>
+                        {isSaving ? "保存中..." : `確定してコピー・保存 (${selectedCount}/3)`}
                       </Button>
                     </CardContent>
                   </Card>
@@ -1804,20 +2126,38 @@ export default function TextCorrectionApp() {
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-2">
-                        {currentSession.savedData.map((data, index) => (
+                        {currentSession.savedData.map((data, index) => {
+                          const handleRestore = () => {
+                            restoreFromHistory(data)
+                            setConfirmingHistoryIndex(index)
+                          }
+                          return (
                           <div 
                             key={index} 
-                            className={`border rounded-lg p-3 ${
+                            className={`border rounded-lg p-3 transition-colors cursor-pointer ${
                               data.confirmed 
-                                ? 'bg-green-50 border-session-complete' 
-                                : 'bg-surface-container border-outline-variant'
+                                ? 'bg-green-50 border-session-complete hover:bg-green-100' 
+                                : 'bg-surface-container border-outline-variant hover:border-md3-primary'
                             }`}
+                            onClick={handleRestore}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                handleRestore()
+                              }
+                            }}
+                            role="button"
+                            tabIndex={0}
                           >
                             <div className="flex justify-between items-start">
                               <div>
                                 <div className="flex items-center gap-2">
                                   <h4 className="font-semibold text-body-sm text-on-surface">添削データ #{index + 1}</h4>
-                                  {!data.confirmed && (
+                                  {data.confirmed ? (
+                                    <Badge className="bg-session-complete text-white text-xs font-medium">
+                                      Saved
+                                    </Badge>
+                                  ) : (
                                     <Badge variant="outline" className="text-on-surface-variant border-outline text-xs font-medium">
                                       未確認
                                     </Badge>
@@ -1830,9 +2170,10 @@ export default function TextCorrectionApp() {
                                   variant={data.confirmed ? "ghost" : "outline"} 
                                   size="sm"
                                   className="h-8 px-2"
-                                  onClick={() => {
-                                    restoreFromHistory(data)
-                                    setConfirmingHistoryIndex(index)
+                                  title="確認"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleRestore()
                                   }}
                                 >
                                   <span className={`material-symbols-outlined md-18 ${data.confirmed ? 'text-session-complete' : ''}`}>
@@ -1843,14 +2184,19 @@ export default function TextCorrectionApp() {
                                   variant="outline"
                                   size="sm"
                                   className="h-8 px-2"
-                                  onClick={() => console.log("削除機能未実装")}
+                                  title="アーカイブ"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    archiveHistoryRound(data, index)
+                                  }}
                                 >
-                                  <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
+                                  <span className="material-symbols-outlined md-18 text-on-surface-variant">archive</span>
                                 </Button>
                               </div>
                             </div>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </CardContent>
                   </Card>

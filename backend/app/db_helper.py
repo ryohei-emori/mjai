@@ -27,7 +27,7 @@ async def fetch_sessions():
                 s.name, 
                 s.created_at AS "createdAt", 
                 s.updated_at AS "updatedAt",
-                COUNT(h.history_id) AS "correctionCount"
+                COUNT(h.history_id) FILTER (WHERE h.is_archived = false) AS "correctionCount"
             FROM sessions s
             LEFT JOIN correction_histories h ON s.session_id = h.session_id
             WHERE s.status = 'active' OR s.status IS NULL
@@ -108,7 +108,7 @@ async def fetch_session(session_id):
             }
         return None
 
-# 履歴一覧取得
+# 履歴一覧取得（アーカイブ済みラウンドを除く）
 async def fetch_histories_by_session(session_id):
     async with get_db() as conn:
         rows = await conn.fetch(
@@ -124,11 +124,19 @@ async def fetch_histories_by_session(session_id):
                 selected_proposal_ids AS "selectedProposalIds",
                 custom_proposals AS "customProposals"
             FROM correction_histories 
-            WHERE session_id = $1 
+            WHERE session_id = $1 AND is_archived = false
             ORDER BY timestamp DESC
             ''', session_id
         )
         return [dict(row) for row in rows]
+
+# 履歴ラウンドのアーカイブ（ソフトデリート）
+async def archive_history(history_id):
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE correction_histories SET is_archived = true WHERE history_id = $1",
+            history_id
+        )
 
 # 履歴追加（作成したオブジェクトを返す）
 async def insert_history(history):
