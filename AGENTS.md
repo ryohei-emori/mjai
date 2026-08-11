@@ -73,7 +73,7 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | Variable | Purpose |
 |---|---|
 | `GROQ_API_KEY` | Primary AI provider for fast inference (~1-3s). Get from [console.groq.com](https://console.groq.com) |
-| `GROQ_MODEL` | Optional. Overrides the Groq model id (default: `llama-3.3-70b-versatile`, set in `backend/app/llm/groq_provider.py`) |
+| `GROQ_MODEL` | Optional. If set, disables per-request model rotation and pins every request to this exact model id (see `ALLOWED_GROQ_MODELS` rotation pool in `backend/app/llm/groq_provider.py`) |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers AI access |
 
@@ -227,9 +227,24 @@ User Request → POST /api/suggestions (authenticated)
 
 | Path | Provider | Latency | When Used |
 |------|----------|---------|-----------|
-| **Default** | Groq (llama-3.3-70b-versatile, overridable via `GROQ_MODEL`) | ~1-3s | API keys configured, Groq available |
-| **Failover** | Cloudflare Workers AI | ~2-5s | Groq rate-limited/error/timeout |
+| **Default** | Groq, model rotation pool (see below), overridable/pinnable via `GROQ_MODEL` | ~1-3s | API keys configured, Groq available |
+| **Failover** | Cloudflare Workers AI | ~2-5s | Both attempted Groq models rate-limited/error/timeout |
 | **Offline** | WebLLM (Mistral 7B) | ~10-30s | API unavailable OR user enables オフラインモード |
+
+**Groq model rotation (added 2026-08 ahead of `llama-3.3-70b-versatile`'s 2026-08-16 deprecation):** rather than pinning to a single hardcoded model, `backend/app/llm/groq_provider.py` selects a model per request from a curated allow-list (`ALLOWED_GROQ_MODELS`):
+
+| Model ID | Role |
+|---|---|
+| `openai/gpt-oss-120b` | Rotation pool — Production tier, quality-focused |
+| `openai/gpt-oss-20b` | Rotation pool — Production tier, speed/cost-focused |
+| `qwen/qwen3.6-27b` | Rotation pool — **Preview tier**, may be pulled by Groq at short notice |
+
+- **Selection**: `random.choice`-style (`random.sample`) per request, not a stateful round-robin — Vercel serverless functions are stateless per-invocation, so an in-memory counter would not reliably rotate in production.
+- **In-provider retry**: on a retriable Groq failure (429/5xx/timeout), the provider retries once against a second, different model from the pool (`call_groq_with_rotation()`) before the `suggestions.py` failover chain falls over to Cloudflare — bounding the Groq phase to at most 2 attempts (~20s worst case) to keep total request latency predictable.
+- **`GROQ_MODEL` override**: if set to a non-empty value, rotation is fully disabled and every request pins to that exact model id, with no in-provider retry — unchanged from prior behavior, useful for debugging or pinning to a specific model.
+- **`qwen/qwen3.6-27b` reasoning quirk**: this model emits a `<think>...</think>` block inside the response content by default, which can consume the entire `max_tokens` budget before any JSON is produced (discovered via live smoke-testing — the parser then silently falls back to the system prompt's placeholder text as if it were a real answer, without raising). Fixed by sending `reasoning_effort: "none"` in the request payload for this model specifically (see `QWEN_REASONING_MODELS` in `groq_provider.py`); `openai/gpt-oss-*` models do not need this and don't accept `"none"` for that parameter (only `low`/`medium`/`high`).
+- **Excluded from the pool** (and why): `llama-3.3-70b-versatile` / `llama-3.1-8b-instant` (Groq shutdown date 2026-08-16), `qwen/qwen3-32b` (already deprecated/404s), `openai/gpt-oss-safeguard-20b` (safety/policy-classification tuned), `groq/compound`/`compound-mini` (agentic/tool-use, low RPD), `meta-llama/llama-prompt-guard-2-*` (classifier models), `allam-2-7b` (Arabic-focused, not evaluated for Japanese quality).
+- **Maintenance note**: `ALLOWED_GROQ_MODELS` is a static, manually-reviewed constant — there is no runtime catalog-refresh mechanism. If Groq announces further deprecations (especially for the Preview-tier `qwen/qwen3.6-27b`), update this list (and this table) as a small follow-up change; do not wait for production errors to surface it.
 
 ### Backend Providers (`backend/app/llm/`)
 
@@ -237,7 +252,7 @@ User Request → POST /api/suggestions (authenticated)
 |--------|---------|
 | `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
 | `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
-| `groq_provider.py` | Groq API client with 10s timeout |
+| `groq_provider.py` | Groq API client, 10s timeout, model rotation pool (`ALLOWED_GROQ_MODELS`) + in-provider retry |
 | `cloudflare_provider.py` | Cloudflare Workers AI client with 15s timeout |
 | `suggestions.py` | Failover chain logic |
 
@@ -246,7 +261,7 @@ User Request → POST /api/suggestions (authenticated)
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GROQ_API_KEY` | Recommended | Primary provider. Get from [console.groq.com](https://console.groq.com) → API Keys |
-| `GROQ_MODEL` | Optional | Overrides default Groq model (`llama-3.3-70b-versatile`) without a code change |
+| `GROQ_MODEL` | Optional | Pins Groq to a single model id, disabling rotation across `ALLOWED_GROQ_MODELS`, without a code change |
 | `CLOUDFLARE_ACCOUNT_ID` | Optional | Fallback provider. Get from Cloudflare dashboard → Overview |
 | `CLOUDFLARE_API_TOKEN` | Optional | Fallback provider. Create token with Workers AI read access |
 

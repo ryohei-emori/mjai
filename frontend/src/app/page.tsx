@@ -1,7 +1,8 @@
 "use client"
 
-import { useEffect, useCallback } from "react"
+import { useEffect, useCallback, useRef } from "react"
 import { useState } from "react"
+import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
@@ -12,19 +13,6 @@ import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Input } from "@/components/ui/input"
-import {
-  FileText,
-  Bot,
-  Plus,
-  Menu,
-  Trash2,
-  Calendar,
-  Loader2,
-  Copy,
-  CheckCircle,
-  MessageSquare,
-  LogOut,
-} from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { sessionAPI, historyAPI, proposalAPI, suggestionsAPI } from "./api"
 import { useAuth } from "./auth-provider"
@@ -40,6 +28,8 @@ import {
   getDiagnosticsTracker,
   type EngineStatus,
 } from "@/lib/webllm"
+
+type ActiveNav = 'sessions' | 'dashboard' | 'archive'
 
 type CorrectionSuggestion = {
   id: string
@@ -121,31 +111,31 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
   // Determine background color based on state
   const bgClass = status.state === "error" 
     ? "bg-red-50 border-red-200" 
-    : "bg-blue-50 border-blue-200"
+    : "bg-primary-container border-md3-primary/30"
   const textClass = status.state === "error"
     ? "text-red-800"
-    : "text-blue-800"
+    : "text-on-primary-container"
   const textMutedClass = status.state === "error"
     ? "text-red-700"
-    : "text-blue-700"
+    : "text-on-primary-container/70"
   const progressBgClass = status.state === "error"
     ? "bg-red-200"
-    : "bg-blue-200"
+    : "bg-md3-primary/20"
   const progressFgClass = status.state === "error"
     ? "bg-red-600"
-    : "bg-blue-600"
+    : "bg-md3-primary"
 
   return (
     <div className={`p-3 border rounded-lg ${bgClass}`}>
       {/* Header: Model info + current phase */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <Loader2 className={`w-4 h-4 animate-spin ${textClass}`} />
-          <span className={`text-sm font-medium ${textClass}`}>
+          <span className={`material-symbols-outlined md-18 animate-spin ${textClass}`}>progress_activity</span>
+          <span className={`text-body-sm font-medium ${textClass}`}>
             {diagnostics?.phaseLabel || (status.state === "loading" ? "準備中" : status.state === "generating" ? "分析中" : "処理中")}
           </span>
         </div>
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-2 text-metadata">
           <span className={`font-mono ${textMutedClass}`}>
             {WEBLLM_MODEL_DISPLAY_NAME}
           </span>
@@ -161,7 +151,7 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
               style={{ width: `${Math.round(status.progress * 100)}%` }}
             />
           </div>
-          <p className={`text-xs ${textMutedClass}`}>
+          <p className={`text-metadata ${textMutedClass}`}>
             {status.text || formatDownloadProgress(status.progress)}
           </p>
         </>
@@ -169,7 +159,7 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
       
       {/* Timing info */}
       {diagnostics && (
-        <div className={`flex gap-4 text-xs ${textMutedClass} mt-2`}>
+        <div className={`flex gap-4 text-metadata ${textMutedClass} mt-2`}>
           <span>
             現在フェーズ: {formatElapsedTime(diagnostics.currentPhaseElapsedMs)}
           </span>
@@ -181,21 +171,21 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
       
       {/* Timeout info - shown instead of generic error for timeout cases */}
       {diagnostics?.timeoutPhase && (
-        <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800">
+        <div className="mt-2 p-2 bg-red-100 rounded text-metadata text-red-800">
           <strong>タイムアウト:</strong> {PHASE_LABELS[diagnostics.timeoutPhase]} フェーズでタイムアウトしました
         </div>
       )}
       
       {/* Error message - only show if NOT a timeout (timeoutPhase already shows the info) */}
       {status.state === "error" && !diagnostics?.timeoutPhase && (
-        <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800">
+        <div className="mt-2 p-2 bg-red-100 rounded text-metadata text-red-800">
           <strong>エラー:</strong> {"error" in status ? status.error : "不明なエラー"}
         </div>
       )}
       
       {/* DevTools hint (only in development) */}
       {process.env.NODE_ENV === "development" && (
-        <p className={`text-xs ${textMutedClass} mt-2 opacity-60`}>
+        <p className={`text-metadata ${textMutedClass} mt-2 opacity-60`}>
           DevTools: window.__webllmDiagnostics.getState()
         </p>
       )}
@@ -204,11 +194,10 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
 }
 
 export default function TextCorrectionApp() {
-  const { session, isLoading: isAuthLoading, signOut } = useAuth()
+  const { session, isLoading: isAuthLoading, signOut, user } = useAuth()
   const [sessions, setSessions] = useState<Session[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true) // 新しく追加
   const [customCorrection, setCustomCorrection] = useState({ original: "", reason: "" })
   const [showCustomForm, setShowCustomForm] = useState(false)
   const [selectionCounter, setSelectionCounter] = useState(0)
@@ -219,7 +208,14 @@ export default function TextCorrectionApp() {
   const [lastSuggestionSource] = useState<"api" | "webllm" | null>(null)
   const [jobQueue, setJobQueue] = useState<QueuedJob[]>([])
   const [confirmingHistoryIndex, setConfirmingHistoryIndex] = useState<number | null>(null)
+  const [activeNav, setActiveNav] = useState<ActiveNav>('sessions')
+  const [bellShake, setBellShake] = useState(false)
+  const [sessionSearch, setSessionSearch] = useState("")
+  const bellShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { toast } = useToast()
+
+  // Get user avatar from Google OAuth metadata
+  const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture
 
   // Derived state - must be declared before any hooks that reference it
   const currentSession = sessions.find((s) => s.id === currentSessionId)
@@ -333,6 +329,15 @@ export default function TextCorrectionApp() {
             } 
           : j
       ))
+
+      // Trigger bell shake animation on job completion
+      setBellShake(true)
+      if (bellShakeTimeoutRef.current) {
+        clearTimeout(bellShakeTimeoutRef.current)
+      }
+      bellShakeTimeoutRef.current = setTimeout(() => {
+        setBellShake(false)
+      }, 600)
 
       toast({
         title: "完了",
@@ -939,89 +944,33 @@ export default function TextCorrectionApp() {
   const selectedCount = currentSession?.suggestions.filter((s) => s.selected).length || 0
   const canSave = selectedCount >= 3
 
-  const SidebarHeader = ({ isDesktop = false }: { isDesktop?: boolean }) => (
-    <div className="p-4 border-b">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-gray-900">
-          {desktopSidebarOpen || !isDesktop ? "CCTalk 添削システム" : "CCTalk"}
-        </h1>
-        {isDesktop && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setDesktopSidebarOpen(!desktopSidebarOpen)}
-            className="h-8 w-8 p-0"
-          >
-            <Menu className="w-4 h-4" />
-          </Button>
-        )}
-      </div>
-    </div>
+  // Filter sessions based on search query
+  const filteredSessions = sessions.filter((s) =>
+    s.name.toLowerCase().includes(sessionSearch.toLowerCase())
   )
 
-  const SidebarContent = ({ collapsed = false }: { collapsed?: boolean }) => (
-    <div className={`h-full flex flex-col ${collapsed ? 'items-center w-16' : ''}`}>
-      <div className={`p-4 border-b ${collapsed ? 'px-2' : ''}`}>
-        {!collapsed && (
-          <Button onClick={createNewSession} className="w-full" size="sm">
-            <Plus className="w-4 h-4 mr-2" />
-            新しいセッション
-          </Button>
-        )}
-        {collapsed && (
-          <Button onClick={createNewSession} size="icon" className="w-8 h-8">
-            <Plus className="w-4 h-4" />
-          </Button>
-        )}
-      </div>
-      <ScrollArea className={`flex-1 ${collapsed ? 'px-1' : 'p-4'}`}>
-        <div className="space-y-2">
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
-                currentSessionId === session.id ? "bg-blue-50 border-blue-200" : "hover:bg-gray-50"
-              } ${collapsed ? 'p-1' : ''}`}
-              onClick={() => handleSessionSwitch(session.id)}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex-1 min-w-0">
-                  <h3 className={`font-medium text-sm truncate ${collapsed ? 'hidden' : ''}`}>{session.name}</h3>
-                  <div className={`flex items-center gap-2 mt-1 ${collapsed ? 'justify-center' : ''}`}>
-                    <Calendar className="w-3 h-3 text-gray-400" />
-                    {!collapsed && (
-                      <span className="text-xs text-gray-500">{session.createdAt.toLocaleDateString()}</span>
-                    )}
-                  </div>
-                  <Badge variant="secondary" className={`mt-2 ${collapsed ? 'mx-auto block' : ''}`}>
-                    保存済み: {session.correctionCount}件
-                  </Badge>
-                </div>
-                {!collapsed && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      deleteSession(session.id)
-                    }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          ))}
+  // Count active jobs for the badge
+  const activeJobCount = jobQueue.filter(j => j.status === 'processing' || j.status === 'queued').length
 
-          {sessions.length === 0 && (
-            <div className="text-center py-8 text-gray-500">
-              <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-sm">セッションがありません</p>
-            </div>
-          )}
-        </div>
-      </ScrollArea>
+  // Coming Soon Placeholder component
+  const ComingSoonPlaceholder = ({ title }: { title: string }) => (
+    <div className="flex-1 flex items-center justify-center bg-surface-container-low">
+      <Card className="max-w-md w-full mx-4 bg-surface border-outline-variant">
+        <CardHeader className="text-center">
+          <span className="material-symbols-outlined md-48 mx-auto mb-4 text-on-surface-variant">
+            construction
+          </span>
+          <CardTitle className="text-headline-md text-on-surface">{title}</CardTitle>
+          <CardDescription className="text-body-sm text-on-surface-variant">
+            この機能は現在開発中です。今後のアップデートをお待ちください。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="text-center">
+          <Badge variant="secondary" className="bg-surface-container text-on-surface-variant">
+            Coming Soon
+          </Badge>
+        </CardContent>
+      </Card>
     </div>
   )
 
@@ -1035,8 +984,8 @@ export default function TextCorrectionApp() {
   // 認証状態を確認中はローディング表示
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      <div className="min-h-screen flex items-center justify-center bg-surface-container-low">
+        <span className="material-symbols-outlined md-48 animate-spin text-md3-primary">progress_activity</span>
       </div>
     )
   }
@@ -1047,72 +996,289 @@ export default function TextCorrectionApp() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-blue-50 to-indigo-100">
-      {/* Mobile Sidebar */}
+    <div className="h-screen flex flex-col bg-surface-container-low">
+      {/* TopAppBar */}
+      <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
+        {/* Logo/Title */}
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined md-24 text-md3-primary">edit_note</span>
+          <h1 className="text-headline-md font-semibold text-on-surface hidden sm:block">MJAI</h1>
+        </div>
+
+        {/* Navigation Tabs */}
+        <nav className="flex items-center gap-1 ml-4">
+          <button
+            onClick={() => setActiveNav('sessions')}
+            className={`px-4 py-2 text-body-sm font-medium rounded-lg transition-colors ${
+              activeNav === 'sessions'
+                ? 'bg-primary-container text-on-primary-container'
+                : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            Sessions
+          </button>
+          <button
+            onClick={() => setActiveNav('dashboard')}
+            className={`px-4 py-2 text-body-sm font-medium rounded-lg transition-colors ${
+              activeNav === 'dashboard'
+                ? 'bg-primary-container text-on-primary-container'
+                : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            Dashboard
+          </button>
+          <button
+            onClick={() => setActiveNav('archive')}
+            className={`px-4 py-2 text-body-sm font-medium rounded-lg transition-colors ${
+              activeNav === 'archive'
+                ? 'bg-primary-container text-on-primary-container'
+                : 'text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            Archive
+          </button>
+        </nav>
+
+        {/* New Session Button */}
+        <Button
+          onClick={createNewSession}
+          size="sm"
+          className="ml-auto hidden sm:flex bg-md3-primary text-on-primary hover:bg-md3-primary/90"
+        >
+          <span className="material-symbols-outlined md-18 mr-1">add</span>
+          New Session
+        </Button>
+        <Button
+          onClick={createNewSession}
+          size="icon"
+          className="ml-auto sm:hidden bg-md3-primary text-on-primary hover:bg-md3-primary/90"
+        >
+          <span className="material-symbols-outlined md-20">add</span>
+        </Button>
+
+        {/* Right side icons */}
+        <div className="flex items-center gap-2">
+          {/* Notification Bell */}
+          <button
+            className={`p-2 rounded-full hover:bg-surface-container transition-colors relative ${bellShake ? 'bell-shake' : ''}`}
+            title="通知"
+          >
+            <span className="material-symbols-outlined md-24 text-on-surface-variant">notifications</span>
+            {activeJobCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-error text-on-error text-xs font-medium rounded-full w-5 h-5 flex items-center justify-center">
+                {activeJobCount}
+              </span>
+            )}
+          </button>
+
+          {/* Settings Icon (disabled placeholder) */}
+          <button
+            className="p-2 rounded-full hover:bg-surface-container transition-colors opacity-50 cursor-default"
+            title="Settings (Coming Soon)"
+            disabled
+          >
+            <span className="material-symbols-outlined md-24 text-on-surface-variant">settings</span>
+          </button>
+
+          {/* User Avatar */}
+          {avatarUrl ? (
+            <Image
+              src={avatarUrl}
+              alt="User avatar"
+              width={32}
+              height={32}
+              className="rounded-full border border-outline-variant"
+              unoptimized
+            />
+          ) : (
+            <span className="material-symbols-outlined md-24 text-on-surface-variant">account_circle</span>
+          )}
+
+          {/* Logout Button */}
+          <button
+            onClick={() => signOut()}
+            className="p-2 rounded-full hover:bg-surface-container transition-colors"
+            title="ログアウト"
+          >
+            <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Mobile Session Sheet */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetTrigger asChild>
-          <Button variant="outline" size="sm" className="fixed top-4 left-4 z-50 lg:hidden bg-white shadow-md">
-            <Menu className="w-4 h-4" />
+          <Button
+            variant="outline"
+            size="sm"
+            className="fixed bottom-4 left-4 z-50 lg:hidden bg-surface shadow-md border-outline-variant"
+          >
+            <span className="material-symbols-outlined md-18">menu</span>
           </Button>
         </SheetTrigger>
-        <SheetContent side="left" className="w-80 p-0">
-          <SheetHeader className="p-4 border-b">
-            <SheetTitle>セッション管理</SheetTitle>
+        <SheetContent side="left" className="w-80 p-0 bg-surface">
+          <SheetHeader className="p-4 border-b border-outline-variant">
+            <SheetTitle className="text-headline-md text-on-surface">セッション</SheetTitle>
           </SheetHeader>
-          <SidebarContent />
+          <div className="p-4">
+            <Input
+              placeholder="セッションを検索..."
+              value={sessionSearch}
+              onChange={(e) => setSessionSearch(e.target.value)}
+              className="mb-4 bg-surface-container border-outline-variant"
+            />
+            <ScrollArea className="h-[calc(100vh-12rem)]">
+              <div className="space-y-2">
+                {filteredSessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
+                      currentSessionId === s.id
+                        ? "bg-primary-container border-md3-primary"
+                        : "border-outline-variant hover:bg-surface-container"
+                    }`}
+                    onClick={() => {
+                      handleSessionSwitch(s.id)
+                      setSidebarOpen(false)
+                    }}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
+                          <h3 className="font-medium text-body-sm text-on-surface truncate">{s.name}</h3>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 ml-6">
+                          <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
+                          <span className="text-metadata text-on-surface-variant">{s.createdAt.toLocaleDateString()}</span>
+                        </div>
+                        <div className="mt-2 ml-6">
+                          <Badge
+                            className={`text-xs ${
+                              s.correctionCount > 0
+                                ? 'bg-session-complete text-white'
+                                : 'bg-session-empty text-white'
+                            }`}
+                          >
+                            {s.correctionCount > 0 ? `${s.correctionCount} Saved` : 'Draft'}
+                          </Badge>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deleteSession(s.id)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
+                      >
+                        <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {filteredSessions.length === 0 && (
+                  <div className="text-center py-8 text-on-surface-variant">
+                    <span className="material-symbols-outlined md-36 mx-auto mb-2 opacity-50">description</span>
+                    <p className="text-body-sm">セッションがありません</p>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+          </div>
         </SheetContent>
       </Sheet>
 
-      <div className="flex flex-1 min-h-0">
-        {/* Desktop collapsed sidebar menu button */}
-        {!desktopSidebarOpen && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setDesktopSidebarOpen(true)}
-            className="fixed top-4 left-4 z-50 hidden lg:block bg-white shadow-md"
-          >
-            <Menu className="w-4 h-4" />
-          </Button>
-        )}
-
-        {/* Desktop Sidebar - Fixed */}
-        {desktopSidebarOpen && (
-          <div className="hidden lg:flex lg:flex-col w-80 h-full bg-white border-r shadow-sm flex-shrink-0">
-            <SidebarHeader isDesktop={true} />
-            <SidebarContent />
-          </div>
-        )}
-
-        {/* Main Content - Scrollable */}
-        <div className="flex-1 overflow-y-auto relative">
-          {/* Global Logout Button - Top Right */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => signOut()}
-            className="fixed top-4 right-4 z-50 bg-white shadow-md"
-            title="ログアウト"
-          >
-            <LogOut className="w-4 h-4" />
-          </Button>
-          <div className="p-4 lg:p-8">
-            <div className="max-w-7xl mx-auto">
-              {/* Header for mobile */}
-              <div className="lg:hidden mb-6 pt-12">
-                <h1 className="text-2xl font-bold text-gray-900">CCTalk 添削システム</h1>
+      {/* Main Content Area */}
+      {activeNav === 'dashboard' && <ComingSoonPlaceholder title="Dashboard" />}
+      {activeNav === 'archive' && <ComingSoonPlaceholder title="Archive" />}
+      {activeNav === 'sessions' && (
+        <div className="flex flex-1 min-h-0">
+          {/* Left Pane - Session List (Desktop only) */}
+          <aside className="hidden lg:flex lg:flex-col w-72 bg-surface border-r border-outline-variant flex-shrink-0">
+            <div className="p-4 border-b border-outline-variant">
+              <Input
+                placeholder="セッションを検索..."
+                value={sessionSearch}
+                onChange={(e) => setSessionSearch(e.target.value)}
+                className="bg-surface-container border-outline-variant"
+              />
+            </div>
+            <ScrollArea className="flex-1 p-4">
+              <div className="space-y-2">
+                {filteredSessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
+                      currentSessionId === s.id
+                        ? "bg-primary-container border-md3-primary"
+                        : "border-outline-variant hover:bg-surface-container"
+                    }`}
+                    onClick={() => handleSessionSwitch(s.id)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
+                          <h3 className="font-medium text-body-sm text-on-surface truncate">{s.name}</h3>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 ml-6">
+                          <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
+                          <span className="text-metadata text-on-surface-variant">{s.createdAt.toLocaleDateString()}</span>
+                        </div>
+                        <div className="mt-2 ml-6">
+                          <Badge
+                            className={`text-xs ${
+                              s.correctionCount > 0
+                                ? 'bg-session-complete text-white'
+                                : 'bg-session-empty text-white'
+                            }`}
+                          >
+                            {s.correctionCount > 0 ? `${s.correctionCount} Saved` : 'Draft'}
+                          </Badge>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deleteSession(s.id)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
+                      >
+                        <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {filteredSessions.length === 0 && (
+                  <div className="text-center py-8 text-on-surface-variant">
+                    <span className="material-symbols-outlined md-36 mx-auto mb-2 opacity-50">description</span>
+                    <p className="text-body-sm">セッションがありません</p>
+                  </div>
+                )}
               </div>
+            </ScrollArea>
+          </aside>
 
+          {/* Center + Right Pane Container */}
+          <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+            {/* Center Pane - Editor */}
+            <main className="flex-1 overflow-y-auto p-4 lg:p-6">
               {!currentSession ? (
                 <div className="flex items-center justify-center min-h-[calc(100vh-8rem)]">
-                  <Card className="max-w-md w-full mx-4">
+                  <Card className="max-w-md w-full mx-4 bg-surface border-outline-variant">
                     <CardHeader className="text-center">
-                      <FileText className="w-12 h-12 mx-auto mb-4 text-blue-600" />
-                      <CardTitle>セッションを開始</CardTitle>
-                      <CardDescription>新しいセッションを作成して添削を開始しましょう</CardDescription>
+                      <span className="material-symbols-outlined md-48 mx-auto mb-4 text-md3-primary">description</span>
+                      <CardTitle className="text-headline-md text-on-surface">セッションを開始</CardTitle>
+                      <CardDescription className="text-body-sm text-on-surface-variant">
+                        新しいセッションを作成して添削を開始しましょう
+                      </CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <Button onClick={createNewSession} className="w-full" size="lg">
+                      <Button onClick={createNewSession} className="w-full bg-md3-primary text-on-primary hover:bg-md3-primary/90" size="lg">
                         新しいセッション作成
                       </Button>
                     </CardContent>
@@ -1123,84 +1289,97 @@ export default function TextCorrectionApp() {
                   {/* Session Header */}
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-xl font-bold text-gray-900">{currentSession.name}</h2>
-                      <p className="text-sm text-gray-500">作成日: {currentSession.createdAt.toLocaleString()}</p>
+                      <h2 className="text-headline-lg font-semibold text-on-surface">{currentSession.name}</h2>
+                      <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
                     {currentSession.savedData.length > 0 && (
-                      <Badge variant="outline">保存済み: {currentSession.savedData.length}件</Badge>
+                      <Badge className="bg-session-complete text-white">保存済み: {currentSession.savedData.length}件</Badge>
                     )}
                   </div>
 
-                  {/* Two Column Layout for Text Areas and Suggestions */}
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    {/* Left Column - Fixed Text Areas */}
-                    <div className="space-y-6 xl:sticky xl:top-6 xl:h-fit">
-                      {/* Original Text Input */}
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-lg">原文テキスト</CardTitle>
-                          <CardDescription>CCTalkから原文テキストをコピー&ペーストしてください</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <Textarea
-                            placeholder="原文テキストをここに貼り付けてください..."
-                            value={currentSession.originalText}
-                            onChange={(e) => updateCurrentSession({ originalText: e.target.value })}
-                            className="min-h-[200px] text-base leading-relaxed"
-                          />
-                        </CardContent>
-                      </Card>
+                  {/* Text Editor Cards */}
+                  <div className="space-y-card-gap">
+                    {/* Source Text Card */}
+                    <Card className="bg-surface border-outline-variant">
+                      <CardHeader>
+                        <CardTitle className="text-headline-md text-on-surface flex items-center gap-2">
+                          <span className="material-symbols-outlined md-20 text-md3-primary">article</span>
+                          原文テキスト
+                        </CardTitle>
+                        <CardDescription className="text-body-sm text-on-surface-variant">
+                          CCTalkから原文テキストをコピー&ペーストしてください
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <Textarea
+                          placeholder="原文テキストをここに貼り付けてください..."
+                          value={currentSession.originalText}
+                          onChange={(e) => updateCurrentSession({ originalText: e.target.value })}
+                          className="min-h-[180px] text-body-base leading-relaxed bg-surface-container border-outline-variant"
+                        />
+                      </CardContent>
+                    </Card>
 
-                      {/* Target Text Input */}
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-lg">添削対象テキスト</CardTitle>
-                          <CardDescription>添削したいテキストをコピー&ペーストしてください</CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                          <Textarea
-                            placeholder="添削対象テキストをここに貼り付けてください..."
-                            value={currentSession.targetText}
-                            onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
-                            className="min-h-[250px] text-base leading-relaxed"
-                          />
-                          {/* Offline mode toggle */}
-                          <div className="flex items-center justify-between p-3 bg-gray-50 border rounded-lg">
-                            <div className="flex items-center gap-2">
-                              <Checkbox
-                                id="offline-mode"
-                                checked={offlineMode}
-                                onCheckedChange={(checked) => setOfflineMode(checked === true)}
-                                disabled={webgpuSupported === false}
-                              />
-                              <Label htmlFor="offline-mode" className="text-sm cursor-pointer">
-                                オフラインモード（WebLLM）
-                              </Label>
-                            </div>
-                            {lastSuggestionSource && (
-                              <Badge variant={lastSuggestionSource === "api" ? "default" : "secondary"} className="text-xs">
-                                {lastSuggestionSource === "api" ? "クラウドAPI" : "ローカルAI"}
-                              </Badge>
-                            )}
+                    {/* Target Text Card */}
+                    <Card className="bg-surface border-outline-variant">
+                      <CardHeader>
+                        <CardTitle className="text-headline-md text-on-surface flex items-center gap-2">
+                          <span className="material-symbols-outlined md-20 text-md3-primary">edit_document</span>
+                          添削対象テキスト
+                        </CardTitle>
+                        <CardDescription className="text-body-sm text-on-surface-variant">
+                          添削したいテキストをコピー&ペーストしてください
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <Textarea
+                          placeholder="添削対象テキストをここに貼り付けてください..."
+                          value={currentSession.targetText}
+                          onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
+                          className="min-h-[200px] text-body-base leading-relaxed bg-surface-container border-outline-variant"
+                        />
+                        
+                        {/* Offline mode toggle */}
+                        <div className="flex items-center justify-between p-3 bg-surface-container border border-outline-variant rounded-lg">
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id="offline-mode"
+                              checked={offlineMode}
+                              onCheckedChange={(checked) => setOfflineMode(checked === true)}
+                              disabled={webgpuSupported === false}
+                            />
+                            <Label htmlFor="offline-mode" className="text-body-sm text-on-surface cursor-pointer">
+                              オフラインモード（WebLLM）
+                            </Label>
                           </div>
-                          
-                          {/* WebGPU unsupported message */}
-                          {webgpuSupported === false && (
-                            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
-                              <p className="font-medium">オフラインモード利用不可</p>
-                              <p className="text-xs mt-1">{webgpuUnsupportedReason}</p>
-                              <p className="text-xs mt-1">クラウドAPIが利用できない場合、手動でカスタム修正を追加してください。</p>
-                            </div>
+                          {lastSuggestionSource && (
+                            <Badge variant={lastSuggestionSource === "api" ? "default" : "secondary"} className="text-xs">
+                              {lastSuggestionSource === "api" ? "クラウドAPI" : "ローカルAI"}
+                            </Badge>
                           )}
-                          
-                          {/* AI Diagnostics Panel - shows during any processing */}
-                          {(webllmStatus.state === "loading" || 
-                            webllmStatus.state === "generating" || 
-                            webllmStatus.state === "checking_webgpu" ||
-                            webllmStatus.state === "error") && (
-                            <AIDiagnosticsPanel status={webllmStatus} />
-                          )}
-                          
+                        </div>
+                        
+                        {/* WebGPU unsupported message */}
+                        {webgpuSupported === false && (
+                          <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-body-sm text-yellow-800">
+                            <p className="font-medium">オフラインモード利用不可</p>
+                            <p className="text-metadata mt-1">{webgpuUnsupportedReason}</p>
+                            <p className="text-metadata mt-1">クラウドAPIが利用できない場合、</p>
+                            <p className="text-metadata">AI提案機能を利用できません</p>
+                            <p className="text-metadata mt-1">手動でカスタム修正を追加してください。</p>
+                          </div>
+                        )}
+                        
+                        {/* AI Diagnostics Panel */}
+                        {(webllmStatus.state === "loading" || 
+                          webllmStatus.state === "generating" || 
+                          webllmStatus.state === "checking_webgpu" ||
+                          webllmStatus.state === "error") && (
+                          <AIDiagnosticsPanel status={webllmStatus} />
+                        )}
+                        
+                        {/* Generate Button */}
+                        <div className="flex justify-end">
                           <Button
                             onClick={handleGenerateClick}
                             disabled={
@@ -1208,7 +1387,7 @@ export default function TextCorrectionApp() {
                               !currentSession.originalText.trim() ||
                               (offlineMode && webgpuSupported === false)
                             }
-                            className="w-full"
+                            className="bg-md3-primary text-on-primary hover:bg-md3-primary/90"
                           >
                             {(() => {
                               const processingCount = jobQueue.filter(j => j.status === 'processing').length
@@ -1216,333 +1395,381 @@ export default function TextCorrectionApp() {
                               
                               return (
                                 <>
-                                  <Bot className="w-4 h-4 mr-2" />
+                                  <span className="material-symbols-outlined md-18 mr-2">smart_toy</span>
                                   AI提案を生成
                                   {(processingCount > 0 || queuedCount > 0) && (
-                                    <Badge variant="secondary" className="ml-2 text-xs">
+                                    <Badge variant="secondary" className="ml-2 text-xs bg-surface-container">
                                       {processingCount > 0 && `処理中: ${processingCount}`}
                                       {processingCount > 0 && queuedCount > 0 && ' / '}
                                       {queuedCount > 0 && `待機: ${queuedCount}`}
                                     </Badge>
                                   )}
                                   {offlineMode && !isEngineReady() && (
-                                    <span className="ml-1 text-xs">（初回DL）</span>
+                                    <span className="ml-1 text-metadata">（初回DL）</span>
                                   )}
                                 </>
                               )
                             })()}
                           </Button>
-                        </CardContent>
-                      </Card>
-                    </div>
-
-                    {/* Right Column - Suggestions and Actions */}
-                    <div className="space-y-6">
-                      {/* AI Suggestions */}
-                      {currentSession.suggestions.length > 0 && (
-                        <Card data-suggestions-card>
-                          <CardHeader>
-                            <CardTitle className="flex items-center gap-2">
-                              <Bot className="w-5 h-5 text-blue-600" />
-                              AI修正提案
-                              {confirmingJobId && (
-                                <Badge variant="outline" className="ml-2 text-blue-600 border-blue-300">
-                                  確認中
-                                </Badge>
-                              )}
-                            </CardTitle>
-                            <CardDescription>
-                              以下の提案から3つ以上選択してください。修正内容とコメントは編集可能です。
-                            </CardDescription>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <Badge variant={canSave ? "default" : "secondary"}>選択済み: {selectedCount}/5+</Badge>
-                              {canSave && (
-                                <Badge variant="outline" className="text-green-600">
-                                  保存可能
-                                </Badge>
-                              )}
-                            </div>
-                          </CardHeader>
-                          <CardContent className="space-y-4">
-                            {currentSession.suggestions.map((suggestion) => (
-                              <div key={suggestion.id} className="border rounded-lg p-4 space-y-3">
-                                <div className="flex items-start gap-4">
-                                  <div className="flex flex-col items-center gap-2">
-                                    <Checkbox
-                                      checked={suggestion.selected}
-                                      onCheckedChange={() => toggleSuggestionSelection(suggestion.id)}
-                                      className="h-5 w-5"
-                                    />
-                                    {suggestion.selected && suggestion.selectedOrder && (
-                                      <Badge variant="outline" className="text-xs px-1 py-0">
-                                        {suggestion.selectedOrder}
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  <div className="flex-1 space-y-3">
-                                    {suggestion.isCustom && (
-                                      <Badge variant="outline" className="text-purple-600 border-purple-200">
-                                        カスタム修正
-                                      </Badge>
-                                    )}
-                                    <div className="grid grid-cols-1 gap-4">
-                                      <div>
-                                        <Label className="text-sm font-medium text-red-600">指摘箇所</Label>
-                                        <p className="bg-red-50 p-3 rounded border text-sm mt-1 leading-relaxed">
-                                          {suggestion.original}
-                                        </p>
-                                      </div>
-                                    </div>
-                                    <div className="bg-blue-50 p-3 rounded">
-                                      <Label className="text-sm font-medium text-blue-600">修正コメント</Label>
-                                      {suggestion.selected ? (
-                                        <Textarea
-                                          value={suggestion.userModifiedReason || suggestion.reason}
-                                          onChange={(e) => updateSuggestionReason(suggestion.id, e.target.value)}
-                                          className="text-sm min-h-[80px] mt-1 bg-white"
-                                        />
-                                      ) : (
-                                        <p className="text-sm text-blue-800 mt-1 leading-relaxed">
-                                          {suggestion.reason}
-                                        </p>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-
-                            {/* Custom Correction Form */}
-                            {showCustomForm && (
-                              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 space-y-4 bg-gray-50">
-                                <div className="flex items-center gap-2">
-                                  <Plus className="w-4 h-4 text-gray-600" />
-                                  <Label className="text-sm font-medium text-gray-700">修正内容を追加</Label>
-                                </div>
-                                <div className="grid grid-cols-1 gap-4">
-                                  <div>
-                                    <Label htmlFor="custom-original" className="text-sm font-medium text-red-600">
-                                      修正前のテキスト
-                                    </Label>
-                                    <Input
-                                      id="custom-original"
-                                      value={customCorrection.original}
-                                      onChange={(e) =>
-                                        setCustomCorrection((prev) => ({ ...prev, original: e.target.value }))
-                                      }
-                                      placeholder="修正前のテキストを入力"
-                                      className="mt-1"
-                                    />
-                                  </div>
-                                </div>
-                                <div>
-                                  <Label htmlFor="custom-reason" className="text-sm font-medium text-blue-600">
-                                    修正コメント
-                                  </Label>
-                                  <Textarea
-                                    id="custom-reason"
-                                    value={customCorrection.reason}
-                                    onChange={(e) =>
-                                      setCustomCorrection((prev) => ({ ...prev, reason: e.target.value }))
-                                    }
-                                    placeholder="修正コメントを入力"
-                                    className="min-h-[80px] mt-1"
-                                  />
-                                </div>
-                                <Button onClick={addCustomCorrection} size="sm" className="w-full">
-                                  <Plus className="w-4 h-4 mr-2" />
-                                  修正内容を追加
-                                </Button>
-                              </div>
-                            )}
-
-                            {/* Overall Comment */}
-                            {currentSession.overallComment && (
-                              <div className="border rounded-lg p-4 bg-blue-50 border-blue-200">
-                                <div className="flex items-center gap-2 mb-3">
-                                  <MessageSquare className="w-4 h-4 text-blue-600" />
-                                  <Label className="text-sm font-medium text-blue-700">全体総括コメント</Label>
-                                </div>
-                                <Textarea
-                                  value={currentSession.overallComment}
-                                  onChange={(e) => updateCurrentSession({ overallComment: e.target.value })}
-                                  className="min-h-[100px] bg-white"
-                                  placeholder="全体的な総括コメントを入力してください..."
-                                />
-                              </div>
-                            )}
-
-                            <Separator />
-
-                            <Button onClick={saveCorrections} disabled={!canSave} className="w-full" size="lg">
-                              <Copy className="w-4 h-4 mr-2" />
-                              確定してコピー・保存 ({selectedCount}/3)
-                            </Button>
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      {/* Job Queue - Active Jobs */}
-                      {jobQueue.length > 0 && (
-                        <Card>
-                          <CardHeader>
-                            <CardTitle className="flex items-center gap-2">
-                              <Loader2 className="w-5 h-5 text-blue-600" />
-                              ジョブキュー
-                              <Badge variant="secondary" className="ml-2">
-                                {jobQueue.filter(j => j.status === 'processing').length} 処理中 / {jobQueue.filter(j => j.status === 'queued').length} 待機
-                              </Badge>
-                            </CardTitle>
-                            <CardDescription>
-                              {offlineMode 
-                                ? "WebLLMモード: 逐次処理（1件ずつ）" 
-                                : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
-                            </CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="space-y-3">
-                              {jobQueue.map((job) => {
-                                const isClickable = job.status === 'completed' && job.suggestions
-                                return (
-                                  <div 
-                                    key={job.id} 
-                                    className={`border rounded-lg p-4 space-y-2 transition-colors ${
-                                      job.status === 'processing' 
-                                        ? 'bg-blue-50 border-blue-200' 
-                                        : job.status === 'completed'
-                                        ? 'bg-green-50 border-green-200'
-                                        : job.status === 'failed'
-                                        ? 'bg-red-50 border-red-200'
-                                        : 'bg-gray-50 border-gray-200'
-                                    } ${isClickable ? 'cursor-pointer hover:bg-green-100 hover:border-green-300' : ''}`}
-                                    onClick={isClickable ? () => confirmJob(job) : undefined}
-                                    onKeyDown={isClickable ? (e) => {
-                                      if (e.key === 'Enter' || e.key === ' ') {
-                                        e.preventDefault()
-                                        confirmJob(job)
-                                      }
-                                    } : undefined}
-                                    role={isClickable ? 'button' : undefined}
-                                    tabIndex={isClickable ? 0 : undefined}
-                                    aria-label={isClickable ? `確認: ${job.targetText.slice(0, 30)}...` : undefined}
-                                  >
-                                    <div className="flex justify-between items-start">
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-2">
-                                          {job.status === 'processing' && <Loader2 className="w-4 h-4 animate-spin text-blue-600" />}
-                                          {job.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-600" />}
-                                          {job.status === 'failed' && <span className="text-red-600">✕</span>}
-                                          {job.status === 'queued' && <span className="text-gray-400">○</span>}
-                                          <Badge variant={
-                                            job.status === 'processing' ? 'default' :
-                                            job.status === 'completed' ? 'outline' :
-                                            job.status === 'failed' ? 'destructive' : 'secondary'
-                                          }>
-                                            {job.status === 'processing' ? '処理中' :
-                                             job.status === 'completed' ? '完了' :
-                                             job.status === 'failed' ? '失敗' : '待機中'}
-                                          </Badge>
-                                          {job.source && (
-                                            <Badge variant="outline" className="text-xs">
-                                              {job.source === 'api' ? 'API' : 'WebLLM'}
-                                            </Badge>
-                                          )}
-                                        </div>
-                                        <p className="text-xs text-gray-500 mt-1 truncate">
-                                          {job.targetText.slice(0, 50)}{job.targetText.length > 50 ? '...' : ''}
-                                        </p>
-                                        <p className="text-xs text-gray-400">
-                                          {job.queuedAt.toLocaleTimeString()}
-                                          {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
-                                        </p>
-                                        {job.error && (
-                                          <p className="text-xs text-red-600 mt-1">{job.error}</p>
-                                        )}
-                                      </div>
-                                      {isClickable && (
-                                        <div className="flex items-center text-sm text-green-700 font-medium">
-                                          <CheckCircle className="w-4 h-4 mr-1" />
-                                          確認
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      {/* Saved Data History */}
-                      {currentSession.savedData.length > 0 && (
-                        <Card>
-                          <CardHeader>
-                            <CardTitle className="flex items-center gap-2">
-                              <CheckCircle className="w-5 h-5 text-green-600" />
-                              実行履歴
-                            </CardTitle>
-                            <CardDescription>このセッションで保存された添削データ</CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="space-y-3">
-                              {currentSession.savedData.map((data, index) => (
-                                <div 
-                                  key={index} 
-                                  className={`border rounded-lg p-4 space-y-3 ${
-                                    data.confirmed 
-                                      ? 'bg-green-50 border-green-200' 
-                                      : 'bg-gray-50 border-gray-200'
-                                  }`}
-                                >
-                                  <div className="flex justify-between items-start">
-                                    <div>
-                                      <div className="flex items-center gap-2">
-                                        <h4 className="font-medium text-sm">添削データ #{index + 1}</h4>
-                                        {!data.confirmed && (
-                                          <Badge variant="outline" className="text-gray-600 border-gray-300 text-xs">
-                                            未確認
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      <p className="text-xs text-gray-500">{data.timestamp.toLocaleString()}</p>
-                                    </div>
-                                    <div className="flex gap-2">
-                                      <Button 
-                                        variant={data.confirmed ? "ghost" : "outline"} 
-                                        size="sm" 
-                                        onClick={() => {
-                                          restoreFromHistory(data)
-                                          setConfirmingHistoryIndex(index)
-                                        }}
-                                      >
-                                        <CheckCircle className={`w-3 h-3 mr-1 ${data.confirmed ? 'text-green-600' : ''}`} />
-                                        {data.confirmed ? '確認済み' : '確認'}
-                                      </Button>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => console.log("削除機能未実装")}
-                                      >
-                                        <Trash2 className="w-3 h-3 mr-1" />
-                                        削除
-                                      </Button>
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      )}
-                    </div>
+                        </div>
+                      </CardContent>
+                    </Card>
                   </div>
+
                 </div>
               )}
-            </div>
+            </main>
+
+            {/* Right Pane - Job Queue + Suggestions (Desktop: side panel, Mobile: below editor) */}
+            <aside className="w-full lg:w-96 bg-surface border-t lg:border-t-0 lg:border-l border-outline-variant overflow-y-auto flex-shrink-0">
+              <div className="p-4 lg:p-6 space-y-card-gap">
+                {/* Job Queue Panel */}
+                {jobQueue.length > 0 && (
+                  <Card className="bg-surface border-outline-variant">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-headline-md text-on-surface">
+                        <span className="material-symbols-outlined md-20 text-md3-primary">queue</span>
+                        ジョブキュー
+                        <Badge className="ml-auto bg-session-active text-white text-xs">
+                          {activeJobCount} Active
+                        </Badge>
+                      </CardTitle>
+                      <CardDescription className="text-metadata text-on-surface-variant">
+                        {offlineMode 
+                          ? "WebLLMモード: 逐次処理（1件ずつ）" 
+                          : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        {jobQueue.map((job) => {
+                          const isClickable = job.status === 'completed' && job.suggestions
+                          return (
+                            <div 
+                              key={job.id} 
+                              className={`border rounded-lg p-3 transition-colors ${
+                                job.status === 'processing' 
+                                  ? 'bg-primary-container border-md3-primary' 
+                                  : job.status === 'completed'
+                                  ? 'bg-green-50 border-session-complete'
+                                  : job.status === 'failed'
+                                  ? 'bg-red-50 border-error'
+                                  : 'bg-surface-container border-outline-variant'
+                              } ${isClickable ? 'cursor-pointer hover:bg-green-100' : ''}`}
+                              onClick={isClickable ? () => confirmJob(job) : undefined}
+                              onKeyDown={isClickable ? (e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault()
+                                  confirmJob(job)
+                                }
+                              } : undefined}
+                              role={isClickable ? 'button' : undefined}
+                              tabIndex={isClickable ? 0 : undefined}
+                            >
+                              <div className="flex justify-between items-start">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    {job.status === 'processing' && (
+                                      <span className="material-symbols-outlined md-18 animate-spin text-md3-primary">progress_activity</span>
+                                    )}
+                                    {job.status === 'completed' && (
+                                      <span className="material-symbols-outlined md-18 text-session-complete">check_circle</span>
+                                    )}
+                                    {job.status === 'failed' && (
+                                      <span className="material-symbols-outlined md-18 text-error">error</span>
+                                    )}
+                                    {job.status === 'queued' && (
+                                      <span className="material-symbols-outlined md-18 text-on-surface-variant">schedule</span>
+                                    )}
+                                    <Badge variant={
+                                      job.status === 'processing' ? 'default' :
+                                      job.status === 'completed' ? 'outline' :
+                                      job.status === 'failed' ? 'destructive' : 'secondary'
+                                    } className="text-xs">
+                                      {job.status === 'processing' ? '処理中' :
+                                       job.status === 'completed' ? '完了' :
+                                       job.status === 'failed' ? '失敗' : '待機中'}
+                                    </Badge>
+                                    {job.source && (
+                                      <Badge variant="outline" className="text-xs">
+                                        {job.source === 'api' ? 'API' : 'WebLLM'}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-metadata text-on-surface-variant mt-1 truncate">
+                                    {job.targetText.slice(0, 40)}{job.targetText.length > 40 ? '...' : ''}
+                                  </p>
+                                  <p className="text-metadata text-on-surface-variant">
+                                    {job.queuedAt.toLocaleTimeString()}
+                                    {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
+                                  </p>
+                                  {job.error && (
+                                    <p className="text-metadata text-error mt-1">{job.error}</p>
+                                  )}
+                                </div>
+                                {isClickable && (
+                                  <div className="flex items-center text-body-sm text-session-complete font-medium">
+                                    <span className="material-symbols-outlined md-18 mr-1">check_circle</span>
+                                    確認
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* AI Suggestions Panel */}
+                {currentSession && currentSession.suggestions.length > 0 && (
+                  <Card data-suggestions-card className="bg-surface border-outline-variant">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-headline-md text-on-surface">
+                        <span className="material-symbols-outlined md-20 text-md3-primary">smart_toy</span>
+                        AI提案
+                        {confirmingJobId && (
+                          <Badge variant="outline" className="ml-2 text-md3-primary border-md3-primary text-xs">
+                            確認中
+                          </Badge>
+                        )}
+                      </CardTitle>
+                      <CardDescription className="text-body-sm text-on-surface-variant">
+                        3つ以上選択してください
+                      </CardDescription>
+                      <div className="flex items-center gap-2 flex-wrap mt-2">
+                        <Badge className={canSave ? "bg-session-complete text-white" : "bg-surface-container text-on-surface-variant"}>
+                          選択済み: {selectedCount}/3+
+                        </Badge>
+                        {canSave && (
+                          <Badge className="bg-session-complete text-white text-xs">
+                            保存可能
+                          </Badge>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {currentSession.suggestions.map((suggestion, index) => (
+                        <div
+                          key={suggestion.id}
+                          className={`group border rounded-lg p-3 transition-colors ${
+                            suggestion.selected
+                              ? 'bg-primary-container border-md3-primary'
+                              : 'border-outline-variant hover:bg-surface-container'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="flex flex-col items-center gap-1 pt-1">
+                              <Checkbox
+                                checked={suggestion.selected}
+                                onCheckedChange={() => toggleSuggestionSelection(suggestion.id)}
+                                className="h-5 w-5"
+                              />
+                              {suggestion.selected && suggestion.selectedOrder && (
+                                <Badge variant="outline" className="text-xs px-1 py-0">
+                                  {suggestion.selectedOrder}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-label-caps text-on-surface-variant uppercase">
+                                  Option {String.fromCharCode(65 + index)}
+                                  {suggestion.isCustom && ' (カスタム)'}
+                                </span>
+                                {/* Hover-reveal action icons */}
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      copyToClipboard(`${suggestion.original}\n${suggestion.reason}`)
+                                    }}
+                                    className="p-1 rounded hover:bg-surface-container-high"
+                                    title="コピー"
+                                  >
+                                    <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      toggleSuggestionSelection(suggestion.id)
+                                    }}
+                                    className="p-1 rounded hover:bg-surface-container-high"
+                                    title={suggestion.selected ? "選択解除" : "選択"}
+                                  >
+                                    <span className={`material-symbols-outlined md-18 ${suggestion.selected ? 'text-session-complete' : 'text-on-surface-variant'}`}>
+                                      {suggestion.selected ? 'check_circle' : 'radio_button_unchecked'}
+                                    </span>
+                                  </button>
+                                </div>
+                              </div>
+                              {/* Pointed text */}
+                              <div className="bg-red-50 p-2 rounded border border-red-200">
+                                <Label className="text-metadata font-medium text-red-600">指摘箇所</Label>
+                                <p className="text-body-sm text-red-800 mt-1">{suggestion.original}</p>
+                              </div>
+                              {/* Reason */}
+                              <div className="bg-primary-container/50 p-2 rounded">
+                                <Label className="text-metadata font-medium text-md3-primary">修正コメント</Label>
+                                {suggestion.selected ? (
+                                  <Textarea
+                                    value={suggestion.userModifiedReason || suggestion.reason}
+                                    onChange={(e) => updateSuggestionReason(suggestion.id, e.target.value)}
+                                    className="text-body-sm min-h-[60px] mt-1 bg-surface border-outline-variant"
+                                  />
+                                ) : (
+                                  <p className="text-body-sm text-on-surface mt-1">{suggestion.reason}</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Custom Correction Form */}
+                      {showCustomForm && (
+                        <div className="border-2 border-dashed border-outline rounded-lg p-3 space-y-3 bg-surface-container">
+                          <div className="flex items-center gap-2">
+                            <span className="material-symbols-outlined md-18 text-on-surface-variant">add</span>
+                            <Label className="text-body-sm font-medium text-on-surface">修正内容を追加</Label>
+                          </div>
+                          <div>
+                            <Label htmlFor="custom-original" className="text-metadata font-medium text-red-600">
+                              修正前のテキスト
+                            </Label>
+                            <Input
+                              id="custom-original"
+                              value={customCorrection.original}
+                              onChange={(e) =>
+                                setCustomCorrection((prev) => ({ ...prev, original: e.target.value }))
+                              }
+                              placeholder="修正前のテキストを入力"
+                              className="mt-1 bg-surface border-outline-variant"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="custom-reason" className="text-metadata font-medium text-md3-primary">
+                              修正コメント
+                            </Label>
+                            <Textarea
+                              id="custom-reason"
+                              value={customCorrection.reason}
+                              onChange={(e) =>
+                                setCustomCorrection((prev) => ({ ...prev, reason: e.target.value }))
+                              }
+                              placeholder="修正コメントを入力"
+                              className="min-h-[60px] mt-1 bg-surface border-outline-variant"
+                            />
+                          </div>
+                          <Button onClick={addCustomCorrection} size="sm" className="w-full bg-md3-primary text-on-primary">
+                            <span className="material-symbols-outlined md-18 mr-1">add</span>
+                            修正内容を追加
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Overall Comment */}
+                      {currentSession.overallComment && (
+                        <div className="border rounded-lg p-3 bg-primary-container/30 border-md3-primary/30">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="material-symbols-outlined md-18 text-md3-primary">chat</span>
+                            <Label className="text-body-sm font-medium text-on-primary-container">全体総括コメント</Label>
+                          </div>
+                          <Textarea
+                            value={currentSession.overallComment}
+                            onChange={(e) => updateCurrentSession({ overallComment: e.target.value })}
+                            className="min-h-[80px] bg-surface border-outline-variant"
+                            placeholder="全体的な総括コメントを入力してください..."
+                          />
+                        </div>
+                      )}
+
+                      <Separator className="bg-outline-variant" />
+
+                      <Button
+                        onClick={saveCorrections}
+                        disabled={!canSave}
+                        className="w-full bg-md3-primary text-on-primary hover:bg-md3-primary/90"
+                        size="lg"
+                      >
+                        <span className="material-symbols-outlined md-18 mr-2">content_copy</span>
+                        確定してコピー・保存 ({selectedCount}/3)
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Execution History */}
+                {currentSession && currentSession.savedData.length > 0 && (
+                  <Card className="bg-surface border-outline-variant">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-headline-md text-on-surface">
+                        <span className="material-symbols-outlined md-20 text-session-complete">history</span>
+                        実行履歴
+                      </CardTitle>
+                      <CardDescription className="text-metadata text-on-surface-variant">
+                        このセッションで保存された添削データ
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        {currentSession.savedData.map((data, index) => (
+                          <div 
+                            key={index} 
+                            className={`border rounded-lg p-3 ${
+                              data.confirmed 
+                                ? 'bg-green-50 border-session-complete' 
+                                : 'bg-surface-container border-outline-variant'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h4 className="font-medium text-body-sm text-on-surface">添削データ #{index + 1}</h4>
+                                  {!data.confirmed && (
+                                    <Badge variant="outline" className="text-on-surface-variant border-outline text-xs">
+                                      未確認
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="text-metadata text-on-surface-variant">{data.timestamp.toLocaleString()}</p>
+                              </div>
+                              <div className="flex gap-1">
+                                <Button 
+                                  variant={data.confirmed ? "ghost" : "outline"} 
+                                  size="sm"
+                                  className="h-8 px-2"
+                                  onClick={() => {
+                                    restoreFromHistory(data)
+                                    setConfirmingHistoryIndex(index)
+                                  }}
+                                >
+                                  <span className={`material-symbols-outlined md-18 ${data.confirmed ? 'text-session-complete' : ''}`}>
+                                    check_circle
+                                  </span>
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-8 px-2"
+                                  onClick={() => console.log("削除機能未実装")}
+                                >
+                                  <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            </aside>
           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

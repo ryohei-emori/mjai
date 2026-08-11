@@ -56,6 +56,23 @@ The system SHALL automatically failover to Cloudflare Workers AI when Groq retur
 - **WHEN** both Groq and Cloudflare Workers AI fail or are unavailable
 - **THEN** system returns HTTP 503 with error message indicating service unavailable
 
+### Requirement: Suggestion count targets quality over a fixed quantity
+
+The system SHALL prompt the model to identify and return **up to 3** suggestions per request, prioritizing the most important issues when more are found. The system SHALL NOT pad, fabricate, or duplicate entries to force the count up to 3 (or any other number) — if the model genuinely finds fewer than 3 issues, the response SHALL contain only that smaller number of suggestions (including zero, when the text has no issues).
+
+This intentionally supersedes the older (Gemini-era, now-removed) `ai-suggestion-generation` spec's "always exactly five, padded with empty placeholders" behavior: padding with empty/fake entries produces low-quality, misleading output and is explicitly disallowed. "3" is a target/max guideline for prompt engineering (per user direction: "AIの提案は3件でOK"), not a mandatory exact count enforced by application logic.
+
+#### Scenario: Model finds 3 or more genuine issues
+
+- **WHEN** the model identifies 3 or more correction points in the input text
+- **THEN** the prompt guides it to return at most 3, focused on the most important/impactful issues
+
+#### Scenario: Model finds fewer than 3 genuine issues
+
+- **WHEN** the model identifies fewer than 3 correction points (including zero)
+- **THEN** the response contains only the genuinely-found suggestions
+- **AND** the system does not add empty or fabricated placeholder entries to reach 3
+
 ### Requirement: Consistent JSON response schema
 
 The system SHALL return suggestions in the same JSON schema used by WebLLM: `{"suggestions": [{"id": string, "original": string, "reason": string}, ...], "overallComment": string}`.

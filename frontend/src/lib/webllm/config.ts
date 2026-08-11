@@ -10,7 +10,7 @@
  * - Required features: shader-f16
  * 
  * ## Generation Parameters
- * - max_tokens: 512 (sufficient for JSON with 5 suggestions + overall comment)
+ * - max_tokens: 512 (sufficient for JSON with up to 3 suggestions + overall comment)
  * - temperature: 0.2 (low for consistent structured output)
  * - Input truncation: ~3000 tokens for SOURCE+TARGET (leaving headroom for system prompt)
  * 

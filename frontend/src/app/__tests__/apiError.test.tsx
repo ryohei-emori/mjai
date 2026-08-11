@@ -113,9 +113,14 @@ test("WebGPU非対応時にボタンが無効化され、メッセージが表�
     expect(screen.getByText("AI提案機能を利用できません")).toBeInTheDocument();
   });
 
-  // AI提案生成ボタンが無効化されていることを確認
+  // AI提案生成ボタンはAPI経由で利用可能なため、有効のままであることを確認
+  // （旧アーキテクチャではWebGPU必須だったが、新アーキテクチャではクラウドAPI優先）
   const generateButton = screen.getByRole("button", { name: /AI提案を生成/ });
-  expect(generateButton).toBeDisabled();
+  expect(generateButton).not.toBeDisabled();
+
+  // オフラインモードのチェックボックスは無効化されていることを確認
+  const offlineModeCheckbox = screen.getByLabelText("オフラインモード（WebLLM）");
+  expect(offlineModeCheckbox).toBeDisabled();
 });
 
 // 必要な依存が未インストールの場合:

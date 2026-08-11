@@ -1,5 +1,12 @@
 """
 Tests for backend/app/llm/suggestions.py with mock providers.
+
+Note: suggestions.py calls call_groq_with_rotation() (not call_groq()
+directly) so that in-provider model rotation/retry across the Groq pool
+happens before falling back to Cloudflare. Tests here mock
+call_groq_with_rotation to exercise the Groq-vs-Cloudflare failover chain
+without needing to also mock the rotation internals (those are covered by
+backend/tests/test_groq_provider.py).
 """
 
 import pytest
@@ -44,7 +51,7 @@ class TestGenerateSuggestionsGroqSuccess:
     async def test_groq_success_returns_parsed_response(self):
         """Groq succeeds -> return parsed suggestions."""
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
-            with patch('app.llm.suggestions.call_groq', new_callable=AsyncMock) as mock_groq:
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
                 mock_groq.return_value = VALID_LLM_RESPONSE
                 
                 result = await generate_suggestions("原文", "訳文")
@@ -64,8 +71,11 @@ class TestGenerateSuggestionsGroqFailCFSuccess:
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
             'CLOUDFLARE_API_TOKEN': 'tok'
         }, clear=True):
-            with patch('app.llm.suggestions.call_groq', new_callable=AsyncMock) as mock_groq:
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
                 with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    # call_groq_with_rotation already exhausts its internal
+                    # 2-model retry before raising, so a raised error here
+                    # means both attempted Groq models failed.
                     mock_groq.side_effect = GroqRateLimitError("Rate limit", status_code=429)
                     mock_cf.return_value = VALID_LLM_RESPONSE
                     
@@ -76,13 +86,13 @@ class TestGenerateSuggestionsGroqFailCFSuccess:
                     mock_cf.assert_called_once()
     
     async def test_groq_server_error_falls_back_to_cloudflare(self):
-        """Groq 5xx -> Cloudflare succeeds."""
+        """Groq 5xx (both rotation attempts exhausted) -> Cloudflare succeeds."""
         with patch.dict('os.environ', {
             'GROQ_API_KEY': 'test-key',
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
             'CLOUDFLARE_API_TOKEN': 'tok'
         }, clear=True):
-            with patch('app.llm.suggestions.call_groq', new_callable=AsyncMock) as mock_groq:
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
                 with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
                     mock_groq.side_effect = GroqServerError("Server error", status_code=500)
                     mock_cf.return_value = VALID_LLM_RESPONSE
@@ -92,13 +102,13 @@ class TestGenerateSuggestionsGroqFailCFSuccess:
                     assert len(result["suggestions"]) == 1
     
     async def test_groq_timeout_falls_back_to_cloudflare(self):
-        """Groq timeout -> Cloudflare succeeds."""
+        """Groq timeout (both rotation attempts exhausted) -> Cloudflare succeeds."""
         with patch.dict('os.environ', {
             'GROQ_API_KEY': 'test-key',
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
             'CLOUDFLARE_API_TOKEN': 'tok'
         }, clear=True):
-            with patch('app.llm.suggestions.call_groq', new_callable=AsyncMock) as mock_groq:
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
                 with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
                     mock_groq.side_effect = GroqTimeoutError("Timeout")
                     mock_cf.return_value = VALID_LLM_RESPONSE
@@ -106,6 +116,31 @@ class TestGenerateSuggestionsGroqFailCFSuccess:
                     result = await generate_suggestions("原文", "訳文")
                     
                     assert len(result["suggestions"]) == 1
+
+    async def test_groq_rotation_retries_both_models_before_cloudflare_fallback(self):
+        """End-to-end: real call_groq_with_rotation (not mocked) exhausts
+        both rotation attempts (mocking the underlying call_groq) before
+        the suggestions failover chain moves on to Cloudflare."""
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok'
+        }, clear=True):
+            with patch('app.llm.groq_provider.call_groq', new_callable=AsyncMock) as mock_call_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    mock_call_groq.side_effect = [
+                        GroqRateLimitError("Rate limit", status_code=429),
+                        GroqRateLimitError("Rate limit", status_code=429),
+                    ]
+                    mock_cf.return_value = VALID_LLM_RESPONSE
+
+                    result = await generate_suggestions("原文", "訳文")
+
+                    assert len(result["suggestions"]) == 1
+                    assert mock_call_groq.call_count == 2
+                    used_models = [c.kwargs["model"] for c in mock_call_groq.call_args_list]
+                    assert len(set(used_models)) == 2, "must try two distinct Groq models before Cloudflare"
+                    mock_cf.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -117,7 +152,7 @@ class TestGenerateSuggestionsBothFail:
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
             'CLOUDFLARE_API_TOKEN': 'tok'
         }, clear=True):
-            with patch('app.llm.suggestions.call_groq', new_callable=AsyncMock) as mock_groq:
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
                 with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
                     mock_groq.side_effect = GroqRateLimitError("Rate limit", status_code=429)
                     mock_cf.side_effect = CloudflareError("CF error")
@@ -131,7 +166,7 @@ class TestGenerateSuggestionsBothFail:
     async def test_groq_only_fails_raises_suggestions_error(self):
         """Only Groq configured and fails -> SuggestionsError."""
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
-            with patch('app.llm.suggestions.call_groq', new_callable=AsyncMock) as mock_groq:
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
                 mock_groq.side_effect = GroqError("API error")
                 
                 with pytest.raises(SuggestionsError):

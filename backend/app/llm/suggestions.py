@@ -11,7 +11,7 @@ from typing import Optional
 from .prompts import build_messages
 from .parser import parse_model_output, ParsedResponse
 from .groq_provider import (
-    call_groq,
+    call_groq_with_rotation,
     get_groq_api_key,
     GroqError,
     GroqRateLimitError,
@@ -51,7 +51,9 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     """
     Generate AI correction suggestions for the given text.
     
-    Tries Groq first, falls back to Cloudflare on failure.
+    Tries Groq first (with in-provider model rotation and one retry across
+    a different Groq model on a retriable failure), falls back to
+    Cloudflare on failure.
     
     Args:
         original_text: The original Japanese text.
@@ -78,7 +80,7 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     if groq_key:
         try:
             logger.info("Attempting Groq inference...")
-            raw_output = await call_groq(messages)
+            raw_output = await call_groq_with_rotation(messages)
             logger.info(f"Groq inference successful, raw output length: {len(raw_output)}")
             logger.debug(f"Groq raw output: {raw_output[:500]}...")
             result = parse_model_output(raw_output)

@@ -6,9 +6,27 @@ module.exports = {
   theme: {
   	extend: {
   		borderRadius: {
-  			lg: 'var(--radius)',
+  			DEFAULT: '0.25rem',
+  			lg: '0.5rem',
   			md: 'calc(var(--radius) - 2px)',
-  			sm: 'calc(var(--radius) - 4px)'
+  			sm: 'calc(var(--radius) - 4px)',
+  			xl: '0.75rem',
+  			full: '9999px'
+  		},
+  		spacing: {
+  			'container-margin': '1.5rem',
+  			'card-gap': '1.25rem',
+  			'gutter': '1rem',
+  			'section': '2rem',
+  			'topappbar': '4rem'
+  		},
+  		fontSize: {
+  			'headline-lg': ['1.5rem', { lineHeight: '2rem', letterSpacing: '0' }],
+  			'headline-md': ['1.25rem', { lineHeight: '1.75rem', letterSpacing: '0.0125em' }],
+  			'body-base': ['1rem', { lineHeight: '1.5rem', letterSpacing: '0.03125em' }],
+  			'body-sm': ['0.875rem', { lineHeight: '1.25rem', letterSpacing: '0.025em' }],
+  			'metadata': ['0.75rem', { lineHeight: '1rem', letterSpacing: '0.03125em' }],
+  			'label-caps': ['0.625rem', { lineHeight: '1rem', letterSpacing: '0.1em', fontWeight: '500' }]
   		},
   		colors: {
   			background: 'hsl(var(--background))',
@@ -50,7 +68,34 @@ module.exports = {
   				'3': 'hsl(var(--chart-3))',
   				'4': 'hsl(var(--chart-4))',
   				'5': 'hsl(var(--chart-5))'
-  			}
+  			},
+  			// MD3 Semantic Colors
+  			surface: {
+  				DEFAULT: 'hsl(var(--surface))',
+  				container: 'hsl(var(--surface-container))',
+  				'container-low': 'hsl(var(--surface-container-low))',
+  				'container-lowest': 'hsl(var(--surface-container-lowest))',
+  				'container-high': 'hsl(var(--surface-container-high))',
+  				'container-highest': 'hsl(var(--surface-container-highest))'
+  			},
+  			'on-surface': 'hsl(var(--on-surface))',
+  			'on-surface-variant': 'hsl(var(--on-surface-variant))',
+  			outline: {
+  				DEFAULT: 'hsl(var(--outline))',
+  				variant: 'hsl(var(--outline-variant))'
+  			},
+  			error: 'hsl(var(--error))',
+  			'on-error': 'hsl(var(--on-error))',
+  			tertiary: 'hsl(var(--tertiary))',
+  			'on-tertiary': 'hsl(var(--on-tertiary))',
+  			'md3-primary': 'hsl(var(--md3-primary))',
+  			'on-primary': 'hsl(var(--on-primary))',
+  			'primary-container': 'hsl(var(--primary-container))',
+  			'on-primary-container': 'hsl(var(--on-primary-container))',
+  			// Session status colors
+  			'session-active': '#2563EB',
+  			'session-complete': '#16A34A',
+  			'session-empty': '#64748B'
   		}
   	}
   },

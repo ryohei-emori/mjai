@@ -41,7 +41,14 @@
 - [x] 6.3 Update `docs/SYSTEM-DESIGN.md` to document API-first suggestion flow
 - [x] 6.4 Verify WebLLM tests still pass
 
-## 7. Deployment
+## 7. Suggestion count tuning (post-launch)
 
-- [ ] 7.1 Commit and push changes to main
-- [ ] 7.2 Add env vars to Vercel production environment (manual step via Vercel dashboard)
+- [x] 7.1 Update backend prompt (`backend/app/llm/prompts.py`) to target up to 3 suggestions instead of 5, without instructing fabrication/padding
+- [x] 7.2 Update WebLLM prompts (`frontend/src/lib/webllm/prompts/system.ts`, `fewShot.ts`) to match the 3-suggestion target for consistency
+- [x] 7.3 Verify no hardcoded 5-count truncation/padding logic exists in `backend/app/llm/parser.py` / `suggestions.py` (none found — count is prompt-guided only)
+- [x] 7.4 Verify `backend/ pytest` passes with no test hardcoding the old 5-count expectation
+
+## 8. Deployment
+
+- [x] 8.1 Commit and push changes to main
+- [x] 8.2 Add env vars to Vercel production environment — **GROQ_API_KEY** + **CLOUDFLARE_API_TOKEN** set (Production + Preview via CLI); **CLOUDFLARE_ACCOUNT_ID** still required for Workers AI fallback (paste from Cloudflare dashboard Overview)

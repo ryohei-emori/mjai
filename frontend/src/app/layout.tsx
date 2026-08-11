@@ -1,12 +1,14 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { AuthProvider } from "./auth-provider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  display: "swap",
 });
 
 const geistMono = Geist_Mono({
@@ -27,7 +29,13 @@ export default function RootLayout({
   // suppressHydrationWarning: browser extensions (e.g. UI.Vision/Kantu) inject attrs like data-kantu on <html>
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`bg-background text-foreground ${geistSans.variable} ${geistMono.variable}`}>
+      <head>
+        <link
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body className={`bg-background text-foreground font-sans ${inter.variable} ${geistMono.variable}`}>
         <AuthProvider>
           <Toaster />
           {children}
