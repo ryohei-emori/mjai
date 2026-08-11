@@ -24,19 +24,26 @@ See `proposal.md` - Why for motivation. Relevant current-state facts that shape 
 
 ## Decisions
 
-### 1. WebLLM model choice: `Phi-3.5-mini-instruct-q4f16_1-MLC` as the default, with `Llama-3.1-8B-Instruct-q4f16_1-MLC` documented as a fallback/upgrade path
+### 1. WebLLM model choice: `Mistral-7B-Instruct-v0.3-q4f16_1-MLC` as the default
 
-This is a bilingual (Japanese ⇄ Chinese) proofreading task requiring: (a) reasonable instruction-following and JSON-shaped output, (b) acceptable multilingual (esp. CJK) quality, and (c) a first-load download small enough that a browser tab doesn't feel abandoned by the user.
+This is a bilingual (Japanese ⇄ Chinese) proofreading task requiring: (a) reasonable instruction-following and JSON-shaped output, (b) acceptable multilingual (esp. CJK) quality, and (c) practical inference performance. User testing with SmolLM2-1.7B indicated that larger models produce more usable correction output.
 
-| Candidate | Approx. download (q4f16) | Context window | Trade-off |
-|---|---|---|---|
-| `Phi-3.5-mini-instruct-q4f16_1-MLC` | ~3.7 GB | 4096 tokens | Smallest of the strong instruct-tuned options WebLLM ships; fastest first load; weaker multilingual/CJK nuance than Llama 3.1 8B, adequate for structured error-pointing rather than fluent prose generation |
-| `Llama-3.1-8B-Instruct-q4f16_1-MLC` | ~5.0 GB | 4096 tokens | Better multilingual/instruction-following quality (larger pretraining coverage), noticeably heavier first-load download and VRAM footprint; better choice once download-size is proven acceptable to users or once model caching (browser Cache API in WebLLM) is verified to make repeat visits fast enough for the extra size to only cost once |
-| `Qwen2.5-7B-Instruct` family | ~4.5 GB (q4f16 class) | 4096-32k depending on variant | Strong native Chinese-language performance (relevant since target text is often Chinese), reasonable size; a strong alternative to evaluate in implementation if Phi-3.5-mini's Chinese-language critique quality proves insufficient in testing |
+| Candidate | Approx. download (q4f16) | VRAM Required | Context window | Trade-off |
+|---|---|---|---|---|
+| `SmolLM2-1.7B-Instruct-q4f16_1-MLC` | ~0.9 GB | ~1.8 GB | 8192 tokens | Smallest/fastest; struggled with consistent JSON output and meaningful corrections in testing |
+| `Phi-3.5-mini-instruct-q4f16_1-MLC` | ~3.7 GB | ~4 GB | 4096 tokens | Good instruction-following; weaker multilingual/CJK nuance |
+| `Mistral-7B-Instruct-v0.3-q4f16_1-MLC` | ~4-5 GB | ~4.5 GB | 4096 tokens | Strong instruction-following, good multilingual quality, well-supported in WebLLM ecosystem |
+| `Llama-3.1-8B-Instruct-q4f16_1-MLC` | ~5.0 GB | ~5 GB | 4096 tokens | Better multilingual/instruction-following quality; heavier VRAM footprint |
+| `Qwen2.5-7B-Instruct` family | ~4.5 GB | ~4.5 GB | 4096-32k | Strong native Chinese-language performance; alternative for Chinese-heavy tasks |
 
-**Decision**: ship `Phi-3.5-mini-instruct-q4f16_1-MLC` as the initial default because it minimizes first-load friction (the single biggest UX risk of this migration, per the "Heavy Initial Download" risk below) while still being instruction-tuned and capable of following a "return JSON with N critique points" prompt. The model id is stored as a single named constant in the frontend generation module (not hardcoded inline) so switching to `Llama-3.1-8B-Instruct-q4f16_1-MLC` or a Qwen2.5 variant later is a one-line change plus re-validation, not a redesign. All candidates use `q4f16_1` quantization (not `q4f32_1`) to favor smaller download/VRAM at a small quality cost, since `f16` accumulation is supported on all WebGPU-capable browsers WebLLM targets.
+**Decision**: ship `Mistral-7B-Instruct-v0.3-q4f16_1-MLC` as the default. Mistral 7B offers a good balance of output quality and resource requirements — larger and more capable than SmolLM2/Phi-3.5-mini, with better instruction-following for structured JSON output, while staying within practical VRAM limits (~4.5 GB) for consumer GPUs with WebGPU support. The model ID is stored as a single named constant in the frontend config (`frontend/src/lib/webllm/config.ts`) so switching models remains a one-line change plus re-validation.
 
-Alternative considered and rejected: keep multiple selectable models in the UI from day one. Rejected as unnecessary scope for this migration — a single well-chosen default satisfies the product decision ("moves fully client-side") and a model picker can be a follow-up change if quality/perf tuning demands it.
+**Generation parameters** (aligned with prior optimization work):
+- `max_tokens`: 512 (sufficient for JSON output with 5 suggestions + overall comment)
+- `temperature`: 0.2 (low temperature for consistent structured output)
+- Input truncation: Limit SOURCE+TARGET to ~3000 tokens combined, leaving headroom for system prompt and generation within the 4096 context window
+
+Alternative considered and rejected: keep SmolLM2-1.7B for faster inference and smaller download. Rejected based on user feedback that output quality was insufficient — Mistral 7B's larger capacity produces more actionable correction suggestions.
 
 ### 2. Client-side prompt construction
 

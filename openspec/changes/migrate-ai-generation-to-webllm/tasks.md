@@ -1,7 +1,7 @@
 ## 1. Frontend dependency and environment setup
 
 - [x] 1.1 Add `@mlc-ai/web-llm` to `frontend/package.json` dependencies and install it
-- [x] 1.2 Set the default WebLLM model id to `Phi-3.5-mini-instruct-q4f16_1-MLC` (per `design.md` Decision 1) as a single named constant, kept swappable for a future upgrade to `Llama-3.1-8B-Instruct-q4f16_1-MLC` or a Qwen2.5 variant
+- [x] 1.2 Set the default WebLLM model id to `Mistral-7B-Instruct-v0.3-q4f16_1-MLC` (per `design.md` Decision 1) as a single named constant in `frontend/src/lib/webllm/config.ts`, kept swappable for alternative models (Llama 3.1 8B, Qwen2.5, etc.)
 - [x] 1.3 Add a WebGPU feature-detection utility (e.g. `navigator.gpu` check) usable before attempting any model load
 
 ## 2. Client-side model loading

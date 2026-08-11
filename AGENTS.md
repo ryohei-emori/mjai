@@ -228,7 +228,7 @@ User Request → POST /api/suggestions (authenticated)
 |------|----------|---------|-----------|
 | **Default** | Groq (llama-3.1-8b-instant) | ~1-3s | API keys configured, Groq available |
 | **Failover** | Cloudflare Workers AI | ~2-5s | Groq rate-limited/error/timeout |
-| **Offline** | WebLLM (SmolLM2-1.7B) | ~10-30s | API unavailable OR user enables オフラインモード |
+| **Offline** | WebLLM (Mistral 7B) | ~10-30s | API unavailable OR user enables オフラインモード |
 
 ### Backend Providers (`backend/app/llm/`)
 
@@ -261,9 +261,9 @@ If neither is configured, `/api/suggestions` returns 503 and frontend auto-falls
 
 WebLLM remains fully functional for offline use and future evolution:
 
-- **Model ID:** `SmolLM2-1.7B-Instruct-q4f16_1-MLC`
-- **Approximate download size:** ~0.9 GB (cached in browser Cache API)
-- **VRAM required:** ~1.8 GB
+- **Model ID:** `Mistral-7B-Instruct-v0.3-q4f16_1-MLC`
+- **Approximate download size:** ~4-5 GB (cached in browser Cache API)
+- **VRAM required:** ~4.5 GB
 - **WebGPU required:** Modern Chrome/Edge/Safari
 - **Implementation:** `frontend/src/lib/webllm/`
 

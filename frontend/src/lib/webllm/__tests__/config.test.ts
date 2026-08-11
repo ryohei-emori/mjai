@@ -7,7 +7,7 @@ import { WEBLLM_MODEL_ID, WEBLLM_MODEL_DISPLAY_NAME, ALTERNATIVE_MODELS } from "
 describe("WebLLM Config", () => {
   describe("WEBLLM_MODEL_ID", () => {
     it("exports the current model ID", () => {
-      expect(WEBLLM_MODEL_ID).toBe("SmolLM2-1.7B-Instruct-q4f16_1-MLC");
+      expect(WEBLLM_MODEL_ID).toBe("Mistral-7B-Instruct-v0.3-q4f16_1-MLC");
     });
 
     it("model ID follows MLC naming convention", () => {
@@ -17,7 +17,7 @@ describe("WebLLM Config", () => {
 
   describe("WEBLLM_MODEL_DISPLAY_NAME", () => {
     it("exports a human-readable model name", () => {
-      expect(WEBLLM_MODEL_DISPLAY_NAME).toBe("SmolLM2 1.7B");
+      expect(WEBLLM_MODEL_DISPLAY_NAME).toBe("Mistral 7B");
     });
 
     it("is concise for UI display", () => {
@@ -26,6 +26,11 @@ describe("WebLLM Config", () => {
   });
 
   describe("ALTERNATIVE_MODELS", () => {
+    it("includes Mistral 7B as current model", () => {
+      expect(ALTERNATIVE_MODELS.MISTRAL_7B).toBeDefined();
+      expect(ALTERNATIVE_MODELS.MISTRAL_7B).toBe("Mistral-7B-Instruct-v0.3-q4f16_1-MLC");
+    });
+
     it("includes SmolLM2 variants", () => {
       expect(ALTERNATIVE_MODELS.SMOLLM2_360M).toBeDefined();
       expect(ALTERNATIVE_MODELS.SMOLLM2_1_7B).toBeDefined();

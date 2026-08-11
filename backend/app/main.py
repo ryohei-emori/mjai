@@ -8,18 +8,28 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # 環境変数からアプリケーションルートを取得
-app_root = os.environ.get("APP_ROOT", "/app")
+# Docker: APP_ROOT=/app, ローカル: 未設定時は __file__ から推測
+app_root = os.environ.get("APP_ROOT")
+if not app_root:
+    # ローカル開発: backend/app/main.py → backend/ を app_root とする
+    app_root = str(Path(__file__).resolve().parent.parent)
 
 # .env の探索候補
 _env_candidates = [
-    os.path.join(app_root, "..", "conf", ".env"),  # /conf/.env を想定
-    os.path.join(app_root, ".env"),                   # /app/.env マウント
-    "/conf/.env",                                     # 直接マウント
+    os.path.join(app_root, "..", "conf", ".env"),  # backend/../conf/.env (ローカル開発)
+    os.path.join(app_root, ".env"),                # backend/.env (ローカル開発)
+    "/conf/.env",                                  # Docker 直接マウント
+    str(Path(__file__).resolve().parent.parent.parent / "conf" / ".env"),  # repo/conf/.env 絶対パス
 ]
+_env_loaded = False
 for _path in _env_candidates:
     if os.path.exists(_path):
         load_dotenv(dotenv_path=_path, override=False)
+        _env_loaded = True
         break
+
+if not _env_loaded:
+    print(f"[main.py] Warning: No .env file found in candidates: {_env_candidates}")
 
 from .db_helper import (
     fetch_sessions, insert_session, 
