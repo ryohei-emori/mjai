@@ -413,6 +413,14 @@ export default function TextCorrectionApp() {
     })
   }, [jobQueue, currentSession, offlineMode, processJobAsync])
 
+  // セッション更新をAPIに実行（TDZ回避のため、handleGenerateClick/confirmJobより前に定義）
+  const updateCurrentSession = useCallback((updates: Partial<Session>) => {
+    if (!currentSessionId) return
+    setSessions((prev) =>
+      prev.map((session) => (session.id === currentSessionId ? { ...session, ...updates } : session)),
+    )
+  }, [currentSessionId])
+
   // ボタンクリックハンドラー - 常にキューに追加して処理開始
   const handleGenerateClick = useCallback(() => {
     if (!currentSession?.targetText.trim()) return
@@ -580,14 +588,6 @@ export default function TextCorrectionApp() {
       })
     }
   }
-
-  // セッション更新をAPIに実行
-  const updateCurrentSession = useCallback((updates: Partial<Session>) => {
-    if (!currentSessionId) return
-    setSessions((prev) =>
-      prev.map((session) => (session.id === currentSessionId ? { ...session, ...updates } : session)),
-    )
-  }, [currentSessionId])
 
   const toggleSuggestionSelection = (suggestionId: string) => {
     if (!currentSession) return
