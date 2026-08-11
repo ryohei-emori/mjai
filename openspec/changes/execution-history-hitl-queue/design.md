@@ -135,3 +135,43 @@ jobsToStart.forEach(job => startJobProcessing(job.id))
 2. ~~**オフラインモードOFF時にWebLLMが動作**: APIフェイルオーバー時のトースト通知を追加（仕様どおりの動作）~~
 3. ~~**ターゲットテキストのクリア動作**: `handleGenerateClick`の依存配列を修正、ジョブ追加後にターゲットをクリア~~
 4. ~~**要確認スタイリング**: 既に`bg-gray-50`で実装済み（黄色ではなくニュートラルグレー）~~
+
+## HITL UI表示とクリックターゲット問題（追加）
+
+### Issue A: AI修正提案UIが表示されない
+
+**根本原因**: `confirmJob`内のスクロール処理が100msの`setTimeout`を使用しているが、Reactの再レンダリング完了前にタイムアウトが発生する場合がある。
+
+**解決策**: タイムアウトベースのスクロールを`useEffect`に移動し、以下の条件でリアクティブに実行:
+- `confirmingJobId`がセットされた時（ジョブキューからの確認）
+- `currentSession.suggestions`が非空になった時
+
+```typescript
+// useEffect for reactive scroll to suggestions card
+useEffect(() => {
+  // Only scroll when confirming from job queue and suggestions are loaded
+  if (confirmingJobId && currentSession?.suggestions.length > 0) {
+    const suggestionsCard = document.querySelector('[data-suggestions-card]')
+    if (suggestionsCard) {
+      suggestionsCard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+}, [confirmingJobId, currentSession?.suggestions.length])
+```
+
+### Issue B: 確認ボタンのクリック範囲が狭い
+
+**問題**: 完了ジョブカードの「確認」ボタンが小さく、ユーザーが正確にクリックする必要がある。
+
+**解決策**: カード全体をクリック可能にし、UXを改善:
+- 完了ステータスのカード全体に`onClick`を追加
+- `cursor-pointer`で視覚的フィードバック
+- アクセシビリティ対応（`role="button"`, `tabIndex`, キーボードハンドラー）
+- 既存の「確認」ボタンスタイルは視覚的インジケーターとして維持
+
+### 設計原則: 統一された確認UI
+
+確認（confirm）操作は、トリガーソースに関わらず同一のAI修正提案レビューUIを表示すべき:
+- ジョブキューからの確認 → AI修正提案カードを表示 + スクロール
+- 実行履歴からの確認 → 同上
+- 通常の生成フロー → 同上（スクロールは任意）

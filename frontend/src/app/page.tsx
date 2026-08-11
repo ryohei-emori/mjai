@@ -499,6 +499,22 @@ export default function TextCorrectionApp() {
   // 確認中のジョブID（ジョブキューからの確認用）
   const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null)
 
+  // Reactive scroll to suggestions card when confirming from job queue
+  // This replaces the setTimeout-based scroll in confirmJob for reliability
+  useEffect(() => {
+    // Only scroll when confirming from job queue and suggestions are loaded
+    if (confirmingJobId && currentSession?.suggestions && currentSession.suggestions.length > 0) {
+      // Small delay to ensure DOM is updated after React render
+      const timeoutId = setTimeout(() => {
+        const suggestionsCard = document.querySelector('[data-suggestions-card]')
+        if (suggestionsCard) {
+          suggestionsCard.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+      }, 50)
+      return () => clearTimeout(timeoutId)
+    }
+  }, [confirmingJobId, currentSession?.suggestions])
+
   // 完了したジョブを確認（HITLフロー）
   const confirmJob = useCallback((job: QueuedJob) => {
     if (!currentSession || job.status !== 'completed') {
@@ -552,17 +568,10 @@ export default function TextCorrectionApp() {
     setSelectionCounter(0)
     
     // 確認中のジョブIDを記録（ジョブキュー用）
+    // Note: useEffect handles scrolling reactively when this is set
     setConfirmingJobId(job.id)
     // 実行履歴の確認インデックスをクリア
     setConfirmingHistoryIndex(null)
-    
-    // AI提案カードにスクロール
-    setTimeout(() => {
-      const suggestionsCard = document.querySelector('[data-suggestions-card]')
-      if (suggestionsCard) {
-        suggestionsCard.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
-    }, 100)
     
     toast({
       title: "確認中",
@@ -1375,65 +1384,74 @@ export default function TextCorrectionApp() {
                           </CardHeader>
                           <CardContent>
                             <div className="space-y-3">
-                              {jobQueue.map((job) => (
-                                <div 
-                                  key={job.id} 
-                                  className={`border rounded-lg p-4 space-y-2 ${
-                                    job.status === 'processing' 
-                                      ? 'bg-blue-50 border-blue-200' 
-                                      : job.status === 'completed'
-                                      ? 'bg-green-50 border-green-200'
-                                      : job.status === 'failed'
-                                      ? 'bg-red-50 border-red-200'
-                                      : 'bg-gray-50 border-gray-200'
-                                  }`}
-                                >
-                                  <div className="flex justify-between items-start">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
-                                        {job.status === 'processing' && <Loader2 className="w-4 h-4 animate-spin text-blue-600" />}
-                                        {job.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-600" />}
-                                        {job.status === 'failed' && <span className="text-red-600">✕</span>}
-                                        {job.status === 'queued' && <span className="text-gray-400">○</span>}
-                                        <Badge variant={
-                                          job.status === 'processing' ? 'default' :
-                                          job.status === 'completed' ? 'outline' :
-                                          job.status === 'failed' ? 'destructive' : 'secondary'
-                                        }>
-                                          {job.status === 'processing' ? '処理中' :
-                                           job.status === 'completed' ? '完了' :
-                                           job.status === 'failed' ? '失敗' : '待機中'}
-                                        </Badge>
-                                        {job.source && (
-                                          <Badge variant="outline" className="text-xs">
-                                            {job.source === 'api' ? 'API' : 'WebLLM'}
+                              {jobQueue.map((job) => {
+                                const isClickable = job.status === 'completed' && job.suggestions
+                                return (
+                                  <div 
+                                    key={job.id} 
+                                    className={`border rounded-lg p-4 space-y-2 transition-colors ${
+                                      job.status === 'processing' 
+                                        ? 'bg-blue-50 border-blue-200' 
+                                        : job.status === 'completed'
+                                        ? 'bg-green-50 border-green-200'
+                                        : job.status === 'failed'
+                                        ? 'bg-red-50 border-red-200'
+                                        : 'bg-gray-50 border-gray-200'
+                                    } ${isClickable ? 'cursor-pointer hover:bg-green-100 hover:border-green-300' : ''}`}
+                                    onClick={isClickable ? () => confirmJob(job) : undefined}
+                                    onKeyDown={isClickable ? (e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        confirmJob(job)
+                                      }
+                                    } : undefined}
+                                    role={isClickable ? 'button' : undefined}
+                                    tabIndex={isClickable ? 0 : undefined}
+                                    aria-label={isClickable ? `確認: ${job.targetText.slice(0, 30)}...` : undefined}
+                                  >
+                                    <div className="flex justify-between items-start">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2">
+                                          {job.status === 'processing' && <Loader2 className="w-4 h-4 animate-spin text-blue-600" />}
+                                          {job.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-600" />}
+                                          {job.status === 'failed' && <span className="text-red-600">✕</span>}
+                                          {job.status === 'queued' && <span className="text-gray-400">○</span>}
+                                          <Badge variant={
+                                            job.status === 'processing' ? 'default' :
+                                            job.status === 'completed' ? 'outline' :
+                                            job.status === 'failed' ? 'destructive' : 'secondary'
+                                          }>
+                                            {job.status === 'processing' ? '処理中' :
+                                             job.status === 'completed' ? '完了' :
+                                             job.status === 'failed' ? '失敗' : '待機中'}
                                           </Badge>
+                                          {job.source && (
+                                            <Badge variant="outline" className="text-xs">
+                                              {job.source === 'api' ? 'API' : 'WebLLM'}
+                                            </Badge>
+                                          )}
+                                        </div>
+                                        <p className="text-xs text-gray-500 mt-1 truncate">
+                                          {job.targetText.slice(0, 50)}{job.targetText.length > 50 ? '...' : ''}
+                                        </p>
+                                        <p className="text-xs text-gray-400">
+                                          {job.queuedAt.toLocaleTimeString()}
+                                          {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
+                                        </p>
+                                        {job.error && (
+                                          <p className="text-xs text-red-600 mt-1">{job.error}</p>
                                         )}
                                       </div>
-                                      <p className="text-xs text-gray-500 mt-1 truncate">
-                                        {job.targetText.slice(0, 50)}{job.targetText.length > 50 ? '...' : ''}
-                                      </p>
-                                      <p className="text-xs text-gray-400">
-                                        {job.queuedAt.toLocaleTimeString()}
-                                        {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
-                                      </p>
-                                      {job.error && (
-                                        <p className="text-xs text-red-600 mt-1">{job.error}</p>
+                                      {isClickable && (
+                                        <div className="flex items-center text-sm text-green-700 font-medium">
+                                          <CheckCircle className="w-4 h-4 mr-1" />
+                                          確認
+                                        </div>
                                       )}
                                     </div>
-                                    {job.status === 'completed' && job.suggestions && (
-                                      <Button 
-                                        variant="outline" 
-                                        size="sm" 
-                                        onClick={() => confirmJob(job)}
-                                      >
-                                        <CheckCircle className="w-3 h-3 mr-1" />
-                                        確認
-                                      </Button>
-                                    )}
                                   </div>
-                                </div>
-                              ))}
+                                )
+                              })}
                             </div>
                           </CardContent>
                         </Card>
