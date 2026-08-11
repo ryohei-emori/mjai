@@ -16,16 +16,18 @@ describe("prompts exports", () => {
     // Ultra-short SmolLM2-optimized prompt: JSON-only output, no markdown fences, no trailing commas
     expect(SYSTEM_PROMPT).toContain("JSON");
     expect(SYSTEM_PROMPT).toContain("禁止");
-    expect(SYSTEM_PROMPT).toContain("指摘");
+    // Uses English keys as canonical schema (per AGENTS.md)
+    expect(SYSTEM_PROMPT).toContain("suggestions");
+    expect(SYSTEM_PROMPT).toContain("overallComment");
   });
 
   it("exports FEW_SHOT_EXAMPLES with expected structure", () => {
     expect(FEW_SHOT_EXAMPLES).toBeDefined();
     expect(typeof FEW_SHOT_EXAMPLES).toBe("string");
-    // Ultra-short example showing JSON structure
+    // Ultra-short example showing JSON structure with English keys
     expect(FEW_SHOT_EXAMPLES).toContain("例");
-    expect(FEW_SHOT_EXAMPLES).toContain("指摘");
-    expect(FEW_SHOT_EXAMPLES).toContain("全体講評");
+    expect(FEW_SHOT_EXAMPLES).toContain("suggestions");
+    expect(FEW_SHOT_EXAMPLES).toContain("overallComment");
   });
 
   it("exports all section templates", () => {

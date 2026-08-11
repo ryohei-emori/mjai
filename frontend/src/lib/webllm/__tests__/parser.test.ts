@@ -282,4 +282,76 @@ End of analysis.`;
       expect(result.suggestions[0].reason).toBe("");
     });
   });
+
+  // === ENGLISH KEY FORMAT TESTS (canonical schema per AGENTS.md) ===
+  describe("English key format (canonical)", () => {
+    it("parses canonical English key format", () => {
+      const input = `{"suggestions":[{"id":"1","original":"問題箇所","reason":"修正理由"}],"overallComment":"全体的に良い"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("問題箇所");
+      expect(result.suggestions[0].reason).toBe("修正理由");
+      expect(result.overallComment).toBe("全体的に良い");
+    });
+
+    it("parses multiple suggestions with English keys", () => {
+      const input = `{
+        "suggestions": [
+          {"id": "1", "original": "箇所1", "reason": "理由1"},
+          {"id": "2", "original": "箇所2", "reason": "理由2"}
+        ],
+        "overallComment": "総評コメント"
+      }`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(2);
+      expect(result.suggestions[0].original).toBe("箇所1");
+      expect(result.suggestions[1].original).toBe("箇所2");
+      expect(result.overallComment).toBe("総評コメント");
+    });
+
+    it("handles English keys with preamble/postamble", () => {
+      const input = `Here's the analysis:
+{"suggestions":[{"id":"1","original":"test","reason":"fix"}],"overallComment":"good"}
+Hope this helps!`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("test");
+      expect(result.overallComment).toBe("good");
+    });
+
+    it("handles English keys with markdown fence", () => {
+      const input = "```json\n{\"suggestions\":[{\"id\":\"1\",\"original\":\"x\",\"reason\":\"y\"}],\"overallComment\":\"z\"}\n```";
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.overallComment).toBe("z");
+    });
+
+    it("handles empty suggestions array with English keys", () => {
+      const input = `{"suggestions":[],"overallComment":"No issues found"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions).toHaveLength(0);
+      expect(result.overallComment).toBe("No issues found");
+    });
+
+    it("prefers English keys when both formats present", () => {
+      const input = `{"suggestions":[{"id":"1","original":"English","reason":"en reason"}],"overallComment":"English comment","指摘":[],"全体講評":"Japanese"}`;
+
+      const result = parseModelOutput(input);
+
+      // English keys should take precedence
+      expect(result.suggestions).toHaveLength(1);
+      expect(result.suggestions[0].original).toBe("English");
+      expect(result.overallComment).toBe("English comment");
+    });
+  });
 });

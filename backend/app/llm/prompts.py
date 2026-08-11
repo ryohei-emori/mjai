@@ -1,15 +1,20 @@
 """
 Prompts for AI text correction suggestions.
-Ported from frontend/src/lib/webllm/prompts/ for consistency.
+
+Uses English keys as canonical schema (per AGENTS.md Response Schema section):
+- suggestions: array of {id, original, reason}
+- overallComment: string
+
+Parser has dual-key fallback for backward compat with older WebLLM Japanese-key format.
 """
 
 SYSTEM_PROMPT = """翻译校对。只输出JSON，禁止其他文字。禁止```。禁止尾随逗号。
 
-格式：{"指摘":[{"番号":1,"箇所":"片段","コメント":"建议"}],"全体講評":"总评"}
-最多5条指摘。"""
+格式：{"suggestions":[{"id":"1","original":"片段","reason":"建议"}],"overallComment":"总评"}
+最多5条suggestions。"""
 
 FEW_SHOT_EXAMPLE = """例：原文「答えようがありませんでした」译文「我并不想回复」
-输出：{"指摘":[{"番号":1,"箇所":"我并不想回复","コメント":"ようがない是无法，非不想"}],"全体講評":"OK"}"""
+输出：{"suggestions":[{"id":"1","original":"我并不想回复","reason":"ようがない是无法，非不想"}],"overallComment":"OK"}"""
 
 
 def build_user_prompt(original_text: str, target_text: str) -> str:

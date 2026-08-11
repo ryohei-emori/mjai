@@ -7,6 +7,7 @@
  * - Truncated JSON (incomplete arrays/objects)
  * - Markdown code fences wrapping JSON
  * - Preamble/postamble text around JSON
+ * - Both English (suggestions/overallComment) and Japanese (指摘/全体講評) keys
  */
 
 export type CorrectionSuggestion = {
@@ -78,18 +79,22 @@ function repairTruncatedJson(json: string): string {
  * Extract JSON object from text, trying multiple strategies
  */
 function extractJson(text: string): string | null {
-  // Strategy 1: Look for JSON object with "指摘" key
-  const match1 = text.match(/\{\s*"指摘"[^]*\}/s);
-  if (match1) return match1[0];
+  // Strategy 1: Look for JSON object with "suggestions" key (canonical English format)
+  const matchEn = text.match(/\{\s*"suggestions"[^]*\}/s);
+  if (matchEn) return matchEn[0];
   
-  // Strategy 2: Find first { and last } (greedy extraction)
+  // Strategy 2: Look for JSON object with "指摘" key (legacy Japanese format)
+  const matchJp = text.match(/\{\s*"指摘"[^]*\}/s);
+  if (matchJp) return matchJp[0];
+  
+  // Strategy 3: Find first { and last } (greedy extraction)
   const firstBrace = text.indexOf('{');
   const lastBrace = text.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) {
     return text.substring(firstBrace, lastBrace + 1);
   }
   
-  // Strategy 3: Truncated - find first { and try to repair
+  // Strategy 4: Truncated - find first { and try to repair
   if (firstBrace !== -1) {
     return text.substring(firstBrace);
   }
@@ -140,6 +145,10 @@ function safeJsonParse(text: string): Record<string, unknown> | null {
  * Parse WebLLM model output into structured suggestions
  * Following design.md Decision 3: reuse backend parsing strategy
  * 
+ * Supports two key formats:
+ * 1. English keys (canonical, per AGENTS.md): {"suggestions": [...], "overallComment": "..."}
+ * 2. Japanese keys (legacy): {"指摘": [...], "全体講評": "..."}
+ * 
  * Unlike backend's fixed 5-item padding, we return however many entries
  * the model produced (no forced padding to 5)
  * 
@@ -160,22 +169,46 @@ export function parseModelOutput(text: string): ParsedResponse {
     };
   }
   
-  // Extract fields with safe defaults
-  const shitekiList = Array.isArray(parsed["指摘"]) ? parsed["指摘"] : [];
-  const overallComment = typeof parsed["全体講評"] === 'string' 
-    ? parsed["全体講評"] 
-    : "";
+  // Try English keys first (canonical format), then Japanese keys (fallback)
+  let suggestionsList: unknown[];
+  if (Array.isArray(parsed["suggestions"])) {
+    suggestionsList = parsed["suggestions"];
+    console.log('[webllm] Using English "suggestions" key');
+  } else if (Array.isArray(parsed["指摘"])) {
+    suggestionsList = parsed["指摘"];
+    console.log('[webllm] Using Japanese "指摘" key');
+  } else {
+    suggestionsList = [];
+  }
+  
+  // Try English key first, then Japanese
+  let overallComment: string;
+  if (typeof parsed["overallComment"] === 'string') {
+    overallComment = parsed["overallComment"];
+    console.log('[webllm] Using English "overallComment" key');
+  } else if (typeof parsed["全体講評"] === 'string') {
+    overallComment = parsed["全体講評"];
+    console.log('[webllm] Using Japanese "全体講評" key');
+  } else {
+    overallComment = "";
+  }
 
   // Map to CorrectionSuggestion format with defensive coding
   const suggestions: CorrectionSuggestion[] = [];
-  for (let i = 0; i < shitekiList.length; i++) {
-    const item = shitekiList[i];
+  for (let i = 0; i < suggestionsList.length; i++) {
+    const item = suggestionsList[i];
     if (item && typeof item === 'object') {
-      const shiteki = item as Record<string, unknown>;
+      const entry = item as Record<string, unknown>;
+      // Try English keys first, then Japanese
+      const original = typeof entry["original"] === 'string' ? entry["original"]
+        : typeof entry["箇所"] === 'string' ? entry["箇所"] : "";
+      const reason = typeof entry["reason"] === 'string' ? entry["reason"]
+        : typeof entry["コメント"] === 'string' ? entry["コメント"] : "";
+      
       suggestions.push({
         id: String(i + 1),
-        original: typeof shiteki["箇所"] === 'string' ? shiteki["箇所"] : "",
-        reason: typeof shiteki["コメント"] === 'string' ? shiteki["コメント"] : "",
+        original,
+        reason,
       });
     }
   }
