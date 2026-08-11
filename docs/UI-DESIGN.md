@@ -98,14 +98,16 @@ font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'S
 
 ### Typography Scale
 
-| Token | Size | Line Height | Letter Spacing | Tailwind Class |
-|---|---|---|---|---|
-| `headline-lg` | 1.5rem (24px) | 2rem (32px) | 0 | `text-headline-lg` |
-| `headline-md` | 1.25rem (20px) | 1.75rem (28px) | 0.0125em | `text-headline-md` |
-| `body-base` | 1rem (16px) | 1.5rem (24px) | 0.03125em | `text-body-base` |
-| `body-sm` | 0.875rem (14px) | 1.25rem (20px) | 0.025em | `text-body-sm` |
-| `metadata` | 0.75rem (12px) | 1rem (16px) | 0.03125em | `text-metadata` |
-| `label-caps` | 0.625rem (10px) | 1rem (16px) | 0.1em, 500 weight | `text-label-caps` |
+| Token | Size | Weight | Line Height | Letter Spacing | Tailwind Class |
+|---|---|---|---|---|---|
+| `headline-lg` | 1.5rem (24px) | 700 (bold) | 2rem (32px) | 0 | `text-headline-lg` |
+| `headline-md` | 1.25rem (20px) | 600 (semibold) | 1.75rem (28px) | 0.0125em | `text-headline-md` |
+| `body-base` | 1rem (16px) | 400 (normal) | 1.5rem (24px) | 0.03125em | `text-body-base` |
+| `body-sm` | 0.875rem (14px) | 400 (normal) | 1.25rem (20px) | 0.025em | `text-body-sm` |
+| `metadata` | 0.75rem (12px) | 500 (medium) | 1rem (16px) | 0.03125em | `text-metadata` |
+| `label-caps` | 0.625rem (10px) | 600 (semibold) | 1rem (16px) | 0.1em | `text-label-caps` |
+
+> **Note**: All typography tokens include explicit `fontWeight` values in `tailwind.config.js`. The typography classes apply both size and weight automatically.
 
 ### Font Rendering
 
@@ -340,3 +342,37 @@ This section documents visual refinements applied after the initial MD3 migratio
 - **English-primary bilingual**: English labels with Japanese in parentheses
 - **Functional density**: Compact headers with uppercase label style
 - **User control**: Resizable right pane for personalized workspace layout
+
+---
+
+## Design Iteration 3: Typography Weight Pass (2026-08-11)
+
+Refinement focused specifically on font-weight to match the reference mockup more precisely.
+
+### Changes Applied
+
+| Element | Before | After | Rationale |
+|---------|--------|-------|-----------|
+| MJAI wordmark | `text-headline-md font-semibold` (20px/600) | `text-headline-lg` (24px/700) | Mockup shows bold, heavy wordmark |
+| Nav tabs (active) | `font-medium` (500) | `font-semibold` (600) | Active tab needs visual emphasis |
+| Nav tabs (inactive) | `font-medium` (500) | `font-normal` (400) | Lighter weight for inactive state |
+| Session header | `text-headline-lg font-semibold` | `text-headline-lg` | Redundant weight removed (built-in 700) |
+| Session card title | `font-medium` (500) | `font-semibold` (600) | Mockup shows semibold titles |
+| Status badges | (no weight) | `font-medium` (500) | Consistent badge weight |
+| "N Active" badge | `font-medium` | `font-semibold` | Stronger emphasis for active count |
+| History card title | `font-medium` | `font-semibold` | Consistent with session cards |
+
+### Typography Token Weights (Updated)
+
+All typography tokens in `tailwind.config.js` now include explicit `fontWeight`:
+
+| Token | Weight |
+|-------|--------|
+| `headline-lg` | 700 (bold) |
+| `headline-md` | 600 (semibold) |
+| `body-base` | 400 (normal) |
+| `body-sm` | 400 (normal) |
+| `metadata` | 500 (medium) |
+| `label-caps` | 600 (semibold) |
+
+> **Note on `label-caps`**: The original DESIGN.md specified 700, but the reference mockup's section labels ("SOURCE TEXT", etc.) appear lighter. We use 600 as a compromise for functional legibility without excessive boldness.

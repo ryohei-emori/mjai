@@ -317,3 +317,65 @@ const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.pictur
 - After: `MJAI` (テキストのみ)
 
 **理由:** モックアップに合わせたミニマルブランディング。
+
+---
+
+## Design Iteration 3: Typography Weight Pass (2026-08-11)
+
+### Context
+
+Iteration 2完了後のユーザーフィードバック: 「文字の太さ、とか、も意識してくれますか？画像を見て」— 参照モックアップと比較して、font-weightの適用が不十分だった。DESIGN.mdのタイポグラフィトークン定義と実装の不整合を修正。
+
+### Feedback Items Addressed
+
+1. **タイポグラフィトークンへのfontWeight欠落**: `tailwind.config.js`の`fontSize`定義で`label-caps`のみ`fontWeight`が定義されており、他のトークンはデフォルト（400）に依存していた
+2. **MJAI ワードマークの太さ**: モックアップでは太字（bold）だが、実装は`text-headline-md font-semibold`（600相当）
+3. **ナビタブのアクティブ/非アクティブの区別**: モックアップではアクティブタブが太く、非アクティブは軽い
+4. **セッションカードタイトルの太さ**: semibold相当が適切
+5. **ステータスバッジの太さ**: medium〜semibold
+
+### Decision 15: Typography Token Weight Definitions
+
+**選択:** 全てのタイポグラフィトークンに`fontWeight`を明示的に定義。
+
+**変更 (`frontend/tailwind.config.js`):**
+| Token | Before | After |
+|-------|--------|-------|
+| `headline-lg` | (missing) → default 400 | `fontWeight: '700'` |
+| `headline-md` | (missing) → default 400 | `fontWeight: '600'` |
+| `body-base` | (missing) → default 400 | `fontWeight: '400'` |
+| `body-sm` | (missing) → default 400 | `fontWeight: '400'` |
+| `metadata` | (missing) → default 400 | `fontWeight: '500'` |
+| `label-caps` | `fontWeight: '500'` | `fontWeight: '600'` |
+
+**理由:**
+- DESIGN.md定義: headline-lg=700, headline-md=600, metadata=500, label-caps=700
+- モックアップの視覚的観察: label-capsは700ほど重くない（500-600が適切）
+- label-capsを600に設定: DESIGN.md（700）とモックアップの中間値として採用
+
+### Decision 16: Element-Level Weight Refinements
+
+**選択:** `page.tsx`の各要素に適切なfont-weightを適用。
+
+**変更一覧:**
+| 要素 | Before | After | 理由 |
+|------|--------|-------|------|
+| MJAI ワードマーク | `text-headline-md font-semibold` | `text-headline-lg` | headline-lgの内蔵700で太字化 |
+| ナビタブ（アクティブ） | `text-body-sm font-medium` | `text-body-sm font-semibold` | アクティブ状態を強調 |
+| ナビタブ（非アクティブ） | `text-body-sm font-medium` | `text-body-sm font-normal` | 非アクティブは軽く |
+| セッションヘッダー | `text-headline-lg font-semibold` | `text-headline-lg` | 内蔵700で冗長削除 |
+| セッションカードタイトル | `font-medium text-body-sm` | `font-semibold text-body-sm` | モックアップに合わせ太く |
+| ステータスバッジ | (no weight) | `font-medium` | badge内テキストを500に |
+| "N Active" バッジ | `font-medium` | `font-semibold` | より目立つ強調 |
+| 履歴カードタイトル | `font-medium text-body-sm` | `font-semibold text-body-sm` | 一貫性のため |
+
+### Design Token Reference Summary (Post-Iteration 3)
+
+| Token | Size | Weight | Line Height | Letter Spacing |
+|-------|------|--------|-------------|----------------|
+| `headline-lg` | 1.5rem (24px) | 700 | 2rem | 0 |
+| `headline-md` | 1.25rem (20px) | 600 | 1.75rem | 0.0125em |
+| `body-base` | 1rem (16px) | 400 | 1.5rem | 0.03125em |
+| `body-sm` | 0.875rem (14px) | 400 | 1.25rem | 0.025em |
+| `metadata` | 0.75rem (12px) | 500 | 1rem | 0.03125em |
+| `label-caps` | 0.625rem (10px) | 600 | 1rem | 0.1em |

@@ -1070,36 +1070,36 @@ export default function TextCorrectionApp() {
       {/* TopAppBar */}
       <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
         {/* Logo/Title - Text wordmark only, no icon */}
-        <h1 className="text-headline-md font-semibold text-on-surface">MJAI</h1>
+        <h1 className="text-headline-lg text-on-surface">MJAI</h1>
 
         {/* Navigation Tabs */}
         <nav className="flex items-center gap-1 ml-4">
           <button
             onClick={() => setActiveNav('sessions')}
-            className={`px-4 py-2 text-body-sm font-medium rounded-lg transition-colors ${
+            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
               activeNav === 'sessions'
-                ? 'bg-primary-container text-on-primary-container'
-                : 'text-on-surface-variant hover:bg-surface-container'
+                ? 'bg-primary-container text-on-primary-container font-semibold'
+                : 'text-on-surface-variant hover:bg-surface-container font-normal'
             }`}
           >
             Sessions
           </button>
           <button
             onClick={() => setActiveNav('dashboard')}
-            className={`px-4 py-2 text-body-sm font-medium rounded-lg transition-colors ${
+            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
               activeNav === 'dashboard'
-                ? 'bg-primary-container text-on-primary-container'
-                : 'text-on-surface-variant hover:bg-surface-container'
+                ? 'bg-primary-container text-on-primary-container font-semibold'
+                : 'text-on-surface-variant hover:bg-surface-container font-normal'
             }`}
           >
             Dashboard
           </button>
           <button
             onClick={() => setActiveNav('archive')}
-            className={`px-4 py-2 text-body-sm font-medium rounded-lg transition-colors ${
+            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
               activeNav === 'archive'
-                ? 'bg-primary-container text-on-primary-container'
-                : 'text-on-surface-variant hover:bg-surface-container'
+                ? 'bg-primary-container text-on-primary-container font-semibold'
+                : 'text-on-surface-variant hover:bg-surface-container font-normal'
             }`}
           >
             Archive
@@ -1110,7 +1110,7 @@ export default function TextCorrectionApp() {
         <Button
           onClick={createNewSession}
           size="sm"
-          className="ml-auto hidden sm:flex bg-md3-primary text-on-primary hover:bg-md3-primary/90"
+          className="ml-auto hidden sm:flex bg-md3-primary text-on-primary hover:bg-md3-primary/90 font-semibold"
         >
           <span className="material-symbols-outlined md-18 mr-1">add</span>
           New Session
@@ -1213,7 +1213,7 @@ export default function TextCorrectionApp() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
-                          <h3 className="font-medium text-body-sm text-on-surface truncate">{s.name}</h3>
+                          <h3 className="font-semibold text-body-sm text-on-surface truncate">{s.name}</h3>
                         </div>
                         <div className="flex items-center gap-2 mt-1 ml-6">
                           <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
@@ -1221,7 +1221,7 @@ export default function TextCorrectionApp() {
                         </div>
                         <div className="mt-2 ml-6">
                           <Badge
-                            className={`text-xs ${
+                            className={`text-xs font-medium ${
                               s.correctionCount > 0
                                 ? 'bg-session-complete text-white'
                                 : 'bg-session-empty text-white'
@@ -1288,7 +1288,7 @@ export default function TextCorrectionApp() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
-                          <h3 className="font-medium text-body-sm text-on-surface truncate">{s.name}</h3>
+                          <h3 className="font-semibold text-body-sm text-on-surface truncate">{s.name}</h3>
                         </div>
                         <div className="flex items-center gap-2 mt-1 ml-6">
                           <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
@@ -1296,7 +1296,7 @@ export default function TextCorrectionApp() {
                         </div>
                         <div className="mt-2 ml-6">
                           <Badge
-                            className={`text-xs ${
+                            className={`text-xs font-medium ${
                               s.correctionCount > 0
                                 ? 'bg-session-complete text-white'
                                 : 'bg-session-empty text-white'
@@ -1356,7 +1356,7 @@ export default function TextCorrectionApp() {
                   {/* Session Header */}
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-headline-lg font-semibold text-on-surface">{currentSession.name}</h2>
+                      <h2 className="text-headline-lg text-on-surface">{currentSession.name}</h2>
                       <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
                     {currentSession.savedData.length > 0 && (
@@ -1517,7 +1517,7 @@ export default function TextCorrectionApp() {
                         <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
                           Job Queue
                         </CardTitle>
-                        <Badge className="bg-session-active text-white text-xs font-medium">
+                        <Badge className="bg-session-active text-white text-xs font-semibold">
                           {activeJobCount} Active
                         </Badge>
                       </div>
@@ -1816,9 +1816,9 @@ export default function TextCorrectionApp() {
                             <div className="flex justify-between items-start">
                               <div>
                                 <div className="flex items-center gap-2">
-                                  <h4 className="font-medium text-body-sm text-on-surface">添削データ #{index + 1}</h4>
+                                  <h4 className="font-semibold text-body-sm text-on-surface">添削データ #{index + 1}</h4>
                                   {!data.confirmed && (
-                                    <Badge variant="outline" className="text-on-surface-variant border-outline text-xs">
+                                    <Badge variant="outline" className="text-on-surface-variant border-outline text-xs font-medium">
                                       未確認
                                     </Badge>
                                   )}

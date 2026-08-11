@@ -118,3 +118,18 @@
 - [x] 13.9 Remove `edit_note` icon from TopAppBar MJAI wordmark (text only)
 - [x] 13.10 Run lint and build to verify changes
 - [x] 13.11 Update docs/UI-DESIGN.md with brutalist refinement notes
+
+## 14. Typography Weight Refinement (Iteration 3)
+
+- [x] 14.1 Add `fontWeight` to all typography tokens in `tailwind.config.js` (headline-lg: 700, headline-md: 600, body-base: 400, body-sm: 400, metadata: 500, label-caps: 600)
+- [x] 14.2 Update MJAI wordmark from `text-headline-md font-semibold` to `text-headline-lg` (built-in 700 weight)
+- [x] 14.3 Add weight differentiation to nav tabs: active `font-semibold`, inactive `font-normal`
+- [x] 14.4 Remove redundant `font-semibold` from session header (headline-lg has built-in 700)
+- [x] 14.5 Update session card titles from `font-medium` to `font-semibold`
+- [x] 14.6 Add `font-medium` to status badges ("Draft", "N Saved")
+- [x] 14.7 Update "N Active" badge to `font-semibold`
+- [x] 14.8 Update history card titles from `font-medium` to `font-semibold`
+- [x] 14.9 Update design.md with Design Iteration 3 section
+- [x] 14.10 Update docs/UI-DESIGN.md typography section with weight values
+- [x] 14.11 Run lint and build to verify changes
+- [x] 14.12 Visual comparison against reference mockup

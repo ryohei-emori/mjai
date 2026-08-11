@@ -20,14 +20,14 @@ module.exports = {
   			'section': '2rem',
   			'topappbar': '4rem'
   		},
-  		fontSize: {
-  			'headline-lg': ['1.5rem', { lineHeight: '2rem', letterSpacing: '0' }],
-  			'headline-md': ['1.25rem', { lineHeight: '1.75rem', letterSpacing: '0.0125em' }],
-  			'body-base': ['1rem', { lineHeight: '1.5rem', letterSpacing: '0.03125em' }],
-  			'body-sm': ['0.875rem', { lineHeight: '1.25rem', letterSpacing: '0.025em' }],
-  			'metadata': ['0.75rem', { lineHeight: '1rem', letterSpacing: '0.03125em' }],
-  			'label-caps': ['0.625rem', { lineHeight: '1rem', letterSpacing: '0.1em', fontWeight: '500' }]
-  		},
+		fontSize: {
+			'headline-lg': ['1.5rem', { lineHeight: '2rem', letterSpacing: '0', fontWeight: '700' }],
+			'headline-md': ['1.25rem', { lineHeight: '1.75rem', letterSpacing: '0.0125em', fontWeight: '600' }],
+			'body-base': ['1rem', { lineHeight: '1.5rem', letterSpacing: '0.03125em', fontWeight: '400' }],
+			'body-sm': ['0.875rem', { lineHeight: '1.25rem', letterSpacing: '0.025em', fontWeight: '400' }],
+			'metadata': ['0.75rem', { lineHeight: '1rem', letterSpacing: '0.03125em', fontWeight: '500' }],
+			'label-caps': ['0.625rem', { lineHeight: '1rem', letterSpacing: '0.1em', fontWeight: '600' }]
+		},
   		colors: {
   			background: 'hsl(var(--background))',
   			foreground: 'hsl(var(--foreground))',

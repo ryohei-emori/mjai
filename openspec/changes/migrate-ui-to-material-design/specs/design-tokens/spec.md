@@ -22,6 +22,16 @@ The system SHALL provide a named typography scale using Inter font with the foll
 - **WHEN** a component uses typography classes (e.g., `text-headline-lg`, `text-body-sm`)
 - **THEN** the element SHALL have the correct font-size, line-height, letter-spacing, and font-weight for that style
 
+#### Scenario: Typography token font-weight is explicit
+- **GIVEN** the typography token definitions in `tailwind.config.js`
+- **THEN** each token SHALL include an explicit `fontWeight` value:
+  - `headline-lg`: 700 (bold)
+  - `headline-md`: 600 (semibold)
+  - `body-base`: 400 (normal)
+  - `body-sm`: 400 (normal)
+  - `metadata`: 500 (medium)
+  - `label-caps`: 600 (semibold)
+
 #### Scenario: Inter font is loaded
 - **WHEN** the application loads
 - **THEN** the Inter font family SHALL be available via Google Fonts or local hosting
