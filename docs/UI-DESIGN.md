@@ -203,41 +203,45 @@ Fixed header with navigation tabs and user controls.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 🖊 MJAI  │ Sessions │ Dashboard │ Archive │  [+ New]  🔔 ⚙ 👤 🚪 │
+│ MJAI  │ Sessions │ Dashboard │ Archive │  [+ New]  🔔 ⚙ 👤 🚪 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - Height: 64px (`h-16`)
 - Background: `bg-surface`
 - Border: `border-b border-outline-variant`
-- Logo: Material Symbol `edit_note` + "MJAI" text
+- Logo: "MJAI" text wordmark only (no icon)
 - Nav tabs: `Sessions` (active), `Dashboard`, `Archive` (Coming Soon)
 - Right side: New Session button, notification bell, settings (disabled), avatar, logout
 
 ### Three-Pane Layout
 
-Desktop layout below TopAppBar.
+Desktop layout below TopAppBar. Right pane is user-resizable.
 
 ```
-┌───────────────┬─────────────────────────┬─────────────────┐
+┌───────────────┬─────────────────────────┼─────────────────┐
 │  Left Pane    │     Center Pane         │   Right Pane    │
 │  (Sessions)   │     (Editor)            │  (Queue + AI)   │
-│               │                         │                 │
+│               │                         │ ← resizable →   │
 │  [Search]     │  ┌─────────────────┐    │  ┌───────────┐  │
-│               │  │  Source Text    │    │  │ Job Queue │  │
-│  Session 1 ✓  │  └─────────────────┘    │  └───────────┘  │
-│  Session 2    │                         │                 │
-│  Session 3    │  ┌─────────────────┐    │  ┌───────────┐  │
-│               │  │  Target Text    │    │  │ AI提案    │  │
-│               │  │                 │    │  │ Option A  │  │
-│               │  │   [Generate] ──┼────│  │ Option B  │  │
-│               │  └─────────────────┘    │  └───────────┘  │
+│               │  │ SOURCE TEXT     │    │  │ Job Queue │  │
+│  Session 1 ✓  │  │ (原文)          │    │  └───────────┘  │
+│  Session 2    │  └─────────────────┘    │                 │
+│  Session 3    │                         │  ┌───────────┐  │
+│               │  ┌─────────────────┐    │  │ AI Sugg.  │  │
+│               │  │ TARGET TEXT     │    │  │ Option A  │  │
+│               │  │ (翻訳/編集)     │    │  │ Option B  │  │
+│               │  │                 │    │  └───────────┘  │
+│               │  │ [Generate AI]   │    │                 │
+│               │  └─────────────────┘    │  ┌───────────┐  │
+│               │                         │  │ History   │  │
 └───────────────┴─────────────────────────┴─────────────────┘
 ```
 
-- Left pane: `w-72` fixed width, session list with search
-- Center pane: `flex-1`, source + target text cards
-- Right pane: `w-96` fixed width, job queue + AI suggestions
+- Left pane: `w-72` (288px) fixed width, session list with search
+- Center pane: `flex-1`, SOURCE TEXT + TARGET TEXT cards (English-primary bilingual headers)
+- Right pane: Default `448px`, resizable (drag handle between center and right panes, persisted to localStorage)
+- Section headers: `text-label-caps` uppercase style, English primary with Japanese in parentheses
 
 ### Session Card
 
@@ -311,3 +315,28 @@ At breakpoints below `lg` (1024px):
 | `frontend/components.json` | shadcn/ui component library config |
 
 When updating design tokens, modify these source files first, then update this document to match.
+
+---
+
+## Design Iteration 2: Brutalist Refinement (2026-08-11)
+
+This section documents visual refinements applied after the initial MD3 migration, based on user feedback to align with the original mockup's "brutalist legibility" aesthetic.
+
+### Changes Applied
+
+| Element | Before | After |
+|---------|--------|-------|
+| MJAI logo | `edit_note` icon + "MJAI" text | "MJAI" text wordmark only |
+| Source card header | 原文テキスト | SOURCE TEXT (原文) |
+| Target card header | 添削対象テキスト | TARGET TEXT (翻訳/編集) |
+| Generate button | `smart_toy` + "AI提案を生成" | `auto_awesome` + "Generate AI Suggestions" |
+| Right pane width | `w-96` (384px) fixed | 448px default, resizable (280-600px range) |
+| Card borders | Soft shadows | Crisp 1px `border-outline-variant`, `shadow-none` |
+| Header style | `text-headline-md` with icons | `text-label-caps` uppercase, no icons |
+
+### Visual Direction
+
+- **Brutalist legibility**: High contrast black-on-white text, minimal shadows, crisp borders
+- **English-primary bilingual**: English labels with Japanese in parentheses
+- **Functional density**: Compact headers with uppercase label style
+- **User control**: Resizable right pane for personalized workspace layout

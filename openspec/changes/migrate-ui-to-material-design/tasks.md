@@ -104,3 +104,17 @@
 - [x] 12.3 Manual smoke test of all major flows
 - [ ] 12.4 Commit changes with descriptive message
 - [ ] 12.5 Push to branch and create PR (if requested)
+
+## 13. Brutalist Refinement Pass (Iteration 2)
+
+- [x] 13.1 Increase right pane default width from `w-96` to `w-[28rem]` (448px)
+- [x] 13.2 Add resizable drag handle between center and right panes (pointer event-based, no new dependencies)
+- [x] 13.3 Optional: Persist right pane width to localStorage
+- [x] 13.4 Reduce soft/glassmorphic effects — ensure crisp 1px borders, flat surfaces, minimal shadows
+- [x] 13.5 Change source text card header from "原文テキスト" to "SOURCE TEXT (原文)" with label-caps styling
+- [x] 13.6 Change target text card header from "添削対象テキスト" to "TARGET TEXT (翻訳/編集)" with label-caps styling
+- [x] 13.7 Change generate button icon from `smart_toy` to `auto_awesome` (sparkle)
+- [x] 13.8 Change generate button text from "AI提案を生成" to "Generate AI Suggestions"
+- [x] 13.9 Remove `edit_note` icon from TopAppBar MJAI wordmark (text only)
+- [x] 13.10 Run lint and build to verify changes
+- [x] 13.11 Update docs/UI-DESIGN.md with brutalist refinement notes

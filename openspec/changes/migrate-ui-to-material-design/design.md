@@ -245,3 +245,75 @@ const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.pictur
 
 - [ ] Interフォントのウェイト: 400/500/600/700 全て必要か、最小限（400/500/700）で良いか
 - [ ] Material Symbols のアイコンサイズ統一ルール: 20px/24px/40px の使い分け基準
+
+---
+
+## Design Iteration 2: Brutalist Refinement (2026-08-11)
+
+### Context
+
+初期実装完了後のユーザーフィードバックに基づくビジュアル調整。元のHTMLモックアップのブルータリズム的高可読性スタイルへの再整合。
+
+### Feedback Items Addressed
+
+1. **右ペーン幅不足 + リサイズ機能**
+2. **ブルータリズム的可読性への視覚調整**（glassmorphic/soft effect の削減）
+3. **セクションヘッダーの英語優先バイリンガル化**（"SOURCE TEXT (原文)"、"TARGET TEXT (翻訳/編集)"）
+4. **生成ボタンのsparkle アイコン + 英語テキスト化**（"Generate AI Suggestions"）
+5. **MJAIワードマーク横のロゴマーク削除**
+
+### Decision 10: Right Pane Resizable Implementation
+
+**選択:** カスタムReact実装（pointer event + flex-basis/width state）による軽量リサイズ機能。外部依存なし。
+
+**理由:**
+- `package.json` に既存のリサイズライブラリなし
+- シングルユーザー内部ツールなので、軽量なカスタム実装が適切
+- `react-resizable-panels` 等の追加は過剰（1箇所のみの使用）
+
+**デフォルト幅:** `w-96` (384px) → `w-[28rem]` (448px) へ拡大
+
+**実装:**
+- 中央ペーンと右ペーン間にドラッグハンドル（4px幅の縦線、hover で視覚フィードバック）
+- React state で右ペーン幅を管理
+- `onPointerDown` → `onPointerMove` → `onPointerUp` でドラッグ処理
+- オプション: `localStorage` に幅を永続化（nice-to-have）
+
+### Decision 11: Brutalist Visual Treatment
+
+**選択:** 既存DESIGN.mdトークン値を維持しつつ、適用スタイルをシャープ/高コントラストに調整。
+
+**変更点:**
+- ソフトシャドウ（`shadow-*` with high blur）を削減または除去
+- カードボーダーを明確な1px `border-outline-variant` に統一
+- 背景のグラデーション/透明度を削減し、フラットな白/グレー基調に
+- テキストコントラスト確保（`text-on-surface` #1c1b1b を黒に近い状態で維持）
+
+### Decision 12: Bilingual Section Headers
+
+**選択:** モックアップに合わせ、英語を主、日本語を括弧内に配置。
+
+**フォーマット:**
+- Source Text Card Header: `SOURCE TEXT (原文)`
+- Target Text Card Header: `TARGET TEXT (翻訳/編集)`
+
+**スタイル:** `text-label-caps` 相当（uppercase, letter-spacing, muted color）
+
+### Decision 13: Generate Button Styling
+
+**選択:** `auto_awesome`（sparkle/キラキラ）アイコン + 英語テキスト "Generate AI Suggestions"。
+
+**変更:**
+- `smart_toy` → `auto_awesome`
+- "AI提案を生成" → "Generate AI Suggestions"
+- ボタンスタイルは既存の `bg-md3-primary text-on-primary` を維持
+
+### Decision 14: MJAI Wordmark Simplification
+
+**選択:** TopAppBar左側のMJAIワードマークから `edit_note` アイコンを削除し、テキストのみに。
+
+**変更:**
+- Before: `<span className="material-symbols-outlined">edit_note</span> MJAI`
+- After: `MJAI` (テキストのみ)
+
+**理由:** モックアップに合わせたミニマルブランディング。

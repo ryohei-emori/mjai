@@ -31,6 +31,12 @@ import {
 
 type ActiveNav = 'sessions' | 'dashboard' | 'archive'
 
+// Right pane resizing constants
+const RIGHT_PANE_MIN_WIDTH = 280 // px
+const RIGHT_PANE_MAX_WIDTH = 600 // px
+const RIGHT_PANE_DEFAULT_WIDTH = 448 // 28rem = 448px
+const RIGHT_PANE_STORAGE_KEY = 'mjai-right-pane-width'
+
 type CorrectionSuggestion = {
   id: string
   original: string
@@ -211,8 +217,72 @@ export default function TextCorrectionApp() {
   const [activeNav, setActiveNav] = useState<ActiveNav>('sessions')
   const [bellShake, setBellShake] = useState(false)
   const [sessionSearch, setSessionSearch] = useState("")
+  const [rightPaneWidth, setRightPaneWidth] = useState(RIGHT_PANE_DEFAULT_WIDTH)
+  const [isResizing, setIsResizing] = useState(false)
+  const [isLgScreen, setIsLgScreen] = useState(false)
   const bellShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const { toast } = useToast()
+
+  // Load persisted right pane width and detect screen size on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Load saved width
+      const saved = localStorage.getItem(RIGHT_PANE_STORAGE_KEY)
+      if (saved) {
+        const width = parseInt(saved, 10)
+        if (!isNaN(width) && width >= RIGHT_PANE_MIN_WIDTH && width <= RIGHT_PANE_MAX_WIDTH) {
+          setRightPaneWidth(width)
+        }
+      }
+      
+      // Detect screen size
+      const checkScreenSize = () => setIsLgScreen(window.innerWidth >= 1024)
+      checkScreenSize()
+      window.addEventListener('resize', checkScreenSize)
+      return () => window.removeEventListener('resize', checkScreenSize)
+    }
+  }, [])
+
+  // Right pane resize handlers
+  const handleResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
+    resizeRef.current = { startX: e.clientX, startWidth: rightPaneWidth }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [rightPaneWidth])
+
+  useEffect(() => {
+    if (!isResizing) return
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!resizeRef.current) return
+      const deltaX = resizeRef.current.startX - e.clientX
+      const newWidth = Math.min(
+        RIGHT_PANE_MAX_WIDTH,
+        Math.max(RIGHT_PANE_MIN_WIDTH, resizeRef.current.startWidth + deltaX)
+      )
+      setRightPaneWidth(newWidth)
+    }
+
+    const handlePointerUp = () => {
+      setIsResizing(false)
+      resizeRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      // Persist to localStorage
+      localStorage.setItem(RIGHT_PANE_STORAGE_KEY, rightPaneWidth.toString())
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+    }
+  }, [isResizing, rightPaneWidth])
 
   // Get user avatar from Google OAuth metadata
   const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture
@@ -999,11 +1069,8 @@ export default function TextCorrectionApp() {
     <div className="h-screen flex flex-col bg-surface-container-low">
       {/* TopAppBar */}
       <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
-        {/* Logo/Title */}
-        <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined md-24 text-md3-primary">edit_note</span>
-          <h1 className="text-headline-md font-semibold text-on-surface hidden sm:block">MJAI</h1>
-        </div>
+        {/* Logo/Title - Text wordmark only, no icon */}
+        <h1 className="text-headline-md font-semibold text-on-surface">MJAI</h1>
 
         {/* Navigation Tabs */}
         <nav className="flex items-center gap-1 ml-4">
@@ -1300,15 +1367,20 @@ export default function TextCorrectionApp() {
                   {/* Text Editor Cards */}
                   <div className="space-y-card-gap">
                     {/* Source Text Card */}
-                    <Card className="bg-surface border-outline-variant">
-                      <CardHeader>
-                        <CardTitle className="text-headline-md text-on-surface flex items-center gap-2">
-                          <span className="material-symbols-outlined md-20 text-md3-primary">article</span>
-                          原文テキスト
-                        </CardTitle>
-                        <CardDescription className="text-body-sm text-on-surface-variant">
-                          CCTalkから原文テキストをコピー&ペーストしてください
-                        </CardDescription>
+                    <Card className="bg-surface border border-outline-variant shadow-none">
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+                            SOURCE TEXT (原文)
+                          </CardTitle>
+                          <button
+                            onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText)}
+                            className="p-1.5 rounded hover:bg-surface-container transition-colors"
+                            title="コピー"
+                          >
+                            <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
+                          </button>
+                        </div>
                       </CardHeader>
                       <CardContent>
                         <Textarea
@@ -1321,15 +1393,17 @@ export default function TextCorrectionApp() {
                     </Card>
 
                     {/* Target Text Card */}
-                    <Card className="bg-surface border-outline-variant">
-                      <CardHeader>
-                        <CardTitle className="text-headline-md text-on-surface flex items-center gap-2">
-                          <span className="material-symbols-outlined md-20 text-md3-primary">edit_document</span>
-                          添削対象テキスト
-                        </CardTitle>
-                        <CardDescription className="text-body-sm text-on-surface-variant">
-                          添削したいテキストをコピー&ペーストしてください
-                        </CardDescription>
+                    <Card className="bg-surface border border-outline-variant shadow-none">
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+                            TARGET TEXT (翻訳/編集)
+                          </CardTitle>
+                          <div className="flex items-center gap-1">
+                            <span className="material-symbols-outlined md-18 text-on-surface-variant">format_bold</span>
+                            <span className="material-symbols-outlined md-18 text-on-surface-variant">format_italic</span>
+                          </div>
+                        </div>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         <Textarea
@@ -1379,7 +1453,7 @@ export default function TextCorrectionApp() {
                         )}
                         
                         {/* Generate Button */}
-                        <div className="flex justify-end">
+                        <div className="flex justify-center">
                           <Button
                             onClick={handleGenerateClick}
                             disabled={
@@ -1387,7 +1461,7 @@ export default function TextCorrectionApp() {
                               !currentSession.originalText.trim() ||
                               (offlineMode && webgpuSupported === false)
                             }
-                            className="bg-md3-primary text-on-primary hover:bg-md3-primary/90"
+                            className="bg-on-surface text-surface hover:bg-on-surface/90 rounded-full px-6 py-2"
                           >
                             {(() => {
                               const processingCount = jobQueue.filter(j => j.status === 'processing').length
@@ -1395,13 +1469,13 @@ export default function TextCorrectionApp() {
                               
                               return (
                                 <>
-                                  <span className="material-symbols-outlined md-18 mr-2">smart_toy</span>
-                                  AI提案を生成
+                                  <span className="material-symbols-outlined md-18 mr-2">auto_awesome</span>
+                                  Generate AI Suggestions
                                   {(processingCount > 0 || queuedCount > 0) && (
-                                    <Badge variant="secondary" className="ml-2 text-xs bg-surface-container">
-                                      {processingCount > 0 && `処理中: ${processingCount}`}
-                                      {processingCount > 0 && queuedCount > 0 && ' / '}
-                                      {queuedCount > 0 && `待機: ${queuedCount}`}
+                                    <Badge variant="secondary" className="ml-2 text-xs bg-surface-container text-on-surface">
+                                      {processingCount > 0 && `${processingCount}`}
+                                      {processingCount > 0 && queuedCount > 0 && '/'}
+                                      {queuedCount > 0 && `${queuedCount}`}
                                     </Badge>
                                   )}
                                   {offlineMode && !isEngineReady() && (
@@ -1420,21 +1494,34 @@ export default function TextCorrectionApp() {
               )}
             </main>
 
-            {/* Right Pane - Job Queue + Suggestions (Desktop: side panel, Mobile: below editor) */}
-            <aside className="w-full lg:w-96 bg-surface border-t lg:border-t-0 lg:border-l border-outline-variant overflow-y-auto flex-shrink-0">
+            {/* Resize Handle (Desktop only) */}
+            <div
+              className={`hidden lg:flex items-center justify-center w-1.5 cursor-col-resize hover:bg-md3-primary/30 transition-colors flex-shrink-0 ${isResizing ? 'bg-md3-primary/50' : 'bg-transparent hover:bg-outline-variant/50'}`}
+              onPointerDown={handleResizeStart}
+              title="ドラッグしてリサイズ"
+            >
+              <div className="w-0.5 h-16 bg-outline-variant/60 rounded-full" />
+            </div>
+
+            {/* Right Pane - Job Queue + Suggestions (Desktop: side panel with resizable width, Mobile: below editor) */}
+            <aside 
+              className="w-full lg:flex-shrink-0 bg-surface border-t lg:border-t-0 border-outline-variant overflow-y-auto"
+              style={isLgScreen ? { width: rightPaneWidth } : undefined}
+            >
               <div className="p-4 lg:p-6 space-y-card-gap">
                 {/* Job Queue Panel */}
                 {jobQueue.length > 0 && (
-                  <Card className="bg-surface border-outline-variant">
+                  <Card className="bg-surface border border-outline-variant shadow-none">
                     <CardHeader className="pb-3">
-                      <CardTitle className="flex items-center gap-2 text-headline-md text-on-surface">
-                        <span className="material-symbols-outlined md-20 text-md3-primary">queue</span>
-                        ジョブキュー
-                        <Badge className="ml-auto bg-session-active text-white text-xs">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+                          Job Queue
+                        </CardTitle>
+                        <Badge className="bg-session-active text-white text-xs font-medium">
                           {activeJobCount} Active
                         </Badge>
-                      </CardTitle>
-                      <CardDescription className="text-metadata text-on-surface-variant">
+                      </div>
+                      <CardDescription className="text-metadata text-on-surface-variant mt-1">
                         {offlineMode 
                           ? "WebLLMモード: 逐次処理（1件ずつ）" 
                           : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
@@ -1524,19 +1611,21 @@ export default function TextCorrectionApp() {
 
                 {/* AI Suggestions Panel */}
                 {currentSession && currentSession.suggestions.length > 0 && (
-                  <Card data-suggestions-card className="bg-surface border-outline-variant">
+                  <Card data-suggestions-card className="bg-surface border border-outline-variant shadow-none">
                     <CardHeader className="pb-3">
-                      <CardTitle className="flex items-center gap-2 text-headline-md text-on-surface">
-                        <span className="material-symbols-outlined md-20 text-md3-primary">smart_toy</span>
-                        AI提案
-                        {confirmingJobId && (
-                          <Badge variant="outline" className="ml-2 text-md3-primary border-md3-primary text-xs">
-                            確認中
-                          </Badge>
-                        )}
-                      </CardTitle>
-                      <CardDescription className="text-body-sm text-on-surface-variant">
-                        3つ以上選択してください
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+                          AI Suggestions
+                          {confirmingJobId && (
+                            <span className="ml-2 text-session-active normal-case">• Reviewing</span>
+                          )}
+                        </CardTitle>
+                        <span className="text-metadata text-on-surface-variant">
+                          {currentSession.suggestions.length} Results
+                        </span>
+                      </div>
+                      <CardDescription className="text-metadata text-on-surface-variant mt-1">
+                        Select 3+ to save
                       </CardDescription>
                       <div className="flex items-center gap-2 flex-wrap mt-2">
                         <Badge className={canSave ? "bg-session-complete text-white" : "bg-surface-container text-on-surface-variant"}>
@@ -1702,15 +1791,16 @@ export default function TextCorrectionApp() {
 
                 {/* Execution History */}
                 {currentSession && currentSession.savedData.length > 0 && (
-                  <Card className="bg-surface border-outline-variant">
+                  <Card className="bg-surface border border-outline-variant shadow-none">
                     <CardHeader className="pb-3">
-                      <CardTitle className="flex items-center gap-2 text-headline-md text-on-surface">
-                        <span className="material-symbols-outlined md-20 text-session-complete">history</span>
-                        実行履歴
-                      </CardTitle>
-                      <CardDescription className="text-metadata text-on-surface-variant">
-                        このセッションで保存された添削データ
-                      </CardDescription>
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+                          History
+                        </CardTitle>
+                        <span className="text-metadata text-on-surface-variant">
+                          {currentSession.savedData.length} saved
+                        </span>
+                      </div>
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-2">

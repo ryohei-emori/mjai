@@ -6,7 +6,7 @@ The system SHALL present navigation via a TopAppBar with horizontal tabs (Sessio
 #### Scenario: TopAppBar displays navigation tabs
 - **WHEN** the workspace UI is rendered
 - **THEN** a TopAppBar SHALL be displayed at the top with:
-  - MJAI logo/title on the left
+  - MJAI text wordmark on the left (no icon/logo mark, text only)
   - Navigation tabs: Sessions (active by default), Dashboard, Archive
   - New Session button
   - Notification bell icon button and Settings icon button (Settings is UI-only, no functional settings screen)
@@ -61,21 +61,26 @@ The system SHALL display session cards with status pills indicating completion s
 - **THEN** the displayed sessions SHALL be filtered to match the search query
 
 ### Requirement: Three-Pane Layout
-The system SHALL display the workspace in a three-pane layout: session list (left), text editor (center), job queue and AI suggestions (right).
+The system SHALL display the workspace in a three-pane layout: session list (left), text editor (center), job queue and AI suggestions (right). The right pane SHALL be user-resizable.
 
 #### Scenario: Three-pane layout on desktop
 - **WHEN** the viewport is at or above the `lg` breakpoint
 - **THEN** the layout SHALL display three distinct panes:
-  - Left: Session list with search
-  - Center: Source text and target text editors stacked vertically
-  - Right: Job queue panel and AI suggestions panel
+  - Left: Session list with search (fixed width)
+  - Center: Source text and target text editors stacked vertically (flexible width)
+  - Right: Job queue panel and AI suggestions panel (default width ~448px, user-resizable via drag handle)
+
+#### Scenario: Right pane is resizable
+- **WHEN** the user drags the resize handle between center and right panes
+- **THEN** the right pane width SHALL change accordingly
+- AND the layout SHALL remain usable at both narrow and wide extremes
 
 #### Scenario: Editor pane displays source and target cards
 - **WHEN** a session is active
 - **THEN** the center pane SHALL display:
-  - A "Source Text" card with the original text textarea
-  - A "Target Text" card with the target text textarea
-  - The "AI提案を生成" button positioned at the bottom-right of the target card
+  - A "SOURCE TEXT (原文)" card with the original text textarea (English-primary bilingual header, label-caps style)
+  - A "TARGET TEXT (翻訳/編集)" card with the target text textarea (English-primary bilingual header, label-caps style)
+  - The "Generate AI Suggestions" button (with `auto_awesome` sparkle icon) positioned at the bottom-right of the target card
 
 ### Requirement: Job Queue Panel Display
 The system SHALL display an "Active Jobs" badge and individual job items with progress indicators in the right pane.
@@ -124,7 +129,7 @@ The system SHALL preserve the offline mode (WebLLM) toggle in the new layout, po
 
 #### Scenario: Offline mode toggle is visible
 - **WHEN** a session is active and the target text area is displayed
-- **THEN** the オフラインモード checkbox toggle SHALL be visible near the "AI提案を生成" button
+- **THEN** the オフラインモード checkbox toggle SHALL be visible near the "Generate AI Suggestions" button
 
 #### Scenario: Offline mode toggle functionality unchanged
 - **WHEN** the user toggles offline mode
