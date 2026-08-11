@@ -179,15 +179,15 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
         </div>
       )}
       
-      {/* Timeout info */}
+      {/* Timeout info - shown instead of generic error for timeout cases */}
       {diagnostics?.timeoutPhase && (
         <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800">
           <strong>タイムアウト:</strong> {PHASE_LABELS[diagnostics.timeoutPhase]} フェーズでタイムアウトしました
         </div>
       )}
       
-      {/* Error message */}
-      {status.state === "error" && (
+      {/* Error message - only show if NOT a timeout (timeoutPhase already shows the info) */}
+      {status.state === "error" && !diagnostics?.timeoutPhase && (
         <div className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800">
           <strong>エラー:</strong> {"error" in status ? status.error : "不明なエラー"}
         </div>

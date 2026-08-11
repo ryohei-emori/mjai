@@ -43,6 +43,7 @@
 ## 7. Testing and validation
 
 - [x] 7.1 Add/update frontend tests covering: WebGPU-unsupported fallback UX, model-load progress UI, and suggestion-generation output parsing (using a mocked WebLLM engine)
+- [x] 7.1.1 Fix duplicate timeout/error message display - when `diagnostics.timeoutPhase` is set, suppress the generic error message to show only the timeout-specific message
 - [ ] 7.2 Manually verify end-to-end suggestion generation in a WebGPU-capable browser (e.g. current Chrome/Edge) against representative original/target text pairs
 - [ ] 7.3 Manually verify the unsupported-browser fallback path (e.g. via a browser/flag without WebGPU, or by simulating `navigator.gpu` absence)
 - [ ] 7.4 Verify selected/edited suggestions still persist correctly via `POST /proposals` end-to-end after the generation-source change
