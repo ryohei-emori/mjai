@@ -46,44 +46,104 @@ def strip_markdown_fences(text: str) -> str:
 
 
 def repair_truncated_json(json_str: str) -> str:
-    """Attempt to repair truncated JSON by closing open brackets/braces."""
-    repaired = json_str
-    
-    open_brackets = repaired.count('[')
-    close_brackets = repaired.count(']')
-    open_braces = repaired.count('{')
-    close_braces = repaired.count('}')
-    
-    repaired = re.sub(r',\s*$', '', repaired)
+    """
+    Attempt to repair truncated JSON by closing open brackets/braces.
+
+    Closing punctuation must be appended in LIFO (stack) order matching the
+    actual nesting, not just "all missing ']' then all missing '}'" — for a
+    truncated `{"suggestions":[{"original":"..."` the correct close sequence
+    is `}]}` (close inner object, then array, then outer object), not `]}}`.
+    A naive count-based approach produces the wrong order for any JSON nested
+    more than one level deep, which is always the case for our
+    `{"suggestions": [{...}]}` response shape.
+    """
+    repaired = re.sub(r',\s*$', '', json_str)
     repaired = re.sub(r':\s*$', ': null', repaired)
     repaired = re.sub(r':\s*"[^"]*$', ': ""', repaired)
-    
-    missing_brackets = open_brackets - close_brackets
-    missing_braces = open_braces - close_braces
-    
-    for _ in range(missing_brackets):
-        repaired += ']'
-    for _ in range(missing_braces):
-        repaired += '}'
-    
+
+    # Walk the string tracking open bracket/brace nesting, ignoring any
+    # bracket-like characters that appear inside string literals.
+    stack: List[str] = []
+    in_string = False
+    escaped = False
+    for ch in repaired:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch in '{[':
+            stack.append(ch)
+        elif ch in '}]':
+            if stack:
+                stack.pop()
+
+    # Truncation mid-string that the regexes above didn't catch (e.g. not
+    # immediately preceded by a colon) — close the dangling string first.
+    if in_string:
+        repaired += '"'
+
+    closing = {'{': '}', '[': ']'}
+    for opener in reversed(stack):
+        repaired += closing[opener]
+
     return repaired
 
 
 def extract_json(text: str) -> Optional[str]:
-    """Extract JSON object from text, trying multiple strategies."""
+    """
+    Extract a JSON object from text, trying multiple strategies.
+
+    The main strategy scans from the first '{' tracking brace nesting depth
+    (ignoring braces inside string literals) to find the *matching* closing
+    brace, rather than naively using the text's last '}'. This matters for
+    truncated responses: if the JSON is cut off mid-response, the last '}'
+    in the text may belong to an inner object (e.g. the first item of a
+    `suggestions` array) rather than the outer object, and naively slicing
+    to it silently drops everything after — including later array items.
+    When no matching close is found (genuinely truncated), the full
+    remainder is returned so repair_truncated_json can close it correctly.
+    """
     match1 = re.search(r'\{\s*"指摘".*\}', text, re.DOTALL)
     if match1:
         return match1.group(0)
-    
+
     first_brace = text.find('{')
-    last_brace = text.rfind('}')
-    if first_brace != -1 and last_brace > first_brace:
-        return text[first_brace:last_brace + 1]
-    
-    if first_brace != -1:
-        return text[first_brace:]
-    
-    return None
+    if first_brace == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(first_brace, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[first_brace:i + 1]
+
+    # Braces never balanced out — truncated response; return everything
+    # from the first '{' onward so repair_truncated_json can close it.
+    return text[first_brace:]
 
 
 def safe_json_parse(text: str) -> Optional[Dict[str, Any]]:
@@ -134,7 +194,7 @@ def parse_model_output(text: str) -> ParsedResponse:
     parsed = safe_json_parse(text)
     
     if not parsed:
-        logger.warning("[parser] Failed to extract JSON from response")
+        logger.warning(f"[parser] Failed to extract JSON from response. Raw text (first 1000 chars): {text[:1000]!r}")
         return {
             "suggestions": [],
             "overallComment": "AIの応答からJSONを抽出できませんでした。再度お試しください。",

@@ -69,7 +69,9 @@ async def call_groq(messages: list[dict[str, str]]) -> str:
     payload: dict[str, Any] = {
         "model": GROQ_MODEL,
         "messages": messages,
-        "max_tokens": 512,
+        # 512 was too tight and could truncate JSON mid-string for responses
+        # with multiple suggestions over Japanese text, causing parse failures.
+        "max_tokens": 1024,
         "temperature": 0.2,
     }
     

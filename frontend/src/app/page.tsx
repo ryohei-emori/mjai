@@ -359,6 +359,17 @@ export default function TextCorrectionApp() {
   // ジョブをキューに追加し、並列処理を開始する関数
   const addJobAndProcess = useCallback((targetText: string) => {
     if (!currentSession) return false
+
+    // 原文テキストが未入力の場合、API呼び出し（originalText/targetText必須）が
+    // 400エラーになり不必要にWebLLMへフォールバックしてしまうため、事前にガードする
+    if (!currentSession.originalText.trim()) {
+      toast({
+        title: "原文テキストが未入力です",
+        description: "AI提案を生成する前に「原文テキスト」を入力してください。",
+        variant: "destructive",
+      })
+      return false
+    }
     
     const MAX_QUEUE_SIZE = 10
     const currentQueueSize = jobQueue.filter(j => j.status === 'queued' || j.status === 'processing').length
@@ -1190,7 +1201,11 @@ export default function TextCorrectionApp() {
                           
                           <Button
                             onClick={handleGenerateClick}
-                            disabled={!currentSession.targetText.trim() || (offlineMode && webgpuSupported === false)}
+                            disabled={
+                              !currentSession.targetText.trim() ||
+                              !currentSession.originalText.trim() ||
+                              (offlineMode && webgpuSupported === false)
+                            }
                             className="w-full"
                           >
                             {(() => {

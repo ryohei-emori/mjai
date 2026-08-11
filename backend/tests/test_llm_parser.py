@@ -2,6 +2,8 @@
 Tests for backend/app/llm/parser.py
 """
 
+import json
+
 import pytest
 from app.llm.parser import (
     parse_model_output,
@@ -58,6 +60,17 @@ class TestRepairTruncatedJson:
         result = repair_truncated_json('{"a": 1,')
         assert not result.endswith(',')
 
+    def test_closes_nested_structure_in_correct_order(self):
+        """Regression: closing punctuation must be LIFO (}]}), not grouped
+        by bracket type (]}}), or the repaired string fails to parse."""
+        result = repair_truncated_json('{"suggestions":[{"id":"1","original":"a","reason":"b"')
+        assert json.loads(result) == {"suggestions": [{"id": "1", "original": "a", "reason": "b"}]}
+
+    def test_closes_dangling_string_mid_truncation(self):
+        result = repair_truncated_json('{"suggestions":[{"id":"1","original":"a","reason":"unfinished')
+        parsed = json.loads(result)
+        assert parsed["suggestions"][0]["reason"] == ""
+
 
 class TestExtractJson:
     def test_extracts_shiteki_json(self):
@@ -74,6 +87,18 @@ class TestExtractJson:
     def test_returns_none_for_no_json(self):
         text = 'No JSON here'
         assert extract_json(text) is None
+
+    def test_truncated_response_keeps_earlier_complete_items(self):
+        """Regression: naive rfind('}') matched the first item's closing
+        brace and silently discarded the second (truncated) item's data."""
+        text = '{"suggestions":[{"id":"1","original":"a","reason":"b"},{"id":"2","original":"c","reason":"d"'
+        result = extract_json(text)
+        assert '"id":"2"' in result
+
+    def test_stops_at_matching_brace_ignoring_postamble_braces(self):
+        text = '{"key": "value"} and here is a stray } in the postamble'
+        result = extract_json(text)
+        assert result == '{"key": "value"}'
 
 
 class TestSafeJsonParse:
@@ -268,3 +293,25 @@ Hope this helps!'''
         assert len(result["suggestions"]) == 1
         assert result["suggestions"][0]["original"] == ""
         assert result["suggestions"][0]["reason"] == ""
+
+    # === Regression tests: truncated responses (e.g. max_tokens cutoff) ===
+
+    def test_truncated_response_mid_string_recovers_first_item(self):
+        text = '{"suggestions":[{"id":"1","original":"彼は昨日、東京に行きました","reason":"時制の誤り。過去形にすべきで'
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "彼は昨日、東京に行きました"
+
+    def test_truncated_response_after_second_item_keeps_both(self):
+        text = '{"suggestions":[{"id":"1","original":"a","reason":"b"},{"id":"2","original":"c","reason":"d"'
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 2
+        assert result["suggestions"][1]["original"] == "c"
+
+    def test_truncated_immediately_after_array_open(self):
+        text = '{"suggestions":['
+        result = parse_model_output(text)
+
+        assert result["suggestions"] == []
