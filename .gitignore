@@ -54,6 +54,11 @@ env/
 *.sqlite3
 *.db
 
+# DB backup snapshots (pg_dump / asyncpg fallback) — never commit live data dumps
+backend/db/*_backup_*.sql
+backend/db/*_backup_*.json
+backend/db/*_backup_*.csv
+
 # OS generated files
 .DS_Store
 .DS_Store?
