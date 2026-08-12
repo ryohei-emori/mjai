@@ -1057,15 +1057,23 @@ export default function TextCorrectionApp() {
       return
     }
     
-    // ジョブの結果を現在のセッションにロード
+    // ジョブの結果を現在のセッションにロード。
+    // job.suggestions はこのジョブのAI生成結果のみを保持しており、ユーザーが
+    // カスタム修正カードを追加した後に同じ（または別の）完了済みジョブを
+    // 再度クリックしてconfirmJobが再実行されると、その追加分が失われて
+    // しまっていた（バグ報告: 「カスタム修正カードが消える」）。ジョブは
+    // セッション単位ではなく生成ラウンド単位のデータなので、現在の
+    // suggestions内にある isCustom カードは常に保持し、AI提案側だけを
+    // job.suggestions で置き換える。
+    const preservedCustomSuggestions = currentSession.suggestions.filter((s) => s.isCustom)
     updateCurrentSession({
       targetText: job.targetText,
-      suggestions: job.suggestions,
+      suggestions: [...job.suggestions, ...preservedCustomSuggestions],
       overallComment: job.overallComment || '',
     })
     
     setShowCustomForm(true)
-    setSelectionCounter(0)
+    setSelectionCounter(preservedCustomSuggestions.filter((s) => s.selected).length)
     
     // 確認中のジョブIDを記録（ジョブキュー用）
     // Note: useEffect handles scrolling reactively when this is set
@@ -1273,6 +1281,21 @@ export default function TextCorrectionApp() {
       title: "修正内容を追加しました",
       description: "カスタム修正内容が追加され、自動的に選択されました",
     })
+  }
+
+  // TARGET TEXTでのマウス選択（ネイティブのテキスト選択、指摘スパンの
+  // ハイライトオーバーレイとは別物）を、カスタム修正カードの「指摘箇所」
+  // フィールドへ自動反映する。選択が空/未ドラッグ（カーソル移動のみ）の
+  // 場合は発火しない。修正コメント欄は上書きしない。フォームが閉じている
+  // 場合は自動的に開く — 開かないと入力内容が反映されたことに気付けない
+  // ため（openspec/changes/highlight-suggestion-text-spans/tasks.md 参照）。
+  const handleTargetTextSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const { selectionStart, selectionEnd, value } = e.currentTarget
+    if (selectionStart === selectionEnd) return
+    const selectedText = value.substring(selectionStart, selectionEnd)
+    if (!selectedText) return
+    setCustomCorrection((prev) => ({ ...prev, original: selectedText }))
+    setShowCustomForm(true)
   }
 
   const copyToClipboard = async (text: string, description: string = "クリップボードにコピーしました") => {
@@ -2037,6 +2060,7 @@ export default function TextCorrectionApp() {
                           placeholder="添削対象テキストをここに貼り付けてください..."
                           value={currentSession.targetText}
                           onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
+                          onSelect={handleTargetTextSelect}
                           className="min-h-[200px] text-body-base leading-relaxed bg-surface-container border-outline-variant"
                           highlights={targetHighlights}
                         />

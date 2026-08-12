@@ -51,3 +51,7 @@
 
 - [x] 8.1 Mark all tasks above complete as implemented
 - [x] 8.2 Run `openspec validate --strict` (or repo-equivalent) on this change and fix any reported issues
+
+## 9. Post-merge note (2026-08-13): investigated as a possible cause of the "custom card disappears" bug, ruled out
+
+- [x] 9.1 A later bug report ("user-added custom suggestion card disappears") was investigated against this change's double-click-select/blank-filtering/Chinese-validation work as a possible regression source, since it touched the same suggestion-card render path. Ruled out: none of this change's diffs mutate or filter `currentSession.suggestions` in a way that would drop an `isCustom` entry. The actual root cause (`confirmJob()` in `frontend/src/app/page.tsx` wholesale-replacing `currentSession.suggestions` with a job's AI-only suggestion list) predates this change and was unrelated to it. See `openspec/changes/highlight-suggestion-text-spans/design.md`'s "Post-merge Follow-up" section (Bug 2) and `tasks.md` task 10.2 for the actual root cause and fix, documented there since that's where the sibling bugs from the same user report (highlight overlay layout bug, TARGET-selection feature) were also written up.

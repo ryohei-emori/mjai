@@ -125,7 +125,16 @@ export const HighlightedTextarea = React.forwardRef<HTMLTextAreaElement, Highlig
           aria-hidden="true"
           className={cn(
             sharedClassName,
-            "no-scrollbar absolute inset-0 z-0 overflow-auto text-on-surface pointer-events-none"
+            // `sharedClassName` carries `flex` from the base Textarea classes
+            // (harmless there since a native <textarea>'s text content isn't
+            // laid out via flexbox), but this backdrop is a real <div> whose
+            // children are the per-segment <span>/<mark> nodes below — as a
+            // flex container (row, nowrap by default) those would lay out as
+            // side-by-side shrink-wrapped columns instead of flowing inline
+            // text, breaking line-wrap alignment with the real textarea.
+            // `block` overrides `flex` via tailwind-merge's last-wins
+            // conflict resolution (see the sharedClassName comment above).
+            "no-scrollbar absolute inset-0 z-0 block overflow-auto text-on-surface pointer-events-none"
           )}
         >
           {segments.map((segment, index) =>

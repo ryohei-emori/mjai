@@ -96,3 +96,147 @@ Both `originalText` (SOURCE TEXT) and `targetText` (TARGET TEXT) are Japanese in
 ## Open Questions
 
 None — all decisions above are resolved for this iteration.
+
+## Post-merge Follow-up (2026-08-13)
+
+After this change shipped to `main`, the user reported two bugs plus requested
+one small additive feature while reviewing the merged behavior. Documented
+here rather than as a new change, since all three are small, additive
+corrections to code this change (and the closely-related
+`refine-suggestion-card-interactions` change) already introduced/touched —
+see that change's `tasks.md` for the sibling task-list entry.
+
+### Bug 1: highlight overlay rendered as a broken, overlapping vertical column
+
+**Symptom:** in the TARGET TEXT (and SOURCE TEXT) box, a highlighted
+suggestion excerpt rendered as a narrow column of stacked, overlapping words
+instead of an inline highlighted span within the normally-wrapped paragraph —
+screenshot showed each line of the surrounding plain text with a
+rectangular "hole" at the same horizontal position, and the highlighted
+phrase's own words stacked vertically inside that hole across several lines.
+
+**Root cause:** `HighlightedTextarea`'s `sharedClassName` (used for both the
+real `<textarea>` and the backdrop `<div>`, see Decision 5) is built by
+prepending the shared base string to the caller's `className`:
+
+```ts
+const sharedClassName = cn(
+  "flex min-h-[60px] w-full rounded-md border border-input px-3 py-2 text-base shadow-sm md:text-sm whitespace-pre-wrap break-words",
+  className
+)
+```
+
+That `flex` comes from copying `frontend/src/components/ui/textarea.tsx`'s
+base class list verbatim (itself copy-pasted from the shadcn `Input`
+component's classes) into `sharedClassName`. On a native `<textarea>`, `flex`
+is inert/vestigial — a textarea's visible text isn't laid out via CSS
+flexbox, so it was harmless there and went unnoticed in review. But the
+backdrop `<div>` is a *real* `<div>` whose children are the per-segment
+`<span>`/`<mark>` nodes produced by `computeSegments()` — as a flex container
+(`flex-direction: row`, `flex-wrap: nowrap` by default), those siblings
+became individual flex items laid out side-by-side in a single row instead of
+flowing together as one continuous inline paragraph. Each item's content
+still wrapped internally (`white-space: pre-wrap` + `break-words` still
+apply within a flex item), so a long segment (e.g. the plain text before a
+highlight, the highlighted `<mark>` itself, and the plain text after it)
+each became its own shrink-wrapped "column" wrapping over multiple internal
+lines — exactly matching the screenshot's narrow overlapping-column artifact.
+The real `<textarea>` was never affected (single opaque text node, no
+children to lay out), which is why only the backdrop visibly broke while the
+underlying editable text always wrapped correctly.
+
+**Fix:** `frontend/src/components/ui/highlighted-textarea.tsx` — add `block`
+to the backdrop `<div>`'s own (layer-specific) class list, which comes after
+`sharedClassName` in the `cn()` call and therefore wins the `flex`/`block`
+display-utility conflict via tailwind-merge's documented last-wins
+resolution (the same mechanism the component's own doc comment already
+describes for color/interactivity overrides) — no change to
+`sharedClassName` itself or to the real `<textarea>`'s classes, keeping the
+diff minimal and not risking the two layers drifting out of visual alignment
+again.
+
+### Bug 2: user-added custom suggestion card disappears
+
+**Symptom:** a card added via the "修正内容を追加" (add custom correction)
+form (`isCustom: true`, appended to `currentSession.suggestions` by
+`addCustomCorrection()`) could vanish later in the same session, which is
+not the intended behavior — once added, a custom card is meant to behave
+exactly like an AI-generated one (persist, remain selectable/editable/savable)
+until the user explicitly removes it or saves/clears the session.
+
+**Root cause:** `confirmJob()` (the handler invoked when the user clicks a
+completed job card in the Job Queue panel to load its results for review)
+unconditionally replaces the *entire* `currentSession.suggestions` array with
+`job.suggestions` — the AI-only suggestion list captured at the moment that
+job finished generating:
+
+```ts
+updateCurrentSession({
+  targetText: job.targetText,
+  suggestions: job.suggestions,   // wholesale replace, drops any isCustom cards
+  overallComment: job.overallComment || '',
+})
+setSelectionCounter(0)
+```
+
+A completed job card in the Job Queue stays clickable indefinitely
+(`isClickable = job.status === 'completed' && job.suggestions`, no
+one-shot/already-confirmed guard), so re-clicking the *same* completed job
+after adding a custom card — or clicking a *different* completed job while a
+custom card from an earlier confirmation is present — silently discards the
+custom card, because `job.suggestions` was captured once at job-completion
+time and never includes anything the user added afterward to
+`currentSession.suggestions`.
+
+**Fix:** `confirmJob()` now preserves any `isCustom` suggestions already in
+`currentSession.suggestions` across the replace, since those are
+session-scoped user data rather than data owned by a specific generation job:
+
+```ts
+const preservedCustomSuggestions = currentSession.suggestions.filter((s) => s.isCustom)
+updateCurrentSession({
+  targetText: job.targetText,
+  suggestions: [...job.suggestions, ...preservedCustomSuggestions],
+  overallComment: job.overallComment || '',
+})
+setSelectionCounter(preservedCustomSuggestions.filter((s) => s.selected).length)
+```
+
+`selectionCounter` (used to assign the next `selectedOrder`) is recomputed
+from the preserved custom cards' own selected count instead of being reset to
+`0`, since freshly-loaded `job.suggestions` are always `selected: false` (set
+in `processJobAsync`) and would otherwise collide with a preserved custom
+card's existing `selectedOrder`.
+
+### Feature 3: TARGET TEXT mouse selection pre-fills the custom-correction form's 指摘箇所 field
+
+**Choice:** Listen for the native `onSelect` event on the TARGET TEXT
+`HighlightedTextarea` (forwarded straight through to the real `<textarea>`
+via its `{...props}` passthrough — no component changes needed). When the
+event fires with a non-collapsed selection (`selectionStart !== selectionEnd`
+and the resulting substring is non-empty), set
+`customCorrection.original` to that substring via the existing
+`setCustomCorrection` setter, and call `setShowCustomForm(true)`.
+
+**Decision — also auto-open the form:** Yes. If the custom-correction form is
+closed when the user selects text, the auto-filled `original` value would be
+invisible until the user separately notices/opens the form — silently
+populating a hidden field is worse than not populating it at all, since nothing
+in the UI would otherwise hint that a selection had any effect. Auto-opening
+makes the feature immediately visible/discoverable, mirroring how `confirmJob`
+and `restoreFromHistory` already call `setShowCustomForm(true)` whenever
+suggestion data becomes available to review.
+
+**Explicitly out of scope / preserved behavior:**
+- The `修正コメント` (`reason`) field is never touched by this handler — only
+  `original` is auto-filled, per the request.
+- A collapsed selection (a plain caret click/move with no drag) does not
+  fire the auto-fill, guarded by the `selectionStart !== selectionEnd` check
+  — otherwise every caret placement while editing TARGET TEXT would spuriously
+  clear-then-not-clear the field.
+- This uses the native browser text-selection event, unrelated to the
+  suggestion-highlight overlay (`hoveredSuggestionId`/`targetHighlights`) from
+  Decision 2 above — the two selection concepts (native text selection vs.
+  suggestion-highlight state) are independent and don't interact.
+- Normal typing/editing in TARGET TEXT is unaffected: `onSelect` only fires
+  on selection-range changes, not on every keystroke.
