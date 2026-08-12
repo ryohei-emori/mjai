@@ -69,3 +69,14 @@ See `design.md`'s "Post-merge Follow-up" section for full root-cause writeups.
 - [x] 10.5 Run `npm run lint` in `frontend/` (inside the running `mjai-frontend-1` container) — no new errors (same pre-existing `layout.tsx` custom-font warning as prior changes)
 - [x] 10.6 Run `npm run build` in `frontend/` (inside the running `mjai-frontend-1` container) — build succeeds
 - [x] 10.7 Run the full frontend jest suite (inside `mjai-frontend-1`) — 129/130 passed; the 1 pre-existing failure (`src/app/__tests__/apiError.test.tsx`, a stale button-label assertion) reproduces identically against `HEAD` with this follow-up's diff stashed out, confirming it's unrelated and pre-existing (same failure already documented as pre-existing in this change's task 8.4 and in `refine-suggestion-card-interactions`'s task 7)
+
+## 11. Post-merge follow-up 2 (2026-08-13): robust highlight-within-textarea fix
+
+See `design.md` Bug 1b for the verified root cause (flex-item stretch) and technique notes.
+
+- [x] 11.1 Document Bug 1b in `design.md` (flex-item stretch reproduced; prior `block`-via-twMerge fix incomplete) and retune Decision 3 to DESIGN.md `error-container`
+- [x] 11.2 Rewrite `frontend/src/components/ui/highlighted-textarea.tsx`: remove `flex` from shared metrics entirely; backdrop `display:block`; inline `<span>` highlights with `box-decoration-break: clone`; `scrollbar-gutter: stable`; trailing-`\\n` mirror; layer colors via inline `style` to protect `text-body-base`
+- [x] 11.3 Retune `--suggestion-highlight` in `globals.css` + `docs/UI-DESIGN.md` to `6 100% 92%` (`#ffdad6`)
+- [x] 11.4 Verify via minimal HTML repro / browser: short text markH≈19 vs backdropH≈206 (`stretched: false`); long text stays inline across wraps with no character columns
+- [x] 11.5 Run `npm run lint` + `npm run build` in `frontend/` — lint clean (pre-existing layout.tsx font warning only); build succeeds
+- [x] 11.6 Commit highlight-related files only and push to `main`

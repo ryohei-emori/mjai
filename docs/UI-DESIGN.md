@@ -60,7 +60,7 @@ All colors are defined as HSL values in CSS custom properties. Tailwind utilitie
 | `--on-error` | `0 0% 100%` | `text-on-error` | Text on error |
 | `--tertiary` | `280 50% 45%` | `bg-tertiary` | Tertiary accent |
 | `--on-tertiary` | `0 0% 100%` | `text-on-tertiary` | Text on tertiary |
-| `--suggestion-highlight` | `38 92% 50%` | `bg-suggestion-highlight` / `border-suggestion-highlight` | In-textarea highlight for a flagged AI-suggestion excerpt (SOURCE/TARGET TEXT). Amber/warning-toned, deliberately distinct from `--error` (destructive/failure) and `--md3-primary` (selected-card background) to avoid semantic collision. Used at two opacities via Tailwind's opacity modifier: `/25` for hover-preview, `/45` (+ `border-b-2 border-suggestion-highlight`) for selected-persistent. See `HighlightedTextarea` (`frontend/src/components/ui/highlighted-textarea.tsx`). |
+| `--suggestion-highlight` | `6 100% 92%` (`#ffdad6`, DESIGN.md `error-container`) | `bg-suggestion-highlight` | In-textarea marker wash for a flagged AI-suggestion excerpt (SOURCE/TARGET TEXT). Soft MD3 error-container pastel — reads as a highlighter behind glyphs, not a saturated fill. Distinct from solid `--error` (destructive controls) and `--md3-primary` (selected-card). Hover uses `/70`; selected uses full wash + `inset` underline via `--error`. See `HighlightedTextarea`. |
 
 ### Session Status Colors
 

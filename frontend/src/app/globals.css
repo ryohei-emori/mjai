@@ -122,11 +122,12 @@ a {
     --on-primary: 0 0% 100%;
     --primary-container: 220 70% 95%;
     --on-primary-container: 220 70% 20%;
-    /* Amber/warning-toned "flagged excerpt" highlight, distinct from
-       --error (destructive/failure) and --md3-primary (selected-card
-       background) — used by HighlightedTextarea to mark a suggestion's
-       location inside SOURCE/TARGET TEXT. See docs/UI-DESIGN.md. */
-    --suggestion-highlight: 38 92% 50%;
+    /* Soft MD3 error-container wash (#ffdad6) used as an in-text marker for
+       flagged suggestion excerpts. Reads as a highlighter tint (not a saturated
+       amber fill that looked like a tall column when layout broke). Distinct
+       from solid `--error` (destructive controls) and `--md3-primary`
+       (selected-card). See docs/UI-DESIGN.md / DESIGN.md error-container. */
+    --suggestion-highlight: 6 100% 92%;
   }
   .dark {
     --background: 0 0% 3.9%;

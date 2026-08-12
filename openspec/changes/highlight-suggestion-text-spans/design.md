@@ -35,16 +35,17 @@ Both `originalText` (SOURCE TEXT) and `targetText` (TARGET TEXT) are Japanese in
 - Hover-only: simpler, but loses persistent multi-suggestion comparison.
 - Selected-only: loses the cheap "preview without committing to a selection" interaction; also suggestions need at least one selected to see anything, which doesn't help while still deciding what to select.
 
-### Decision 3: Color token — new `--suggestion-highlight` (not reusing `--error`)
+### Decision 3: Color token — new `--suggestion-highlight` (error-container wash)
 
-**Choice:** Add a new MD3-pattern token, `--suggestion-highlight` (HSL, amber/warning-toned: `38 92% 50%`), to `globals.css`, wired through `tailwind.config.js` as `bg-suggestion-highlight` / `border-suggestion-highlight`, and documented in `docs/UI-DESIGN.md`. Applied at two opacities via Tailwind's opacity modifier (already used elsewhere in this codebase, e.g. `bg-primary-container/50`): `bg-suggestion-highlight/25` for hover-preview, `bg-suggestion-highlight/45` with a `border-b-2 border-suggestion-highlight` underline for selected-persistent.
+**Choice:** Add a new MD3-pattern token, `--suggestion-highlight`, wired through `tailwind.config.js` as `bg-suggestion-highlight` and documented in `docs/UI-DESIGN.md`. **Current value (Bug 1b retune):** `6 100% 92%` (= DESIGN.md `error-container` `#ffdad6`) — a soft pastel marker wash. Hover uses `bg-suggestion-highlight/70`; selected uses the full wash plus an inset underline via `hsl(var(--error))` (not `border-b-2`, which painted a hard rule on every wrapped line box during the layout bug).
 
-**Rationale:** `--error` (red, `0 84% 60%`) is already used elsewhere for destructive actions, failed-job retry buttons, and (as a plain Tailwind `red-*` shade, not the token) the existing "指摘箇所" box — reusing it for an in-text highlight risks visually conflating "this text is an error/failure state" with "this text is being reviewed," and the user's own request flagged this ambiguity. `--md3-primary` (blue) is already the "selected card" background and would visually clash/blend with the card's own selected state when also used for the textarea highlight. `--tertiary` (purple) had no established semantic tie-in. An amber/warning tone is a distinct, conventionally "flag for attention" hue (common in editor "found match" / "review" highlighting, e.g. find-in-page browser highlights) that doesn't collide with any existing semantic token's meaning in this app.
+**Rationale:** Solid `--error` remains reserved for destructive controls; the *container* tint is the MD3-appropriate highlighter background and matches the external DESIGN.md palette the product is aligning to. Saturated amber (`38 92% 50%`, the first ship value) read too much like a solid fill/column when layout broke and was not a DESIGN.md token. `--md3-primary` stays reserved for selected cards.
 
 **Alternatives considered:**
-- Reuse `--error`: rejected per above (semantic collision with destructive/failure meaning).
-- Reuse `--md3-primary`/`--primary-container`: rejected — already means "selected card," would be visually redundant/confusing when the card is selected AND the text is highlighted with the same hue.
-- Two separate tokens for hover vs. selected: unnecessary — a single hue with two opacity levels (matching the existing `bg-primary-container/50` opacity-modifier pattern already used in this file) is simpler and still visually distinguishable.
+- Reuse solid `--error` as the fill: rejected (destructive/failure collision).
+- Reuse `--md3-primary`/`--primary-container`: rejected — selected-card meaning.
+- Keep amber warning tone: superseded by Bug 1b + DESIGN.md `error-container` alignment.
+- `secondary-container` gray wash: too low-contrast for a "flagged excerpt" marker.
 
 ### Decision 4: No persistence of `sourceExcerpt`
 
@@ -145,15 +146,49 @@ The real `<textarea>` was never affected (single opaque text node, no
 children to lay out), which is why only the backdrop visibly broke while the
 underlying editable text always wrapped correctly.
 
-**Fix:** `frontend/src/components/ui/highlighted-textarea.tsx` — add `block`
-to the backdrop `<div>`'s own (layer-specific) class list, which comes after
-`sharedClassName` in the `cn()` call and therefore wins the `flex`/`block`
-display-utility conflict via tailwind-merge's documented last-wins
-resolution (the same mechanism the component's own doc comment already
-describes for color/interactivity overrides) — no change to
-`sharedClassName` itself or to the real `<textarea>`'s classes, keeping the
-diff minimal and not risking the two layers drifting out of visual alignment
-again.
+**Fix (attempt 1, incomplete):** `frontend/src/components/ui/highlighted-textarea.tsx`
+— add `block` to the backdrop `<div>`'s own class list so tailwind-merge
+last-wins over `flex`. This is the correct *diagnosis* of the flex-item
+stretch mechanism, but it left `flex` in `sharedClassName` as a latent
+footgun and relied solely on merge order. Post-merge screenshots showed the
+same tall-column / character-stack symptoms still reproducible in review,
+so a structural fix followed (Bug 1b).
+
+### Bug 1b: highlight still a tall column after the `block` override (2026-08-13)
+
+**Symptom (new screenshots):** (1) long Japanese excerpts still paint as
+narrow vertical stacks of single characters with orange wash; (2) short
+text `"かきくけこ"` paints a tall orange strip the width of the glyphs that
+stretches from the top of the textarea to the bottom edge — not an inline
+marker behind those characters only.
+
+**Root cause (verified with a minimal HTML repro + computed styles):**
+when the backdrop is a flex container, each segment `<span>`/`<mark>`
+becomes a flex item with default `align-items: stretch`. Computed style on
+the highlight node: `display: block` (flex items are blockified),
+`height ≈ backdrop content box` (full stretch), `width ≈ content width`.
+That is exactly screenshot (2). Longer segments wrap *inside* that
+stretched, shrink-wrapped column (CJK can break per character), producing
+screenshot (1)'s vertical character stacks. The prior `block` override via
+twMerge is the right *class* of fix but is fragile: `flex` must not appear
+on the backdrop at all (do not depend on a later utility to cancel it),
+highlight nodes must stay `display: inline` with
+`box-decoration-break: clone`, and the classic highlight-within-textarea
+pattern (Coder's Block / CSS-Tricks) requires matched metrics including
+`scrollbar-gutter` and a trailing-newline mirror. Separately, composing
+`text-transparent` / `text-on-surface` through `cn()` with caller
+`text-body-base` lets default tailwind-merge drop the font-size token
+(size and color share the `text-*` group) — colors are therefore applied
+via inline `style` so metrics stay aligned.
+
+**Fix:** rewrite `HighlightedTextarea` metrics sharing to **omit `flex`
+entirely**; force backdrop `display: block`; render highlights as inline
+`<span>`s (not `<mark>`) with `box-decoration-break: clone`; reserve
+`scrollbar-gutter: stable` on both layers; mirror a trailing `\n`; move
+layer text colors to inline styles. Retune `--suggestion-highlight` from
+saturated amber (`38 92% 50%`) to DESIGN.md / MD3 `error-container`
+pastel `#ffdad6` (`6 100% 92%`) so the marker reads as a soft text
+highlighter; selected state adds an inset underline using `--error`.
 
 ### Bug 2: user-added custom suggestion card disappears
 

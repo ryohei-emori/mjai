@@ -56,9 +56,16 @@ function computeSegments(value: string, highlights: TextHighlight[]): Segment[] 
   return segments
 }
 
+/**
+ * Highlight paint only — must stay `display: inline` (never flex/block items)
+ * so backgrounds wrap with glyphs. `box-decoration-break: clone` keeps the
+ * marker wash continuous across soft line wraps (CSS-Tricks / highlighter pattern).
+ */
 const HIGHLIGHT_CLASSNAMES: Record<TextHighlightVariant, string> = {
-  hover: "bg-suggestion-highlight/25 rounded-sm",
-  selected: "bg-suggestion-highlight/45 border-b-2 border-suggestion-highlight rounded-sm",
+  hover:
+    "inline rounded-sm bg-suggestion-highlight/70 [box-decoration-break:clone] [-webkit-box-decoration-break:clone]",
+  selected:
+    "inline rounded-sm bg-suggestion-highlight shadow-[inset_0_-2px_0_0_hsl(var(--error))] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]",
 }
 
 export type HighlightedTextareaProps = React.ComponentProps<"textarea"> & {
@@ -73,18 +80,20 @@ export type HighlightedTextareaProps = React.ComponentProps<"textarea"> & {
  * IME composition, caret placement, native text selection, and `onChange`
  * all pass through to the real `<textarea>` unchanged.
  *
- * Technique ("highlight-within-textarea"): the real textarea is rendered on
- * top with transparent text/background (so it still receives all input and
- * shows the native caret + selection), while a backdrop `<div>` behind it
- * renders the actual visible text plus `<mark>`-wrapped highlighted spans.
- * Both layers share the same className so glyph positions line up exactly.
- * Scroll position is mirrored from the textarea to the backdrop on scroll.
+ * Technique ("highlight-within-textarea", Coder's Block / CSS-Tricks):
+ * the real textarea sits on top with transparent text/background (caret still
+ * visible), while a backdrop layer behind it renders the visible text plus
+ * inline highlight spans. Metrics (font, line-height, padding, border width,
+ * white-space, scrollbar-gutter) are shared so wraps align; scrollTop/Left
+ * are mirrored from the textarea.
  *
- * See `openspec/changes/highlight-suggestion-text-spans/design.md`
- * (Decision 5) for the full rationale.
+ * Important: do NOT put `display: flex` on the backdrop. Flex makes each
+ * segment a stretched flex item (full backdrop height, content width) — the
+ * "tall orange column" / character-stack bug. See
+ * `openspec/changes/highlight-suggestion-text-spans/design.md`.
  */
 export const HighlightedTextarea = React.forwardRef<HTMLTextAreaElement, HighlightedTextareaProps>(
-  ({ className, highlights = [], value, onScroll, ...props }, forwardedRef) => {
+  ({ className, highlights = [], value, onScroll, style, ...props }, forwardedRef) => {
     const internalRef = React.useRef<HTMLTextAreaElement | null>(null)
     const backdropRef = React.useRef<HTMLDivElement | null>(null)
 
@@ -108,13 +117,11 @@ export const HighlightedTextarea = React.forwardRef<HTMLTextAreaElement, Highlig
       [onScroll]
     )
 
-    // Shared box-model/typography classes so the backdrop and textarea's
-    // glyphs line up exactly. `className` (caller-supplied sizing/bg/border)
-    // is included here so BOTH layers start from it, then each layer's
-    // layer-specific classes below override what needs to differ (color,
-    // interactivity) via tailwind-merge's last-wins conflict resolution.
-    const sharedClassName = cn(
-      "flex min-h-[60px] w-full rounded-md border border-input px-3 py-2 text-base shadow-sm md:text-sm whitespace-pre-wrap break-words",
+    // Box-model + typography shared by both layers. Intentionally omits
+    // `flex` (vestigial on shadcn Textarea; catastrophic on a backdrop <div>
+    // with inline segment children — see design.md Bug 1 / Bug 1b).
+    const sharedMetricsClassName = cn(
+      "min-h-[60px] w-full rounded-md border border-input px-3 py-2 text-base shadow-sm md:text-sm whitespace-pre-wrap break-words [scrollbar-gutter:stable]",
       className
     )
 
@@ -123,38 +130,44 @@ export const HighlightedTextarea = React.forwardRef<HTMLTextAreaElement, Highlig
         <div
           ref={backdropRef}
           aria-hidden="true"
+          // Inline color avoids twMerge dropping `text-body-base` when a
+          // `text-*` color utility is composed onto the same class string.
+          style={{ color: "hsl(var(--on-surface))" }}
           className={cn(
-            sharedClassName,
-            // `sharedClassName` carries `flex` from the base Textarea classes
-            // (harmless there since a native <textarea>'s text content isn't
-            // laid out via flexbox), but this backdrop is a real <div> whose
-            // children are the per-segment <span>/<mark> nodes below — as a
-            // flex container (row, nowrap by default) those would lay out as
-            // side-by-side shrink-wrapped columns instead of flowing inline
-            // text, breaking line-wrap alignment with the real textarea.
-            // `block` overrides `flex` via tailwind-merge's last-wins
-            // conflict resolution (see the sharedClassName comment above).
-            "no-scrollbar absolute inset-0 z-0 block overflow-auto text-on-surface pointer-events-none"
+            sharedMetricsClassName,
+            // Block formatting context for inline segments; never flex/grid.
+            "absolute inset-0 z-0 block overflow-auto pointer-events-none no-scrollbar"
           )}
         >
           {segments.map((segment, index) =>
             segment.variant ? (
-              <mark key={index} className={HIGHLIGHT_CLASSNAMES[segment.variant]}>
+              <span key={index} className={HIGHLIGHT_CLASSNAMES[segment.variant]}>
                 {segment.text}
-              </mark>
+              </span>
             ) : (
               <span key={index}>{segment.text}</span>
             )
           )}
+          {/* Textareas keep a trailing blank line for a final \\n; a block
+              backdrop collapses it unless we mirror the extra newline. */}
+          {stringValue.endsWith("\n") ? "\n" : null}
         </div>
         <textarea
           ref={internalRef}
           value={value}
           onScroll={handleScroll}
           className={cn(
-            sharedClassName,
-            "relative z-10 border-transparent bg-transparent text-transparent shadow-none placeholder:text-muted-foreground caret-[hsl(var(--on-surface))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            sharedMetricsClassName,
+            "relative z-10 border-transparent bg-transparent shadow-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           )}
+          // Inline color (not `text-transparent`) so tailwind-merge cannot drop
+          // caller font-size tokens like `text-body-base` — twMerge treats
+          // `text-*` size and `text-*` color as one conflicting group by default.
+          style={{
+            ...style,
+            color: "transparent",
+            caretColor: "hsl(var(--on-surface))",
+          }}
           {...props}
         />
       </div>
