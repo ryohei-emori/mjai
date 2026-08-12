@@ -29,3 +29,20 @@
 
 - [x] 5.1 Mark all tasks above complete as implemented
 - [x] 5.2 Run `openspec validate --strict` (or repo-equivalent) on this change and fix any reported issues
+
+## 6. Revision (2026-08): measure review-work time only (design.md Decision 7)
+
+- [x] 6.1 Add `sessionId: string` to `QueuedJob`, set from `currentSession.id` in `addJobAndProcess`; backfill `sessionId: job.sessionId || sessionId` in `loadJobQueueFromStorage` for pre-existing persisted queues
+- [x] 6.2 Add `isTabVisible` state + `visibilitychange` listener effect (Page Visibility API)
+- [x] 6.3 Add `reviewAccumulatedMsRef` (`Map<jobId, ms>`) and `reviewSegmentStartRef` (`Map<jobId, ms>`) refs
+- [x] 6.4 Derive `activeReviewJobId` (`confirmingJobId` gated on matching `job.sessionId === currentSessionId` and `isTabVisible`)
+- [x] 6.5 Add segment open/close `useEffect` keyed on `[activeReviewJobId]` that folds elapsed ms into `reviewAccumulatedMsRef` on close and force-refreshes `nowTick` once so the display settles on the exact frozen total
+- [x] 6.6 Retarget the 1s ticking `useEffect` from `jobQueue` activity to `activeReviewJobId`
+- [x] 6.7 Add `getReviewElapsedSeconds(jobId)` helper (closed + live open segment, in seconds)
+- [x] 6.8 Replace `saveCorrections()`'s `(Date.now() - queuedAt) / 1000` with `getReviewElapsedSeconds(timedJob.id)`, read before `setConfirmingJobId(null)`; delete both ref map entries for that job afterward
+- [x] 6.9 Redefine `latestJobDurationSeconds`/`isLatestJobLive` derived values around `activeReviewJobId`/`getReviewElapsedSeconds` instead of `jobQueue` processing state; add `isReviewPaused` derived value
+- [x] 6.10 Add a "paused" visual state to the LATEST badge (`pause_circle` icon, neutral background — distinct from both live-ticking and saved/complete) for when a job is under review but not currently accumulating time
+- [x] 6.11 Verify `handleSessionSwitch`'s existing `jobTimingHistory` reset (Decision 2) is left as-is, and confirm the review-segment ref maps are deliberately *not* cleared there (see design.md Decision 7 "alternative considered" for why clearing them would lose in-progress segment data)
+- [x] 6.12 Update `design.md` with Decision 7 and refreshed Risks section
+- [x] 6.13 Run `npm run lint` and `npm run build` in `frontend/`, confirm no new errors
+- [x] 6.14 Checked `frontend/src/lib/webllm/__tests__/` (WebLLM-internal unit tests only) and `frontend/src/app/__tests__/` (`apiError.test.tsx`, `authGuard.test.tsx` — both render `TextCorrectionApp` end-to-end but only cover WebGPU-unavailable/auth-guard rendering, not the job-queue/HITL confirm/save flow or timing); no existing test targets the job-timing logic specifically, so consistent with task 4.3's original note, no new test file is added for this revision either

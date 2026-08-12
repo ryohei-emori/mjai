@@ -68,6 +68,10 @@ type SavedData = {
 
 type QueuedJob = {
   id: string
+  // ジョブがどのセッションで生成されたか。レビュー中に別セッションへ切り替え
+  // られた場合に「実際にこのジョブをレビューしているか」を判定するために
+  // 使う（add-suggestion-generation-timer改訂、design.md Decision 7参照）。
+  sessionId: string
   targetText: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
   suggestions?: CorrectionSuggestion[]
@@ -78,12 +82,18 @@ type QueuedJob = {
   source?: 'api' | 'webllm'
 }
 
-// 「Generate AI Suggestions」クリックから「確定してコピー・保存」までの
-// 所要時間を記録する（add-suggestion-generation-timer変更）。ジョブキュー
-// 経由の確認フロー（confirmingJobId）のみが対象 — 実行履歴からの確認
+// ユーザーが実際にそのジョブのHITLレビューに向き合っていた時間（＝
+// レビュー作業時間）のみを記録する（add-suggestion-generation-timer改訂、
+// design.md Decision 7参照）。当初実装（2026-08時点）は「Generate AI
+// Suggestions」クリックから「確定してコピー・保存」までの生の経過時間
+// （AI処理時間＋キュー待機時間を含む）を計測していたが、最大30件まで
+// 並列処理されるキューの性質上、ジョブはユーザーが他の作業をしている間も
+// バックグラウンドで待機/処理され続けるため、その値の大半は「ユーザーの
+// 作業時間」を表していなかった。現在はジョブキュー経由の確認フロー
+// （confirmingJobId）のみが対象な点は変わらず — 実行履歴からの確認
 // （confirmingHistoryIndex）には対応する「生成クリック」の開始点が存在
-// しないため対象外（design.md Decision 1参照）。セッション寿命内のみの
-// ライブUI用の値であり、意図的にlocalStorageへは永続化しない
+// しないため引き続き対象外（design.md Decision 1参照）。セッション寿命内
+// のみのライブUI用の値であり、意図的にlocalStorageへは永続化しない
 // （design.md Decision 2参照）。
 type JobTimingRecord = {
   jobId: string
@@ -210,6 +220,10 @@ function loadJobQueueFromStorage(sessionId: string): QueuedJob[] {
     if (!Array.isArray(parsed)) return []
     return parsed.map((job) => ({
       ...job,
+      // sessionIdフィールド追加（add-suggestion-generation-timer改訂）前に
+      // 永続化された既存データにはこのフィールドが無いため、読み込み元の
+      // sessionIdをフォールバックとして補う
+      sessionId: job.sessionId || sessionId,
       // 再読み込み時点で「処理中」だったジョブはネットワーク要求を再開できない
       // ため、キュー消化useEffectが再取得できるようqueuedへ戻す（ジョブを
       // サイレントに失うことはしない）
@@ -370,11 +384,23 @@ export default function TextCorrectionApp() {
   // Hover-preview trigger for suggestion-card text-span highlighting
   // (see highlight-suggestion-text-spans design.md Decision 2).
   const [hoveredSuggestionId, setHoveredSuggestionId] = useState<string | null>(null)
-  // 「Generate→確定保存」の所要時間履歴（最新表示・平均算出用、
-  // add-suggestion-generation-timer変更、design.md Decision 2）。
+  // ジョブごとの「レビュー作業時間」履歴（最新表示・平均算出用、
+  // add-suggestion-generation-timer改訂、design.md Decision 7）。
   const [jobTimingHistory, setJobTimingHistory] = useState<JobTimingRecord[]>([])
-  // 進行中ジョブのライブ表示を1秒ごとに更新するための現在時刻tick
+  // レビューセグメントのライブ表示を1秒ごとに更新するための現在時刻tick
   const [nowTick, setNowTick] = useState<number>(() => Date.now())
+  // タブが可視状態かどうか（Page Visibility API）。非表示の間はレビュー
+  // セグメントの計測を一時停止する（add-suggestion-generation-timer改訂、
+  // design.md Decision 7）。
+  const [isTabVisible, setIsTabVisible] = useState<boolean>(() =>
+    typeof document === 'undefined' ? true : document.visibilityState === 'visible',
+  )
+  // ジョブごとに「クローズ済みレビューセグメント」の累計ミリ秒を保持する。
+  // ref管理のため更新は再レンダーを起こさない（ライブ表示はnowTickが駆動する）。
+  const reviewAccumulatedMsRef = useRef<Map<string, number>>(new Map())
+  // 現在オープン中のレビューセグメントの開始時刻（ミリ秒epoch）をジョブIDごとに
+  // 保持する。オープン中のジョブは高々1件を想定するが、Mapで安全に扱う。
+  const reviewSegmentStartRef = useRef<Map<string, number>>(new Map())
   const bellShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   // このブラウザタブのセッションでDraft/ジョブキューを既に復元済みのセッションID
@@ -481,19 +507,16 @@ export default function TextCorrectionApp() {
     return () => clearInterval(intervalId)
   }, [webllmStatus.state])
 
-  // 生成タイマーのライブ更新: キュー内に待機中/処理中のジョブが1件でもあれば
-  // 1秒ごとにnowTickを更新し、最新ジョブの経過時間表示を毎秒進める
-  // （add-suggestion-generation-timer変更、design.md Decision 3）。
+  // タブの可視状態を監視する（Page Visibility API）。非表示化した瞬間に
+  // 進行中のレビューセグメントを一時停止できるよう、isTabVisibleへ反映する
+  // （add-suggestion-generation-timer改訂、design.md Decision 7）。
+  // ライブ更新用のticking effectとレビューセグメントのopen/close effectは
+  // confirmingJobId宣言（後述）に依存するため、そちらの近くにまとめて配置する。
   useEffect(() => {
-    const hasActiveJob = jobQueue.some(j => j.status === 'queued' || j.status === 'processing')
-    if (!hasActiveJob) return
-
-    const intervalId = setInterval(() => {
-      setNowTick(Date.now())
-    }, 1000)
-
-    return () => clearInterval(intervalId)
-  }, [jobQueue])
+    const handleVisibilityChange = () => setIsTabVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
 
   // 単一ジョブを非同期処理する関数（並列実行可能）
   const processJobAsync = useCallback(async (jobId: string, targetText: string, originalText: string) => {
@@ -635,6 +658,7 @@ export default function TextCorrectionApp() {
 
     const newJob: QueuedJob = {
       id: `job-${Date.now()}`,
+      sessionId: currentSession.id,
       targetText,
       status: 'queued',
       queuedAt: new Date(),
@@ -777,7 +801,15 @@ export default function TextCorrectionApp() {
     }
     
     // 生成タイマーの所要時間履歴はセッション寿命内のみのライブ指標のため、
-    // 別セッションへ切り替える際はリセットする（design.md Decision 2）
+    // 別セッションへ切り替える際はリセットする（design.md Decision 2）。
+    // 注意: レビューセグメントの累計（reviewAccumulatedMsRef）はここで
+    // 明示的にクリアしない — activeReviewJobIdの判定はQueuedJob.sessionIdと
+    // currentSessionIdの一致で行われる（セグメントopen/close effect側で
+    // 自動的にクローズ処理される）ため、ここで先にrefを消してしまうと
+    // そのeffectのcleanupが正しい経過時間を加算できず、切り替え直前までの
+    // レビュー時間を丸ごと失ってしまう。累計を保持しておけば、後で同じ
+    // セッション・同じジョブのレビューへ戻った際に加算を再開でき、複数回の
+    // 中断・再開をまたいだ累計として正しく扱える（design.md Decision 7）
     if (sessionId !== currentSessionId) {
       setJobTimingHistory([])
     }
@@ -872,6 +904,71 @@ export default function TextCorrectionApp() {
     // reference, to avoid re-scrolling on every selection/edit (see comment above)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmingJobId, currentSession?.suggestions?.length])
+
+  // 「実際にレビュー作業をしている」ジョブID（add-suggestion-generation-timer
+  // 改訂、design.md Decision 7）。以下の全てを満たす場合のみ非nullになる:
+  //   1. confirmingJobIdがセットされている（HITLレビュー画面を開いている）
+  //   2. そのジョブが生成されたセッション（QueuedJob.sessionId）と、現在
+  //      表示中のセッション（currentSessionId）が一致している — サイドバーで
+  //      別セッションへ切り替えた場合、そのセッションのSuggestionsパネルは
+  //      別データを表示する（suggestionsはセッション単位のstateのため）ので
+  //      「レビュー中断」として扱う。jobにsessionIdを持たせることで、後で
+  //      同じセッションへ戻ってきた際は自動的に再開できる
+  //   3. タブが可視状態（isTabVisible） — バックグラウンドタブでは計測しない
+  const reviewedJob = confirmingJobId ? jobQueue.find(j => j.id === confirmingJobId) : undefined
+  const activeReviewJobId =
+    confirmingJobId && reviewedJob && reviewedJob.sessionId === currentSessionId && isTabVisible
+      ? confirmingJobId
+      : null
+
+  // レビューセグメントのopen/close管理。activeReviewJobIdが変化するたび
+  // （レビュー開始・タブ非表示化・別ジョブ/別セッションへの移動・保存など）
+  // に前回のセグメントを閉じてreviewAccumulatedMsRefへ加算し、新しい
+  // activeReviewJobIdがあれば新規セグメントを開始する。ref更新のみでは
+  // 再レンダーが起きないため、セグメントを閉じた瞬間だけnowTickを1回進めて
+  // 確定値を表示に反映させる（design.md Decision 7）。
+  useEffect(() => {
+    if (!activeReviewJobId) return
+    const jobId = activeReviewJobId
+    // Map自体（reviewSegmentStartRef.current/reviewAccumulatedMsRef.current）は
+    // useRef(new Map())で一度だけ生成され、以後差し替えられることはないため
+    // ローカル変数へ捕捉してもクリーンアップ実行時点で古い参照になることはない
+    // （react-hooks/exhaustive-depsの警告を素直に解消するための捕捉）
+    const startMap = reviewSegmentStartRef.current
+    const accumulatedMap = reviewAccumulatedMsRef.current
+    startMap.set(jobId, Date.now())
+    return () => {
+      const startedAt = startMap.get(jobId)
+      if (startedAt !== undefined) {
+        accumulatedMap.set(jobId, (accumulatedMap.get(jobId) || 0) + (Date.now() - startedAt))
+        startMap.delete(jobId)
+        setNowTick(Date.now())
+      }
+    }
+  }, [activeReviewJobId])
+
+  // レビューセグメントがオープン中のみ、1秒ごとにnowTickを更新してライブの
+  // LATEST表示を進める（旧実装はキュー内のqueued/processing状態を対象に
+  // していたが、レビュー作業時間のみを計測する方針に変更したため対象を
+  // activeReviewJobIdへ変更、design.md Decision 7）。
+  useEffect(() => {
+    if (!activeReviewJobId) return
+    const intervalId = setInterval(() => setNowTick(Date.now()), 1000)
+    return () => clearInterval(intervalId)
+  }, [activeReviewJobId])
+
+  // ジョブの累計レビュー時間（秒）＝クローズ済みセグメントの合計＋（あれば）
+  // 現在オープン中のセグメントのライブ経過時間。保存時の最終値算出とLATEST
+  // 表示の両方から使う（design.md Decision 7）。
+  const getReviewElapsedSeconds = useCallback(
+    (jobId: string) => {
+      const accumulatedMs = reviewAccumulatedMsRef.current.get(jobId) || 0
+      const openStartedAt = reviewSegmentStartRef.current.get(jobId)
+      const liveMs = openStartedAt !== undefined ? nowTick - openStartedAt : 0
+      return (accumulatedMs + liveMs) / 1000
+    },
+    [nowTick],
+  )
 
   // Draft状態（未確定のAI提案・原文/添削対象テキスト等）をlocalStorageへ永続化する。
   // キー入力/選択のたびに書き込まないよう500msデバウンスする
@@ -1298,16 +1395,23 @@ export default function TextCorrectionApp() {
           overallComment: "",
         })
 
-        // 「Generate AI Suggestions」クリックから今回の保存までの所要時間を記録する
-        // （add-suggestion-generation-timer変更）。ジョブがキューから除去される前に
-        // 参照する必要がある
+        // このジョブの累計レビュー作業時間（キュー待機/AI処理時間を含まない）を
+        // 記録する（add-suggestion-generation-timer改訂、design.md Decision 7）。
+        // getReviewElapsedSecondsはクローズ済みセグメント＋現在オープン中の
+        // セグメント（保存操作自体はレビュー画面を開いたまま行われるため、通常は
+        // 常にオープン中）を合算するので、setConfirmingJobId(null)より前に
+        // 呼び出す必要がある
         const timedJob = jobQueue.find(j => j.id === confirmingJobId)
         if (timedJob) {
-          const elapsedSeconds = (Date.now() - timedJob.queuedAt.getTime()) / 1000
+          const elapsedSeconds = getReviewElapsedSeconds(timedJob.id)
           setJobTimingHistory(prev => [
             ...prev,
             { jobId: timedJob.id, elapsedSeconds, completedAt: new Date() },
           ].slice(-MAX_JOB_TIMING_HISTORY))
+          // 記録済みジョブのセグメント状態は不要になるため破棄する（refが
+          // 際限なく肥大化するのを防ぐ）
+          reviewAccumulatedMsRef.current.delete(timedJob.id)
+          reviewSegmentStartRef.current.delete(timedJob.id)
         }
         
         // 確認済みジョブをキューから削除
@@ -1478,24 +1582,31 @@ export default function TextCorrectionApp() {
   // Count active jobs for the badge
   const activeJobCount = jobQueue.filter(j => j.status === 'processing' || j.status === 'queued').length
 
-  // 生成タイマー表示用の派生値（add-suggestion-generation-timer変更、design.md参照）。
-  // 「最新」は最後に開始（queuedAt最大）された待機中/処理中ジョブがあればそのライブ
-  // 経過時間、無ければ直近に確定保存されたジョブの確定済み経過時間を表示する。
-  // 「平均」はこのブラウザセッション中に確定保存された全ジョブの単純平均（セッション
-  // 切り替えでリセットされる、design.md Decision 2）。
+  // 生成タイマー表示用の派生値（add-suggestion-generation-timer改訂、design.md
+  // Decision 7参照）。「最新」はキュー待機/AI処理時間を含まない、レビュー
+  // 作業時間のみを表す点が当初実装からの変更点:
+  // - confirmingJobIdがセットされている間（＝そのジョブのHITLレビュー画面を
+  //   開いている間）は、そのジョブの累計レビュー時間（getReviewElapsedSeconds）
+  //   をライブ表示する。activeReviewJobIdと一致する間だけ実際にticking
+  //   （タブ可視・かつ現在のセッションと一致）し、タブが非表示または別
+  //   セッションへ切り替え中は値はそのまま（一時停止）で表示され続ける。
+  // - confirmingJobIdがnull（レビュー画面を閉じている/まだ何も確認していない）
+  //   の場合は、直近に確定保存されたジョブの確定済みレビュー時間を表示する。
+  // 「平均」はこのブラウザセッション中に確定保存された全ジョブ（＝レビュー
+  // 作業時間）の単純平均（セッション切り替えでリセットされる、design.md
+  // Decision 2、この平均の算出方法自体は変更なし）。
   const formatJobDuration = (seconds: number) => `${seconds.toFixed(1)}秒`
 
-  const latestActiveJob = jobQueue
-    .filter(j => j.status === 'queued' || j.status === 'processing')
-    .reduce<QueuedJob | null>(
-      (latest, job) => (!latest || job.queuedAt.getTime() > latest.queuedAt.getTime() ? job : latest),
-      null,
-    )
   const latestCompletedTiming = jobTimingHistory.length > 0 ? jobTimingHistory[jobTimingHistory.length - 1] : null
-  const latestJobDurationSeconds = latestActiveJob
-    ? (nowTick - latestActiveJob.queuedAt.getTime()) / 1000
+  const latestJobDurationSeconds = confirmingJobId
+    ? getReviewElapsedSeconds(confirmingJobId)
     : latestCompletedTiming?.elapsedSeconds ?? null
-  const isLatestJobLive = !!latestActiveJob
+  const isLatestJobLive = activeReviewJobId !== null && activeReviewJobId === confirmingJobId
+  // レビュー中だが計測が一時停止中（タブ非表示 or 別セッションへ切り替え中）
+  // であることを示す。この状態のジョブはまだ確定保存されていないため、
+  // 「保存済み」を意味するbg-session-completeでは表示しない（design.md
+  // Decision 7）。
+  const isReviewPaused = confirmingJobId !== null && !isLatestJobLive
   const averageJobDurationSeconds =
     jobTimingHistory.length > 0
       ? jobTimingHistory.reduce((sum, r) => sum + r.elapsedSeconds, 0) / jobTimingHistory.length
@@ -1839,13 +1950,16 @@ export default function TextCorrectionApp() {
                       <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
                     <div className="flex items-center gap-3">
-                      {/* Generation-to-save timer + running average
-                          (add-suggestion-generation-timer変更、design.md Decision 4) */}
+                      {/* レビュー作業時間タイマー＋平均（add-suggestion-generation-timer
+                          改訂、design.md Decision 7）。LATESTはレビュー中のジョブの
+                          累計レビュー時間（キュー待機/AI処理時間を含まない）。
+                          タブ非表示/別セッション切り替え中は一時停止し、一時停止アイコン
+                          で示す（保存済みを意味するbg-session-completeとは区別する）。 */}
                       <div className="flex items-center gap-1.5">
                         <span className="text-label-caps text-on-surface-variant">LATEST</span>
                         <Badge
                           className={`text-xs font-medium ${
-                            isLatestJobLive
+                            isLatestJobLive || isReviewPaused
                               ? 'bg-surface-container text-on-surface-variant'
                               : latestJobDurationSeconds !== null
                                 ? 'bg-session-complete text-white'
@@ -1854,6 +1968,9 @@ export default function TextCorrectionApp() {
                         >
                           {isLatestJobLive && (
                             <span className="material-symbols-outlined md-18 animate-spin mr-1 align-middle">progress_activity</span>
+                          )}
+                          {isReviewPaused && (
+                            <span className="material-symbols-outlined md-18 mr-1 align-middle">pause_circle</span>
                           )}
                           {latestJobDurationSeconds !== null ? formatJobDuration(latestJobDurationSeconds) : '—'}
                         </Badge>
