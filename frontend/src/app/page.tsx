@@ -654,6 +654,14 @@ export default function TextCorrectionApp() {
   }, [currentSessionId])
 
   // ボタンクリックハンドラー - 常にキューに追加して処理開始
+  //
+  // 注意（persist-source-target-text-input変更で調査・明文化）: 下記の
+  // targetText: "" クリアは「1つの固定SOURCEに対して複数のTARGETを連続投入する」
+  // ワークフローのための意図的な仕様であり、バグではない。addJobAndProcess()が
+  // 同期的にジョブをキュー（jobQueue、独立してlocalStorageへ永続化される）へ
+  // 積んだ後にのみクリアが実行されるため、投入されたテキストがキューに載らずに
+  // 消失するタイミングウィンドウは存在しない。SOURCE（originalText）はこの
+  // ハンドラーが一切変更しない。
   const handleGenerateClick = useCallback(() => {
     if (!currentSession?.targetText.trim()) return
     
@@ -908,26 +916,47 @@ export default function TextCorrectionApp() {
 
 
   // セッション一覧をAPIから取得
+  // 注意: このuseEffectは認証状態(session)の参照が変わるたびに再実行される
+  // （Supabaseのトークン自動更新[TOKEN_REFRESHED]や401後の再認証など、ユーザー操作を
+  // 伴わないイベントでも発火する）。そのため、既存のsessions状態やlocalStorageの
+  // Draftを一切見ずに毎回originalText/targetText等を""へ初期化すると、ユーザーが
+  // 入力中/未保存のテキストを無関係なタイミングで消失させてしまう
+  // （persist-source-target-text-input変更で修正）。
+  // これを避けるため、変換後のセッションへ (1) 直前のsessions状態 (2) localStorageの
+  // Draft (3) 空文字のデフォルト、の優先順でテキスト等をマージする。
   const loadSessions = useCallback(async () => {
     try {
       console.log("Loading sessions...")
       const sessionsData: SessionAPIResponse[] = await sessionAPI.getSessions()
       console.log("Sessions data received:", sessionsData)
 
-      // APIから取得したデータをフロントエンドのSession型に変換
-      const convertedSessions: Session[] = sessionsData.map((s) => ({
-        id: s.sessionId,
-        name: s.name,
-        createdAt: new Date(s.createdAt),
-        correctionCount: s.correctionCount, // 保存済み件数を追加
-        originalText: "",
-        targetText: "",
-        suggestions: [],
-        overallComment: "",
-        savedData: [],
-      }))
+      setSessions((prev) => {
+        const prevById = new Map(prev.map((s) => [s.id, s]))
 
-      setSessions(convertedSessions)
+        // APIから取得したデータをフロントエンドのSession型に変換
+        return sessionsData.map((s) => {
+          const existing = prevById.get(s.sessionId)
+          const draft = existing ? null : loadDraftFromStorage(s.sessionId)
+
+          return {
+            id: s.sessionId,
+            name: s.name,
+            createdAt: new Date(s.createdAt),
+            correctionCount: s.correctionCount, // 保存済み件数を追加
+            originalText: existing?.originalText || draft?.originalText || "",
+            targetText: existing?.targetText || draft?.targetText || "",
+            suggestions: existing?.suggestions.length
+              ? existing.suggestions
+              : draft?.suggestions.length
+                ? draft.suggestions
+                : [],
+            overallComment: existing?.overallComment || draft?.overallComment || "",
+            // savedData（サーバー由来の実行履歴）はloadSessionDetailsが別途取得するため、
+            // 既存の値をそのまま維持する（再取得のたびに空配列へ戻すと再フェッチが必要になる）
+            savedData: existing?.savedData || [],
+          }
+        })
+      })
     } catch (error) {
       console.error("Error loading sessions:", error)
     }
@@ -1065,12 +1094,12 @@ export default function TextCorrectionApp() {
     })
   }
 
-  const copyToClipboard = async (text: string) => {
+  const copyToClipboard = async (text: string, description: string = "クリップボードにコピーしました") => {
     try {
       await navigator.clipboard.writeText(text)
       toast({
         title: "コピー完了",
-        description: "修正内容がクリップボードにコピーされました",
+        description,
       })
     } catch {
       toast({
@@ -1160,7 +1189,7 @@ export default function TextCorrectionApp() {
         .join("\n\n")
 
       const combinedComment = `${numberedCorrections}\n\n${currentSession.overallComment}`
-      await copyToClipboard(combinedComment)
+      await copyToClipboard(combinedComment, "修正内容がクリップボードにコピーされました")
 
       // フロントエンドの状態を更新
       if (confirmingJobId !== null) {
@@ -1680,7 +1709,7 @@ export default function TextCorrectionApp() {
                             SOURCE TEXT (原文)
                           </CardTitle>
                           <button
-                            onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText)}
+                            onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText, "原文がクリップボードにコピーされました")}
                             className="p-1.5 rounded hover:bg-surface-container transition-colors"
                             title="コピー"
                           >
@@ -1705,10 +1734,13 @@ export default function TextCorrectionApp() {
                           <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
                             TARGET TEXT (翻訳/編集)
                           </CardTitle>
-                          <div className="flex items-center gap-1">
-                            <span className="material-symbols-outlined md-18 text-on-surface-variant">format_bold</span>
-                            <span className="material-symbols-outlined md-18 text-on-surface-variant">format_italic</span>
-                          </div>
+                          <button
+                            onClick={() => currentSession?.targetText && copyToClipboard(currentSession.targetText, "添削対象テキストがクリップボードにコピーされました")}
+                            className="p-1.5 rounded hover:bg-surface-container transition-colors"
+                            title="コピー"
+                          >
+                            <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
+                          </button>
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4">
@@ -1992,7 +2024,7 @@ export default function TextCorrectionApp() {
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation()
-                                      copyToClipboard(`${suggestion.original}\n${suggestion.reason}`)
+                                      copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "提案内容がクリップボードにコピーされました")
                                     }}
                                     className="p-1 rounded hover:bg-surface-container-high"
                                     title="コピー"
