@@ -188,6 +188,10 @@ export type SuggestionsResponse = {
     id: string;
     original: string;
     reason: string;
+    // Optional excerpt from SOURCE TEXT corresponding to `original` (a
+    // flagged TARGET TEXT excerpt). Empty/absent when the model found no
+    // clear correspondence — see highlight-suggestion-text-spans change.
+    sourceExcerpt?: string;
   }>;
   overallComment: string;
 };

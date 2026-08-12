@@ -92,6 +92,7 @@ module.exports = {
   			'on-primary': 'hsl(var(--on-primary))',
   			'primary-container': 'hsl(var(--primary-container))',
   			'on-primary-container': 'hsl(var(--on-primary-container))',
+  			'suggestion-highlight': 'hsl(var(--suggestion-highlight))',
   			// Session status colors
   			'session-active': '#2563EB',
   			'session-complete': '#16A34A',

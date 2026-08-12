@@ -60,6 +60,7 @@ All colors are defined as HSL values in CSS custom properties. Tailwind utilitie
 | `--on-error` | `0 0% 100%` | `text-on-error` | Text on error |
 | `--tertiary` | `280 50% 45%` | `bg-tertiary` | Tertiary accent |
 | `--on-tertiary` | `0 0% 100%` | `text-on-tertiary` | Text on tertiary |
+| `--suggestion-highlight` | `38 92% 50%` | `bg-suggestion-highlight` / `border-suggestion-highlight` | In-textarea highlight for a flagged AI-suggestion excerpt (SOURCE/TARGET TEXT). Amber/warning-toned, deliberately distinct from `--error` (destructive/failure) and `--md3-primary` (selected-card background) to avoid semantic collision. Used at two opacities via Tailwind's opacity modifier: `/25` for hover-preview, `/45` (+ `border-b-2 border-suggestion-highlight`) for selected-persistent. See `HighlightedTextarea` (`frontend/src/components/ui/highlighted-textarea.tsx`). |
 
 ### Session Status Colors
 
@@ -276,6 +277,7 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 - Label: `text-label-caps` with Option A/B/C...
 - Selected: `bg-primary-container border-md3-primary`
 - Hover: reveals copy/confirm icons
+- **Text-span highlighting** (2026-08): hovering a card previews (and selecting a card persists) a highlight of the card's flagged excerpt inside the actual SOURCE TEXT and TARGET TEXT textareas, using the `--suggestion-highlight` token (see Core Tokens table above). Implemented via `HighlightedTextarea`, a non-interactive overlay layered behind the native `<textarea>` — see `docs/SYSTEM-DESIGN.md` / `openspec/changes/highlight-suggestion-text-spans/design.md` for the technique.
 
 ### Bell Shake Animation
 

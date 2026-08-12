@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useCallback, useRef } from "react"
+import { useEffect, useCallback, useRef, useMemo } from "react"
 import { useState } from "react"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
+import { HighlightedTextarea, type TextHighlight } from "@/components/ui/highlighted-textarea"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -45,6 +46,11 @@ type CorrectionSuggestion = {
   selectedOrder?: number
   userModifiedReason?: string
   isCustom?: boolean
+  // Optional excerpt from SOURCE TEXT (原文) corresponding to `original`
+  // (a flagged TARGET TEXT excerpt). Empty/absent when the model found no
+  // clear correspondence — used to highlight the matching span in the
+  // SOURCE TEXT textarea (see highlight-suggestion-text-spans change).
+  sourceExcerpt?: string
 }
 
 type SavedData = {
@@ -71,6 +77,20 @@ type QueuedJob = {
   completedAt?: Date
   source?: 'api' | 'webllm'
 }
+
+// 「Generate AI Suggestions」クリックから「確定してコピー・保存」までの
+// 所要時間を記録する（add-suggestion-generation-timer変更）。ジョブキュー
+// 経由の確認フロー（confirmingJobId）のみが対象 — 実行履歴からの確認
+// （confirmingHistoryIndex）には対応する「生成クリック」の開始点が存在
+// しないため対象外（design.md Decision 1参照）。セッション寿命内のみの
+// ライブUI用の値であり、意図的にlocalStorageへは永続化しない
+// （design.md Decision 2参照）。
+type JobTimingRecord = {
+  jobId: string
+  elapsedSeconds: number
+  completedAt: Date
+}
+const MAX_JOB_TIMING_HISTORY = 50
 
 const MAX_CONCURRENT_API_JOBS = 30
 const MAX_CONCURRENT_WEBLLM_JOBS = 1
@@ -347,6 +367,14 @@ export default function TextCorrectionApp() {
   const [rightPaneWidth, setRightPaneWidth] = useState(RIGHT_PANE_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [isLgScreen, setIsLgScreen] = useState(false)
+  // Hover-preview trigger for suggestion-card text-span highlighting
+  // (see highlight-suggestion-text-spans design.md Decision 2).
+  const [hoveredSuggestionId, setHoveredSuggestionId] = useState<string | null>(null)
+  // 「Generate→確定保存」の所要時間履歴（最新表示・平均算出用、
+  // add-suggestion-generation-timer変更、design.md Decision 2）。
+  const [jobTimingHistory, setJobTimingHistory] = useState<JobTimingRecord[]>([])
+  // 進行中ジョブのライブ表示を1秒ごとに更新するための現在時刻tick
+  const [nowTick, setNowTick] = useState<number>(() => Date.now())
   const bellShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   // このブラウザタブのセッションでDraft/ジョブキューを既に復元済みのセッションID
@@ -452,6 +480,20 @@ export default function TextCorrectionApp() {
 
     return () => clearInterval(intervalId)
   }, [webllmStatus.state])
+
+  // 生成タイマーのライブ更新: キュー内に待機中/処理中のジョブが1件でもあれば
+  // 1秒ごとにnowTickを更新し、最新ジョブの経過時間表示を毎秒進める
+  // （add-suggestion-generation-timer変更、design.md Decision 3）。
+  useEffect(() => {
+    const hasActiveJob = jobQueue.some(j => j.status === 'queued' || j.status === 'processing')
+    if (!hasActiveJob) return
+
+    const intervalId = setInterval(() => {
+      setNowTick(Date.now())
+    }, 1000)
+
+    return () => clearInterval(intervalId)
+  }, [jobQueue])
 
   // 単一ジョブを非同期処理する関数（並列実行可能）
   const processJobAsync = useCallback(async (jobId: string, targetText: string, originalText: string) => {
@@ -734,6 +776,12 @@ export default function TextCorrectionApp() {
       setJobQueue([])
     }
     
+    // 生成タイマーの所要時間履歴はセッション寿命内のみのライブ指標のため、
+    // 別セッションへ切り替える際はリセットする（design.md Decision 2）
+    if (sessionId !== currentSessionId) {
+      setJobTimingHistory([])
+    }
+    
     setCurrentSessionId(sessionId)
     setSidebarOpen(false)
 
@@ -784,16 +832,33 @@ export default function TextCorrectionApp() {
     }
 
     loadSessionDetails(sessionId)
-  }, [jobQueue, loadSessionDetails, toast])
+  }, [jobQueue, currentSessionId, loadSessionDetails, toast])
 
   // 確認中のジョブID（ジョブキューからの確認用）
   const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null)
 
-  // Reactive scroll to suggestions card when confirming from job queue
-  // This replaces the setTimeout-based scroll in confirmJob for reliability
+  // Tracks which confirmingJobId has already triggered the one-time
+  // scroll-into-view below, so selecting/deselecting/editing a suggestion
+  // (which changes currentSession.suggestions' array reference without
+  // changing confirmingJobId) never re-triggers the scroll.
+  const lastScrolledJobIdRef = useRef<string | null>(null)
+
+  // Reactive scroll to suggestions card when confirming from job queue.
+  // This replaces the setTimeout-based scroll in confirmJob for reliability.
+  // Deliberately depends on suggestions.length (not the suggestions array
+  // reference itself) so this only re-fires when suggestions first load for
+  // a job, not on every in-place suggestion selection/edit mutation
+  // (toggleSuggestionSelection/updateSuggestionReason produce a new array
+  // reference on every call, which previously caused an unwanted re-scroll
+  // to the top of the AI SUGGESTIONS card on every selection change).
   useEffect(() => {
-    // Only scroll when confirming from job queue and suggestions are loaded
-    if (confirmingJobId && currentSession?.suggestions && currentSession.suggestions.length > 0) {
+    if (
+      confirmingJobId &&
+      confirmingJobId !== lastScrolledJobIdRef.current &&
+      currentSession?.suggestions &&
+      currentSession.suggestions.length > 0
+    ) {
+      lastScrolledJobIdRef.current = confirmingJobId
       // Small delay to ensure DOM is updated after React render
       const timeoutId = setTimeout(() => {
         const suggestionsCard = document.querySelector('[data-suggestions-card]')
@@ -803,7 +868,10 @@ export default function TextCorrectionApp() {
       }, 50)
       return () => clearTimeout(timeoutId)
     }
-  }, [confirmingJobId, currentSession?.suggestions])
+    // Intentionally depends on suggestions.length, not the suggestions array
+    // reference, to avoid re-scrolling on every selection/edit (see comment above)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmingJobId, currentSession?.suggestions?.length])
 
   // Draft状態（未確定のAI提案・原文/添削対象テキスト等）をlocalStorageへ永続化する。
   // キー入力/選択のたびに書き込まないよう500msデバウンスする
@@ -1014,6 +1082,22 @@ export default function TextCorrectionApp() {
     }
   }
 
+  // 選択時の修正コメントTextareaを内容の高さに自動追従させるための参照とヘルパー。
+  // 固定min-heightだと長いコメントが選択前の<p>表示より縮んで見えるバグを防ぐ。
+  const suggestionTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+
+  const resizeSuggestionTextarea = (el: HTMLTextAreaElement | null) => {
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${el.scrollHeight}px`
+  }
+
+  // 提案が選択された/編集された/再生成された/履歴から復元された場合に、
+  // 現在マウント中の全Textareaの高さを再計算する
+  useEffect(() => {
+    Object.values(suggestionTextareaRefs.current).forEach(resizeSuggestionTextarea)
+  }, [currentSession?.suggestions])
+
   const toggleSuggestionSelection = (suggestionId: string) => {
     if (!currentSession) return
 
@@ -1213,6 +1297,18 @@ export default function TextCorrectionApp() {
           suggestions: [],
           overallComment: "",
         })
+
+        // 「Generate AI Suggestions」クリックから今回の保存までの所要時間を記録する
+        // （add-suggestion-generation-timer変更）。ジョブがキューから除去される前に
+        // 参照する必要がある
+        const timedJob = jobQueue.find(j => j.id === confirmingJobId)
+        if (timedJob) {
+          const elapsedSeconds = (Date.now() - timedJob.queuedAt.getTime()) / 1000
+          setJobTimingHistory(prev => [
+            ...prev,
+            { jobId: timedJob.id, elapsedSeconds, completedAt: new Date() },
+          ].slice(-MAX_JOB_TIMING_HISTORY))
+        }
         
         // 確認済みジョブをキューから削除
         setJobQueue(prev => prev.filter(j => j.id !== confirmingJobId))
@@ -1349,6 +1445,31 @@ export default function TextCorrectionApp() {
   const selectedCount = currentSession?.suggestions.filter((s) => s.selected).length || 0
   const canSave = selectedCount >= 3
 
+  // Text-span highlight ranges for the SOURCE/TARGET TEXT textareas, driven
+  // by the hover-preview and selected-persistent triggers (see
+  // highlight-suggestion-text-spans design.md Decision 2). Graceful
+  // no-match handling (empty/absent field, or substring not found) is
+  // handled inside HighlightedTextarea itself.
+  const targetHighlights: TextHighlight[] = useMemo(() => {
+    if (!currentSession) return []
+    return currentSession.suggestions
+      .filter((s) => s.selected || s.id === hoveredSuggestionId)
+      .map((s) => ({
+        text: s.original,
+        variant: (s.id === hoveredSuggestionId ? "hover" : "selected") as TextHighlight["variant"],
+      }))
+  }, [currentSession, hoveredSuggestionId])
+
+  const sourceHighlights: TextHighlight[] = useMemo(() => {
+    if (!currentSession) return []
+    return currentSession.suggestions
+      .filter((s) => (s.selected || s.id === hoveredSuggestionId) && s.sourceExcerpt)
+      .map((s) => ({
+        text: s.sourceExcerpt as string,
+        variant: (s.id === hoveredSuggestionId ? "hover" : "selected") as TextHighlight["variant"],
+      }))
+  }, [currentSession, hoveredSuggestionId])
+
   // Filter sessions based on search query
   const filteredSessions = sessions.filter((s) =>
     s.name.toLowerCase().includes(sessionSearch.toLowerCase())
@@ -1356,6 +1477,29 @@ export default function TextCorrectionApp() {
 
   // Count active jobs for the badge
   const activeJobCount = jobQueue.filter(j => j.status === 'processing' || j.status === 'queued').length
+
+  // 生成タイマー表示用の派生値（add-suggestion-generation-timer変更、design.md参照）。
+  // 「最新」は最後に開始（queuedAt最大）された待機中/処理中ジョブがあればそのライブ
+  // 経過時間、無ければ直近に確定保存されたジョブの確定済み経過時間を表示する。
+  // 「平均」はこのブラウザセッション中に確定保存された全ジョブの単純平均（セッション
+  // 切り替えでリセットされる、design.md Decision 2）。
+  const formatJobDuration = (seconds: number) => `${seconds.toFixed(1)}秒`
+
+  const latestActiveJob = jobQueue
+    .filter(j => j.status === 'queued' || j.status === 'processing')
+    .reduce<QueuedJob | null>(
+      (latest, job) => (!latest || job.queuedAt.getTime() > latest.queuedAt.getTime() ? job : latest),
+      null,
+    )
+  const latestCompletedTiming = jobTimingHistory.length > 0 ? jobTimingHistory[jobTimingHistory.length - 1] : null
+  const latestJobDurationSeconds = latestActiveJob
+    ? (nowTick - latestActiveJob.queuedAt.getTime()) / 1000
+    : latestCompletedTiming?.elapsedSeconds ?? null
+  const isLatestJobLive = !!latestActiveJob
+  const averageJobDurationSeconds =
+    jobTimingHistory.length > 0
+      ? jobTimingHistory.reduce((sum, r) => sum + r.elapsedSeconds, 0) / jobTimingHistory.length
+      : null
 
   // Coming Soon Placeholder component
   const ComingSoonPlaceholder = ({ title }: { title: string }) => (
@@ -1694,9 +1838,36 @@ export default function TextCorrectionApp() {
                       <h2 className="text-headline-lg text-on-surface">{currentSession.name}</h2>
                       <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
-                    {currentSession.savedData.length > 0 && (
-                      <Badge className="bg-session-complete text-white">Saved: {currentSession.savedData.length}</Badge>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {/* Generation-to-save timer + running average
+                          (add-suggestion-generation-timer変更、design.md Decision 4) */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-label-caps text-on-surface-variant">LATEST</span>
+                        <Badge
+                          className={`text-xs font-medium ${
+                            isLatestJobLive
+                              ? 'bg-surface-container text-on-surface-variant'
+                              : latestJobDurationSeconds !== null
+                                ? 'bg-session-complete text-white'
+                                : 'bg-surface-container text-on-surface-variant'
+                          }`}
+                        >
+                          {isLatestJobLive && (
+                            <span className="material-symbols-outlined md-18 animate-spin mr-1 align-middle">progress_activity</span>
+                          )}
+                          {latestJobDurationSeconds !== null ? formatJobDuration(latestJobDurationSeconds) : '—'}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-label-caps text-on-surface-variant">AVG</span>
+                        <Badge className="bg-surface-container text-on-surface-variant text-xs font-medium">
+                          {averageJobDurationSeconds !== null ? formatJobDuration(averageJobDurationSeconds) : '—'}
+                        </Badge>
+                      </div>
+                      {currentSession.savedData.length > 0 && (
+                        <Badge className="bg-session-complete text-white">Saved: {currentSession.savedData.length}</Badge>
+                      )}
+                    </div>
                   </div>
 
                   {/* Text Editor Cards */}
@@ -1718,11 +1889,12 @@ export default function TextCorrectionApp() {
                         </div>
                       </CardHeader>
                       <CardContent>
-                        <Textarea
+                        <HighlightedTextarea
                           placeholder="原文テキストをここに貼り付けてください..."
                           value={currentSession.originalText}
                           onChange={(e) => updateCurrentSession({ originalText: e.target.value })}
                           className="min-h-[180px] text-body-base leading-relaxed bg-surface-container border-outline-variant"
+                          highlights={sourceHighlights}
                         />
                       </CardContent>
                     </Card>
@@ -1744,11 +1916,12 @@ export default function TextCorrectionApp() {
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        <Textarea
+                        <HighlightedTextarea
                           placeholder="添削対象テキストをここに貼り付けてください..."
                           value={currentSession.targetText}
                           onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
                           className="min-h-[200px] text-body-base leading-relaxed bg-surface-container border-outline-variant"
+                          highlights={targetHighlights}
                         />
                         
                         {/* Offline mode toggle */}
@@ -1994,75 +2167,80 @@ export default function TextCorrectionApp() {
                       {currentSession.suggestions.map((suggestion, index) => (
                         <div
                           key={suggestion.id}
-                          className={`group border rounded-lg p-3 transition-colors ${
+                          onDoubleClick={() => toggleSuggestionSelection(suggestion.id)}
+                          onMouseEnter={() => setHoveredSuggestionId(suggestion.id)}
+                          onMouseLeave={() => setHoveredSuggestionId((current) => (current === suggestion.id ? null : current))}
+                          className={`group border rounded-lg p-3 transition-colors cursor-pointer select-none ${
                             suggestion.selected
                               ? 'bg-primary-container border-md3-primary'
                               : 'border-outline-variant hover:bg-surface-container'
                           }`}
+                          title="ダブルクリックで選択/選択解除"
                         >
-                          <div className="flex items-start gap-3">
-                            <div className="flex flex-col items-center gap-1 pt-1">
-                              <Checkbox
-                                checked={suggestion.selected}
-                                onCheckedChange={() => toggleSuggestionSelection(suggestion.id)}
-                                className="h-5 w-5"
-                              />
-                              {suggestion.selected && suggestion.selectedOrder && (
-                                <Badge variant="outline" className="text-xs px-1 py-0">
-                                  {suggestion.selectedOrder}
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0 space-y-2">
-                              <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
                                 <span className="text-label-caps text-on-surface-variant uppercase">
                                   Option {String.fromCharCode(65 + index)}
                                   {suggestion.isCustom && ' (カスタム)'}
                                 </span>
-                                {/* Hover-reveal action icons */}
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "提案内容がクリップボードにコピーされました")
-                                    }}
-                                    className="p-1 rounded hover:bg-surface-container-high"
-                                    title="コピー"
-                                  >
-                                    <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      toggleSuggestionSelection(suggestion.id)
-                                    }}
-                                    className="p-1 rounded hover:bg-surface-container-high"
-                                    title={suggestion.selected ? "選択解除" : "選択"}
-                                  >
-                                    <span className={`material-symbols-outlined md-18 ${suggestion.selected ? 'text-session-complete' : 'text-on-surface-variant'}`}>
-                                      {suggestion.selected ? 'check_circle' : 'radio_button_unchecked'}
-                                    </span>
-                                  </button>
-                                </div>
-                              </div>
-                              {/* Pointed text */}
-                              <div className="bg-red-50 p-2 rounded border border-red-200">
-                                <Label className="text-metadata font-medium text-red-600">指摘箇所</Label>
-                                <p className="text-body-sm text-red-800 mt-1">{suggestion.original}</p>
-                              </div>
-                              {/* Reason */}
-                              <div className="bg-primary-container/50 p-2 rounded">
-                                <Label className="text-metadata font-medium text-md3-primary">修正コメント</Label>
-                                {suggestion.selected ? (
-                                  <Textarea
-                                    value={suggestion.userModifiedReason || suggestion.reason}
-                                    onChange={(e) => updateSuggestionReason(suggestion.id, e.target.value)}
-                                    className="text-body-sm min-h-[60px] mt-1 bg-surface border-outline-variant"
-                                  />
-                                ) : (
-                                  <p className="text-body-sm text-on-surface mt-1">{suggestion.reason}</p>
+                                {suggestion.selected && suggestion.selectedOrder && (
+                                  <Badge variant="outline" className="text-xs px-1 py-0">
+                                    {suggestion.selectedOrder}
+                                  </Badge>
                                 )}
                               </div>
+                              {/* Hover-reveal action icons */}
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "提案内容がクリップボードにコピーされました")
+                                  }}
+                                  className="p-1 rounded hover:bg-surface-container-high"
+                                  title="コピー"
+                                >
+                                  <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    toggleSuggestionSelection(suggestion.id)
+                                  }}
+                                  className="p-1 rounded hover:bg-surface-container-high"
+                                  title={suggestion.selected ? "選択解除" : "選択"}
+                                >
+                                  <span className={`material-symbols-outlined md-18 ${suggestion.selected ? 'text-session-complete' : 'text-on-surface-variant'}`}>
+                                    {suggestion.selected ? 'check_circle' : 'radio_button_unchecked'}
+                                  </span>
+                                </button>
+                              </div>
+                            </div>
+                            {/* Pointed text */}
+                            <div className="bg-red-50 p-2 rounded border border-red-200">
+                              <Label className="text-metadata font-medium text-red-600">指摘箇所</Label>
+                              <p className="text-body-sm text-red-800 mt-1">{suggestion.original}</p>
+                            </div>
+                            {/* Reason */}
+                            <div className="bg-primary-container/50 p-2 rounded">
+                              <Label className="text-metadata font-medium text-md3-primary">修正コメント</Label>
+                              {suggestion.selected ? (
+                                <Textarea
+                                  ref={(el) => {
+                                    suggestionTextareaRefs.current[suggestion.id] = el
+                                    resizeSuggestionTextarea(el)
+                                  }}
+                                  value={suggestion.userModifiedReason || suggestion.reason}
+                                  onChange={(e) => {
+                                    updateSuggestionReason(suggestion.id, e.target.value)
+                                    resizeSuggestionTextarea(e.target)
+                                  }}
+                                  onDoubleClick={(e) => e.stopPropagation()}
+                                  className="text-body-sm min-h-[2.5rem] mt-1 bg-surface border-outline-variant resize-none overflow-hidden"
+                                />
+                              ) : (
+                                <p className="text-body-sm text-on-surface mt-1">{suggestion.reason}</p>
+                              )}
                             </div>
                           </div>
                         </div>
