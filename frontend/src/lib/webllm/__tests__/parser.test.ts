@@ -29,11 +29,13 @@ That's my analysis.`;
       id: "1",
       original: "我并不想回复",
       reason: "ようがない并非不想的含义",
+      sourceExcerpt: "",
     });
     expect(result.suggestions[1]).toEqual({
       id: "2",
       original: "有个孩子霸凌",
       reason: "这里最好把問題行為译出来哦",
+      sourceExcerpt: "",
     });
     expect(result.overallComment).toBe("译文整体不错，加油～");
   });
@@ -403,6 +405,49 @@ Hope this helps!`;
       expect(result.suggestions).toHaveLength(1);
       expect(result.suggestions[0].original).toBe("");
       expect(result.suggestions[0].reason).toBe("");
+    });
+  });
+
+  // === Tests for optional sourceExcerpt field (highlight-suggestion-text-spans) ===
+  describe("sourceExcerpt field", () => {
+    it("extracts sourceExcerpt when present under the canonical key", () => {
+      const input = `{"suggestions":[{"id":"1","original":"行きます","reason":"时态错误","sourceExcerpt":"行きました"}],"overallComment":"OK"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions[0].sourceExcerpt).toBe("行きました");
+    });
+
+    it("defaults to empty string when sourceExcerpt is absent", () => {
+      const input = `{"suggestions":[{"id":"1","original":"良いから","reason":"语气问题"}],"overallComment":"OK"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions[0].sourceExcerpt).toBe("");
+    });
+
+    it("extracts sourceExcerpt via the 原文箇所 fallback key", () => {
+      const input = `{"suggestions":[{"id":"1","original":"テスト","reason":"理由","原文箇所":"対応箇所"}],"overallComment":"OK"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions[0].sourceExcerpt).toBe("対応箇所");
+    });
+
+    it("extracts sourceExcerpt via the source/sourceText fallback keys", () => {
+      const inputSource = `{"suggestions":[{"id":"1","original":"テスト","reason":"理由","source":"対応A"}],"overallComment":"OK"}`;
+      const inputSourceText = `{"suggestions":[{"id":"1","original":"テスト","reason":"理由","sourceText":"対応B"}],"overallComment":"OK"}`;
+
+      expect(parseModelOutput(inputSource).suggestions[0].sourceExcerpt).toBe("対応A");
+      expect(parseModelOutput(inputSourceText).suggestions[0].sourceExcerpt).toBe("対応B");
+    });
+
+    it("prefers the canonical sourceExcerpt key over fallbacks", () => {
+      const input = `{"suggestions":[{"id":"1","original":"テスト","reason":"理由","sourceExcerpt":"優先","source":"非優先"}],"overallComment":"OK"}`;
+
+      const result = parseModelOutput(input);
+
+      expect(result.suggestions[0].sourceExcerpt).toBe("優先");
     });
   });
 });

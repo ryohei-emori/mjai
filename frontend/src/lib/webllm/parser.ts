@@ -8,12 +8,24 @@
  * - Markdown code fences wrapping JSON
  * - Preamble/postamble text around JSON
  * - Both English (suggestions/overallComment) and Japanese (指摘/全体講評) keys
+ *
+ * Each suggestion also carries an optional `sourceExcerpt` (2026-08,
+ * highlight-suggestion-text-spans change), extracted with the same
+ * multi-key-fallback approach as `original`/`reason` and defaulting to ""
+ * when absent — mirrors backend/app/llm/parser.py.
  */
 
 export type CorrectionSuggestion = {
   id: string;
   original: string;
   reason: string;
+  /**
+   * Optional excerpt from SOURCE TEXT corresponding to `original` (a
+   * flagged TARGET TEXT excerpt). Empty string when the model found no
+   * clear correspondence — mirrors backend/app/llm/parser.py's
+   * `sourceExcerpt` field (see highlight-suggestion-text-spans change).
+   */
+  sourceExcerpt: string;
 };
 
 export type ParsedResponse = {
@@ -216,11 +228,21 @@ export function parseModelOutput(text: string): ParsedResponse {
         (typeof entry["suggestion"] === 'string' ? entry["suggestion"] : null) ||
         (typeof entry["fix"] === 'string' ? entry["fix"] : null) ||
         "";
+      // Optional: excerpt from SOURCE TEXT corresponding to `original`.
+      // Absent/omitted when the model found no clear correspondence —
+      // defaults to "", never fabricated. Mirrors backend/app/llm/parser.py.
+      const sourceExcerpt =
+        (typeof entry["sourceExcerpt"] === 'string' ? entry["sourceExcerpt"] : null) ||
+        (typeof entry["原文箇所"] === 'string' ? entry["原文箇所"] : null) ||
+        (typeof entry["source"] === 'string' ? entry["source"] : null) ||
+        (typeof entry["sourceText"] === 'string' ? entry["sourceText"] : null) ||
+        "";
       
       suggestions.push({
         id: String(i + 1),
         original,
         reason,
+        sourceExcerpt,
       });
     }
   }

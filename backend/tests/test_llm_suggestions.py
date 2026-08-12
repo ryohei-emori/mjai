@@ -21,7 +21,12 @@ from app.llm.groq_provider import GroqError, GroqRateLimitError, GroqServerError
 from app.llm.cloudflare_provider import CloudflareError
 
 
-VALID_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "修正提案"}], "全体講評": "全体的に良好です"}'''
+# overallComment/reason ("コメント"/"全体講評") are intentionally pure
+# Chinese (Hanzi only, no Hiragana/Katakana) so this fixture passes the
+# has_non_chinese_reason() check added by refine-suggestion-card-interactions
+# and doesn't spuriously trigger the language-check retry axis in tests
+# that don't care about it. "箇所" (-> original) legitimately stays Japanese.
+VALID_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "修正建议内容"}], "全体講評": "整体质量良好"}'''
 
 
 class TestAreProvidersConfigured:
@@ -58,7 +63,7 @@ class TestGenerateSuggestionsGroqSuccess:
                 
                 assert len(result["suggestions"]) == 1
                 assert result["suggestions"][0]["original"] == "テスト箇所"
-                assert result["overallComment"] == "全体的に良好です"
+                assert result["overallComment"] == "整体质量良好"
                 mock_groq.assert_called_once()
 
 
@@ -260,3 +265,65 @@ class TestGenerateSuggestionsParseFailureRetry:
 
                     mock_groq.assert_called_once()
                     mock_cf.assert_called_once()
+
+
+NON_CHINESE_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "これは日本語のコメントです"}], "全体講評": "全体的に良いです"}'''
+
+
+@pytest.mark.asyncio
+class TestGenerateSuggestionsChineseLanguageRetry:
+    """
+    Tests for the Chinese-language content-check retry axis in
+    generate_suggestions() (composes with, and shares the same
+    MAX_PARSE_RETRY_ATTEMPTS budget as, the JSON-parse-failure retry axis
+    covered by TestGenerateSuggestionsParseFailureRetry above).
+    """
+
+    async def test_non_chinese_reason_twice_then_valid_chinese_on_third_attempt(self):
+        """Attempts 1 and 2 return a Japanese (not Chinese) reason/overallComment;
+        attempt 3 returns a valid Chinese response."""
+        with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                mock_groq.side_effect = [
+                    NON_CHINESE_LLM_RESPONSE,
+                    NON_CHINESE_LLM_RESPONSE,
+                    VALID_LLM_RESPONSE,
+                ]
+
+                result = await generate_suggestions("原文", "訳文")
+
+                assert len(result["suggestions"]) == 1
+                assert result["suggestions"][0]["original"] == "テスト箇所"
+                assert mock_groq.call_count == 3
+
+    async def test_gives_up_after_max_attempts_still_non_chinese(self):
+        """Every attempt returns a Japanese (not Chinese) reason -> returns
+        the last result after exactly MAX_PARSE_RETRY_ATTEMPTS attempts,
+        without raising."""
+        with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                mock_groq.return_value = NON_CHINESE_LLM_RESPONSE
+
+                result = await generate_suggestions("原文", "訳文")
+
+                assert len(result["suggestions"]) == 1
+                assert result["suggestions"][0]["reason"] == "これは日本語のコメントです"
+                assert mock_groq.call_count == 3
+
+    async def test_parse_failure_and_language_failure_share_one_attempt_budget(self):
+        """A JSON-parse failure on attempt 1 and a non-Chinese-reason
+        failure on attempt 2 both count against the same shared retry
+        budget before attempt 3 succeeds."""
+        with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                mock_groq.side_effect = [
+                    UNPARSEABLE_LLM_RESPONSE,
+                    NON_CHINESE_LLM_RESPONSE,
+                    VALID_LLM_RESPONSE,
+                ]
+
+                result = await generate_suggestions("原文", "訳文")
+
+                assert len(result["suggestions"]) == 1
+                assert result["suggestions"][0]["original"] == "テスト箇所"
+                assert mock_groq.call_count == 3

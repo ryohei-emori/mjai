@@ -9,14 +9,29 @@ Hardened to handle common LLM output issues:
 - Preamble/postamble text around JSON
 - Both Japanese (指摘/全体講評) and English (suggestions/overallComment) keys
 
-This parser is field-content-language-agnostic: it extracts whatever string
-values are present in the `original`/`reason` (or their Japanese/legacy
-field-name equivalents) and `overallComment` keys without validating or
-transforming their language. As of 2026-08 the prompts (see
-backend/app/llm/prompts.py) instruct the model to write `original` in
-Japanese and `reason`/`overallComment` in Simplified Chinese — this parser
-does not need to change for that split since it only handles JSON
-structure, not content language.
+This parser's JSON-structure handling (extract/repair/field-fallback) is
+field-content-language-agnostic: it extracts whatever string values are
+present in the `original`/`reason` (or their Japanese/legacy field-name
+equivalents) and `overallComment` keys without transforming their language.
+As of 2026-08 the prompts (see backend/app/llm/prompts.py) instruct the
+model to write `original` in Japanese and `reason`/`overallComment` in
+Simplified Chinese. This module additionally exposes `has_non_chinese_reason()`,
+a separate, opt-in content-language check (Hiragana/Katakana detection) that
+callers such as backend/app/llm/suggestions.py use to decide whether to
+retry generation — `parse_model_output()` itself still does not validate or
+reject based on language, it only structures the JSON.
+
+`parse_model_output()` also drops suggestion items whose `original` and
+`reason` are both empty/whitespace-only after parsing, re-sequencing the
+remaining items' `id`s contiguously, so a model's occasional blank filler
+item never surfaces as an empty suggestion card.
+
+As of 2026-08 (`highlight-suggestion-text-spans` change), each suggestion
+also carries an optional `sourceExcerpt` field: an excerpt from SOURCE TEXT
+corresponding to the flagged TARGET TEXT snippet, extracted with the same
+multi-key-fallback approach as `original`/`reason` and defaulting to `""`
+when absent. Like `original`, it is expected to stay in SOURCE TEXT's
+language (Japanese) and is intentionally exempt from `has_non_chinese_reason()`.
 """
 
 from __future__ import annotations
@@ -41,6 +56,7 @@ class CorrectionSuggestion(TypedDict):
     id: str
     original: str
     reason: str
+    sourceExcerpt: str
 
 
 class ParsedResponse(TypedDict):
@@ -205,6 +221,7 @@ def parse_model_output(text: str) -> ParsedResponse:
     Item field fallbacks (tries in order):
     - original: original, 箇所, text, content, excerpt
     - reason: reason, コメント, comment, suggestion, fix
+    - sourceExcerpt: sourceExcerpt, 原文箇所, source, sourceText (defaults to "" when absent)
     """
     logger.debug(f"[parser] Raw input (first 500 chars): {text[:500]}")
     
@@ -243,7 +260,8 @@ def parse_model_output(text: str) -> ParsedResponse:
         overall_comment = str(overall_comment) if overall_comment else ""
     
     suggestions: List[CorrectionSuggestion] = []
-    for i, item in enumerate(shiteki_list):
+    blank_items_skipped = 0
+    for item in shiteki_list:
         if item and isinstance(item, dict):
             # Try multiple possible field names for robustness
             # Models may use: original, text, content, excerpt, 箇所
@@ -264,13 +282,42 @@ def parse_model_output(text: str) -> ParsedResponse:
                 item.get("fix") or 
                 ""
             )
-            
+            original = str(original)
+            reason = str(reason)
+
+            # Optional: excerpt from SOURCE TEXT corresponding to `original`
+            # (a TARGET TEXT excerpt). Absent/omitted when the model found no
+            # clear correspondence (see prompts.py) — defaults to "", never
+            # fabricated. Not part of the blank-item check below since an
+            # empty sourceExcerpt is an expected, valid value, not a signal
+            # that the whole item is filler.
+            source_excerpt = (
+                item.get("sourceExcerpt") or
+                item.get("原文箇所") or
+                item.get("source") or
+                item.get("sourceText") or
+                ""
+            )
+            source_excerpt = str(source_excerpt)
+
+            # The model occasionally emits one extra, fully-blank item (e.g.
+            # padding/formatting artifact). Skip it rather than surfacing an
+            # empty "Option" card; ids below are assigned post-filter so they
+            # stay contiguous instead of leaving a gap at the dropped index.
+            if not original.strip() and not reason.strip():
+                blank_items_skipped += 1
+                continue
+
             suggestions.append({
-                "id": str(i + 1),
-                "original": str(original),
-                "reason": str(reason),
+                "id": str(len(suggestions) + 1),
+                "original": original,
+                "reason": reason,
+                "sourceExcerpt": source_excerpt,
             })
-    
+
+    if blank_items_skipped:
+        logger.info(f"[parser] Skipped {blank_items_skipped} fully-blank suggestion item(s)")
+
     logger.info(f"[parser] Parsed {len(suggestions)} suggestions, overallComment length: {len(overall_comment)}")
     
     # If JSON was parsed but no suggestions found, provide diagnostic message
@@ -293,3 +340,36 @@ def is_json_extraction_failure(result: ParsedResponse) -> bool:
     attempt should be retried (see MAX_PARSE_RETRY_ATTEMPTS there).
     """
     return not result["suggestions"] and result["overallComment"] == JSON_EXTRACTION_FAILURE_MESSAGE
+
+
+# Hiragana (U+3040-U+309F) and Katakana (U+30A0-U+30FF): Japanese-only
+# syllabaries that never appear in Chinese text. Their presence in a field
+# that is supposed to be Simplified Chinese (per backend/app/llm/prompts.py's
+# SYSTEM_PROMPT language rules) is a cheap, reliable, zero-dependency signal
+# that the model wrote Japanese there instead — see design.md Decision 5 in
+# the `refine-suggestion-card-interactions` change for why this heuristic
+# was chosen over a statistical language-detection library.
+_JAPANESE_KANA_PATTERN = re.compile(r'[\u3040-\u30FF]')
+
+
+def has_non_chinese_reason(result: ParsedResponse) -> bool:
+    """
+    True if any suggestion's `reason` or the top-level `overallComment`
+    contains Hiragana/Katakana codepoints, indicating that field was
+    written in Japanese rather than the required Simplified Chinese.
+
+    The `original` and `sourceExcerpt` fields are intentionally NOT checked
+    here — both are required to stay in Japanese, so Hiragana/Katakana there
+    is expected and correct.
+
+    Used by backend/app/llm/suggestions.py to decide whether a generate+parse
+    attempt should be retried, composing with (not replacing)
+    `is_json_extraction_failure`, both bounded by the same
+    MAX_PARSE_RETRY_ATTEMPTS budget.
+    """
+    if _JAPANESE_KANA_PATTERN.search(result["overallComment"]):
+        return True
+    return any(
+        _JAPANESE_KANA_PATTERN.search(suggestion["reason"])
+        for suggestion in result["suggestions"]
+    )

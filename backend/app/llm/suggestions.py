@@ -11,26 +11,36 @@ providers:
    this module falls over to Cloudflare. This axis handles *transport*
    failures — the provider never returned usable content.
 
-2. JSON-parse-level retry (`MAX_PARSE_RETRY_ATTEMPTS` below): a provider
-   call can succeed at the network level yet return content that fails to
-   parse as valid JSON (e.g. a small/preview model emitting prose,
-   reasoning tokens, or truncated output). When this happens,
-   `generate_suggestions()` retries the *entire* Groq-then-Cloudflare pass
-   (not just a single provider call) up to `MAX_PARSE_RETRY_ATTEMPTS` times
-   before giving up and returning the existing parse-failure placeholder
-   response (see `parser.is_json_extraction_failure`). A genuine
-   network-level failure (`SuggestionsError`, raised when both providers
-   fail at the HTTP layer even after their own retries) is NOT retried by
-   this axis and propagates immediately — retrying a fully-down network
-   path would not help and would only add latency.
+2. Content-quality-level retry (`MAX_PARSE_RETRY_ATTEMPTS` below): a
+   provider call can succeed at the network level yet return content that
+   is unusable in one of two ways:
+   - it fails to parse as valid JSON at all (e.g. a small/preview model
+     emitting prose, reasoning tokens, or truncated output) — see
+     `parser.is_json_extraction_failure`; or
+   - it parses successfully but violates the bilingual field-content rule
+     (a suggestion's `reason` or the `overallComment` written in Japanese
+     instead of the required Simplified Chinese) — see
+     `parser.has_non_chinese_reason`.
+   When either condition is true, `generate_suggestions()` retries the
+   *entire* Groq-then-Cloudflare pass (not just a single provider call) up
+   to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing one attempt budget across
+   both conditions, before giving up and returning the last result as-is
+   (the parse-failure placeholder, or the best available but
+   still-non-Chinese response). A genuine network-level failure
+   (`SuggestionsError`, raised when both providers fail at the HTTP layer
+   even after their own retries) is NOT retried by this axis and propagates
+   immediately — retrying a fully-down network path would not help and
+   would only add latency.
 
 Worst case total LLM calls for axis 2, per `generate_suggestions()` call:
 `MAX_PARSE_RETRY_ATTEMPTS` passes * (up to 2 Groq attempts via rotation,
 plus 1 Cloudflare attempt if Groq raises) = up to 9 calls. In practice
-almost every pass succeeds at parsing on the first attempt (parse failures
-are rare), so this bound is a deliberate trade-off favoring eventual
-success over a strict latency guarantee for the rare parse-failure case —
-see design.md Decision 8 in the `add-groq-cloudflare-suggestions` change.
+almost every pass succeeds at parsing on the first attempt (parse/language
+failures are rare), so this bound is a deliberate trade-off favoring
+eventual success over a strict latency guarantee for the rare failure case
+— see design.md Decision 8 in the `add-groq-cloudflare-suggestions` change,
+and Decision 6 in the `refine-suggestion-card-interactions` change for the
+language-check addition.
 """
 
 from __future__ import annotations
@@ -39,7 +49,12 @@ import logging
 from typing import Optional
 
 from .prompts import build_messages
-from .parser import parse_model_output, is_json_extraction_failure, ParsedResponse
+from .parser import (
+    parse_model_output,
+    is_json_extraction_failure,
+    has_non_chinese_reason,
+    ParsedResponse,
+)
 from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
@@ -57,8 +72,11 @@ from .cloudflare_provider import (
 logger = logging.getLogger(__name__)
 
 # Total number of generate+parse passes attempted when the model's response
-# fails to parse as JSON, before giving up. See module docstring for how
-# this composes with each provider's own network-level retry.
+# either fails to parse as JSON or fails the Chinese-language content check
+# (see parser.is_json_extraction_failure / parser.has_non_chinese_reason),
+# before giving up. Both conditions share this one attempt budget. See
+# module docstring for how this composes with each provider's own
+# network-level retry.
 MAX_PARSE_RETRY_ATTEMPTS = 3
 
 
@@ -152,9 +170,12 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     Tries Groq first (with in-provider model rotation and one retry across
     a different Groq model on a retriable failure), falls back to
     Cloudflare on failure. If a pass succeeds at the network level but its
-    content fails to parse as JSON, the whole pass is retried up to
-    `MAX_PARSE_RETRY_ATTEMPTS` times before giving up (see module
-    docstring for how this composes with the network-level retry above).
+    content either fails to parse as JSON or fails the Chinese-language
+    content check (a suggestion's `reason` or `overallComment` written in
+    Japanese instead of the required Simplified Chinese), the whole pass is
+    retried up to `MAX_PARSE_RETRY_ATTEMPTS` times before giving up (see
+    module docstring for how this composes with the network-level retry
+    above).
     
     Args:
         original_text: The original Japanese text.
@@ -163,7 +184,10 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     Returns:
         ParsedResponse with suggestions and overall comment. May be the
         parse-failure placeholder response if every attempt failed to
-        parse (see `parser.is_json_extraction_failure`).
+        parse (see `parser.is_json_extraction_failure`), or the
+        last-attempted result even if it still fails the Chinese-language
+        check (see `parser.has_non_chinese_reason`) — either way this
+        degrades gracefully rather than raising.
         
     Raises:
         NoProvidersConfiguredError: If no providers are configured.
@@ -179,16 +203,20 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     last_result: Optional[ParsedResponse] = None
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
         result = await _generate_suggestions_once(messages)
-        if not is_json_extraction_failure(result):
+        if not is_json_extraction_failure(result) and not has_non_chinese_reason(result):
             return result
+        reason = (
+            "JSON parse failure" if is_json_extraction_failure(result) else "non-Chinese reason/overallComment"
+        )
         logger.warning(
-            f"Parse failure on attempt {attempt}/{MAX_PARSE_RETRY_ATTEMPTS}; "
+            f"{reason} on attempt {attempt}/{MAX_PARSE_RETRY_ATTEMPTS}; "
             f"{'retrying' if attempt < MAX_PARSE_RETRY_ATTEMPTS else 'giving up'}"
         )
         last_result = result
 
-    # All attempts failed to parse — return the last (parse-failure)
-    # result rather than raising, matching the pre-existing single-attempt
-    # behavior of surfacing a friendly placeholder rather than a 503.
+    # All attempts failed (JSON parse and/or Chinese-language check) —
+    # return the last result rather than raising, matching the pre-existing
+    # "degrade gracefully" behavior of surfacing a best-effort/placeholder
+    # response rather than a 503.
     assert last_result is not None  # loop runs at least once (MAX_PARSE_RETRY_ATTEMPTS >= 1)
     return last_result

@@ -12,6 +12,7 @@ from app.llm.parser import (
     repair_truncated_json,
     extract_json,
     safe_json_parse,
+    has_non_chinese_reason,
 )
 
 
@@ -178,12 +179,14 @@ That's the response.'''
         assert result["overallComment"] == "問題ありません"
     
     def test_handles_missing_fields(self):
+        """An item with no original/reason content at all is now filtered
+        out as a fully-blank item (2026-08 refine-suggestion-card-interactions),
+        rather than surfaced as an empty suggestion — see
+        TestParseModelOutput's blank-item-filtering tests below."""
         text = '''{"指摘": [{"番号": 1}], "全体講評": ""}'''
         result = parse_model_output(text)
         
-        assert len(result["suggestions"]) == 1
-        assert result["suggestions"][0]["original"] == ""
-        assert result["suggestions"][0]["reason"] == ""
+        assert result["suggestions"] == []
     
     # === Tests for English key format (Groq/Cloudflare may output this) ===
     
@@ -286,13 +289,13 @@ Hope this helps!'''
         assert result["suggestions"][0]["original"] == "優先"
     
     def test_missing_content_fields(self):
-        """Test that missing content fields result in empty strings."""
+        """An item with no original/reason content at all is filtered out
+        as a fully-blank item (2026-08 refine-suggestion-card-interactions),
+        rather than surfaced as an empty suggestion with empty strings."""
         text = '''{"suggestions": [{"id": "1"}], "overallComment": ""}'''
         result = parse_model_output(text)
         
-        assert len(result["suggestions"]) == 1
-        assert result["suggestions"][0]["original"] == ""
-        assert result["suggestions"][0]["reason"] == ""
+        assert result["suggestions"] == []
 
     # === Regression tests: truncated responses (e.g. max_tokens cutoff) ===
 
@@ -315,3 +318,193 @@ Hope this helps!'''
         result = parse_model_output(text)
 
         assert result["suggestions"] == []
+
+    # === Tests for blank-item filtering (2026-08 refine-suggestion-card-interactions) ===
+
+    def test_fully_blank_item_is_dropped(self):
+        text = '''{"suggestions": [
+            {"id": "1", "original": "箇所1", "reason": "理由1"},
+            {"id": "2", "original": "", "reason": ""},
+            {"id": "3", "original": "箇所3", "reason": "理由3"}
+        ], "overallComment": "総評"}'''
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 2
+        assert result["suggestions"][0]["original"] == "箇所1"
+        assert result["suggestions"][1]["original"] == "箇所3"
+
+    def test_whitespace_only_item_is_dropped(self):
+        text = '''{"suggestions": [
+            {"id": "1", "original": "  ", "reason": "\\n\\t "},
+            {"id": "2", "original": "箇所2", "reason": "理由2"}
+        ], "overallComment": "総評"}'''
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "箇所2"
+
+    def test_ids_stay_contiguous_after_filtering_blank_item(self):
+        """Regression: a blank item between two valid items must not leave
+        a gap in the id sequence (e.g. ids "1", "3" instead of "1", "2")."""
+        text = '''{"suggestions": [
+            {"id": "1", "original": "箇所1", "reason": "理由1"},
+            {"id": "2", "original": "", "reason": ""},
+            {"id": "3", "original": "箇所3", "reason": "理由3"}
+        ], "overallComment": "総評"}'''
+        result = parse_model_output(text)
+
+        assert [s["id"] for s in result["suggestions"]] == ["1", "2"]
+
+    def test_item_with_only_one_blank_field_is_retained(self):
+        """Only fully-blank (both fields empty) items are dropped; a
+        partially-filled item is still a genuine suggestion."""
+        text = '''{"suggestions": [
+            {"id": "1", "original": "箇所1", "reason": ""},
+            {"id": "2", "original": "", "reason": "理由2"}
+        ], "overallComment": "総評"}'''
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 2
+
+    def test_no_blank_items_unaffected(self):
+        text = '''{"suggestions": [
+            {"id": "1", "original": "箇所1", "reason": "理由1"},
+            {"id": "2", "original": "箇所2", "reason": "理由2"}
+        ], "overallComment": "総評"}'''
+        result = parse_model_output(text)
+
+        assert [s["id"] for s in result["suggestions"]] == ["1", "2"]
+
+
+class TestSourceExcerptField:
+    """Tests for the optional `sourceExcerpt` field (highlight-suggestion-text-spans)."""
+
+    def test_source_excerpt_extracted_when_present(self):
+        text = '''{"suggestions": [{"id": "1", "original": "行きます", "reason": "时态错误", "sourceExcerpt": "行きました"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["sourceExcerpt"] == "行きました"
+
+    def test_source_excerpt_defaults_to_empty_string_when_absent(self):
+        text = '''{"suggestions": [{"id": "1", "original": "良いから", "reason": "语气问题"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["sourceExcerpt"] == ""
+
+    def test_source_excerpt_defaults_to_empty_string_when_explicitly_empty(self):
+        text = '''{"suggestions": [{"id": "1", "original": "とても楽しいでした", "reason": "活用错误", "sourceExcerpt": ""}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert result["suggestions"][0]["sourceExcerpt"] == ""
+
+    def test_source_excerpt_extracted_via_japanese_fallback_key(self):
+        text = '''{"suggestions": [{"id": "1", "original": "テスト", "reason": "理由", "原文箇所": "原文の該当箇所"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert result["suggestions"][0]["sourceExcerpt"] == "原文の該当箇所"
+
+    def test_source_excerpt_extracted_via_source_key(self):
+        text = '''{"suggestions": [{"id": "1", "original": "テスト", "reason": "理由", "source": "対応箇所"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert result["suggestions"][0]["sourceExcerpt"] == "対応箇所"
+
+    def test_source_excerpt_extracted_via_sourcetext_key(self):
+        text = '''{"suggestions": [{"id": "1", "original": "テスト", "reason": "理由", "sourceText": "対応箇所2"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert result["suggestions"][0]["sourceExcerpt"] == "対応箇所2"
+
+    def test_canonical_key_takes_priority_over_fallback(self):
+        text = '''{"suggestions": [{"id": "1", "original": "テスト", "reason": "理由", "sourceExcerpt": "優先", "source": "非優先"}], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert result["suggestions"][0]["sourceExcerpt"] == "優先"
+
+    def test_source_excerpt_present_on_multiple_suggestions_mixed(self):
+        text = '''{"suggestions": [
+            {"id": "1", "original": "箇所1", "reason": "理由1", "sourceExcerpt": "対応1"},
+            {"id": "2", "original": "箇所2", "reason": "理由2"}
+        ], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert result["suggestions"][0]["sourceExcerpt"] == "対応1"
+        assert result["suggestions"][1]["sourceExcerpt"] == ""
+
+    def test_source_excerpt_does_not_affect_blank_item_filtering(self):
+        """An item with blank original/reason is still dropped even if it
+        happens to carry a non-empty sourceExcerpt — sourceExcerpt is not
+        part of the blank-item check."""
+        text = '''{"suggestions": [
+            {"id": "1", "original": "", "reason": "", "sourceExcerpt": "無視されるべき"},
+            {"id": "2", "original": "箇所2", "reason": "理由2"}
+        ], "overallComment": "OK"}'''
+        result = parse_model_output(text)
+
+        assert len(result["suggestions"]) == 1
+        assert result["suggestions"][0]["original"] == "箇所2"
+
+
+class TestHasNonChineseReasonExemptsSourceExcerpt:
+    def test_hiragana_katakana_in_source_excerpt_does_not_trigger_retry(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": "这是中文说明",
+                    "sourceExcerpt": "行きました",
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_non_chinese_reason(result) is False
+
+
+class TestHasNonChineseReason:
+    def test_detects_hiragana_in_reason(self):
+        result = {
+            "suggestions": [{"id": "1", "original": "元のテキスト", "reason": "これは日本語のひらがなです"}],
+            "overallComment": "总体评论正常",
+        }
+        assert has_non_chinese_reason(result) is True
+
+    def test_detects_katakana_in_reason(self):
+        result = {
+            "suggestions": [{"id": "1", "original": "テスト", "reason": "コメントがカタカナです"}],
+            "overallComment": "总体评论正常",
+        }
+        assert has_non_chinese_reason(result) is True
+
+    def test_detects_hiragana_in_overall_comment(self):
+        result = {
+            "suggestions": [{"id": "1", "original": "テスト", "reason": "这是中文评论"}],
+            "overallComment": "全体的にとても良いです",
+        }
+        assert has_non_chinese_reason(result) is True
+
+    def test_pure_chinese_reason_and_comment_returns_false(self):
+        result = {
+            "suggestions": [
+                {"id": "1", "original": "彼は昨日、東京に行きました", "reason": "这里应该用过去式，而不是现在时"},
+            ],
+            "overallComment": "整体表达清晰，继续保持！",
+        }
+        assert has_non_chinese_reason(result) is False
+
+    def test_ignores_hiragana_katakana_in_original_field(self):
+        """The `original` field must stay Japanese and is intentionally
+        exempt from this check."""
+        result = {
+            "suggestions": [
+                {"id": "1", "original": "これはひらがなとカタカナを含む日本語です", "reason": "这是中文说明"},
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_non_chinese_reason(result) is False
+
+    def test_empty_result_returns_false(self):
+        result = {"suggestions": [], "overallComment": ""}
+        assert has_non_chinese_reason(result) is False

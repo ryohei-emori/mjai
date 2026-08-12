@@ -309,11 +309,13 @@ All providers return the same JSON structure:
 ```json
 {
   "suggestions": [
-    {"id": "1", "original": "指摘箇所", "reason": "修正理由"}
+    {"id": "1", "original": "指摘箇所", "reason": "修正理由", "sourceExcerpt": "原文中の対応箇所（該当する場合のみ、省略/空文字可）"}
   ],
   "overallComment": "全体講評"
 }
 ```
+
+`sourceExcerpt` (added 2026-08, `highlight-suggestion-text-spans` change) is optional: an excerpt from SOURCE TEXT (原文) corresponding to the flagged TARGET TEXT snippet in `original`, used by the frontend to highlight the matching span in the SOURCE TEXT textarea. Omitted/empty when the model finds no clear correspondence — never fabricated. Not persisted through `POST /proposals`.
 
 ### How to Get API Keys
 
