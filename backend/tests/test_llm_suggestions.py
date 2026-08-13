@@ -327,3 +327,104 @@ class TestGenerateSuggestionsChineseLanguageRetry:
                 assert len(result["suggestions"]) == 1
                 assert result["suggestions"][0]["original"] == "テスト箇所"
                 assert mock_groq.call_count == 3
+
+
+# 15-iteration enforcement harness (enforce-chinese-suggestion-comments).
+# Runs the detector + generate_suggestions retry path fifteen times with
+# mocked providers so CI stays deterministic (no live Groq).
+CHINESE_ENFORCEMENT_ITERATIONS = 15
+
+CHINESE_PAYLOAD = {
+    "suggestions": [
+        {
+            "id": "1",
+            "original": "行きます",
+            "reason": "这里应该用过去式，而不是现在时",
+            "sourceExcerpt": "行きました",
+        }
+    ],
+    "overallComment": "整体表达清楚，继续保持！",
+}
+
+JAPANESE_PAYLOAD = {
+    "suggestions": [
+        {
+            "id": "1",
+            "original": "行きます",
+            "reason": "ここは過去形を使うべきです",
+            "sourceExcerpt": "行きました",
+        }
+    ],
+    "overallComment": "全体的にとても良いです",
+}
+
+
+class TestChineseEnforcementFifteenIterations:
+    """「毎回テストを１５回行い」— verify Chinese enforcement 15 times."""
+
+    def test_detector_chinese_passes_and_japanese_fails_fifteen_times(self):
+        from app.llm.parser import has_non_chinese_reason
+
+        for i in range(CHINESE_ENFORCEMENT_ITERATIONS):
+            assert has_non_chinese_reason(CHINESE_PAYLOAD) is False, (
+                f"iteration {i + 1}/{CHINESE_ENFORCEMENT_ITERATIONS}: "
+                "Chinese payload must pass"
+            )
+            assert has_non_chinese_reason(JAPANESE_PAYLOAD) is True, (
+                f"iteration {i + 1}/{CHINESE_ENFORCEMENT_ITERATIONS}: "
+                "Japanese payload must fail"
+            )
+
+    def test_retry_loop_accepts_chinese_after_japanese_fifteen_times(self):
+        """Each of 15 runs: mock JP then CN; enforcement must retry and accept CN.
+
+        Sync wrapper via asyncio.run so this harness executes even when
+        pytest-asyncio is not installed in the test environment.
+        """
+        import asyncio
+
+        from app.llm.parser import has_non_chinese_reason
+
+        async def _once(iteration: int) -> None:
+            with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+                with patch(
+                    "app.llm.suggestions.call_groq_with_rotation",
+                    new_callable=AsyncMock,
+                ) as mock_groq:
+                    mock_groq.side_effect = [
+                        NON_CHINESE_LLM_RESPONSE,
+                        VALID_LLM_RESPONSE,
+                    ]
+
+                    result = await generate_suggestions("原文", "訳文")
+
+                    assert has_non_chinese_reason(result) is False, (
+                        f"iteration {iteration + 1}/{CHINESE_ENFORCEMENT_ITERATIONS}: "
+                        "final result must be Chinese"
+                    )
+                    assert result["suggestions"][0]["original"] == "テスト箇所"
+                    assert mock_groq.call_count == 2, (
+                        f"iteration {iteration + 1}: expected JP→CN retry (2 calls), "
+                        f"got {mock_groq.call_count}"
+                    )
+
+        for i in range(CHINESE_ENFORCEMENT_ITERATIONS):
+            asyncio.run(_once(i))
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    __import__("os").environ.get("GROQ_API_KEY") in (None, ""),
+    reason="GROQ_API_KEY not set; live Chinese-enforcement smoke skipped",
+)
+@pytest.mark.asyncio
+async def test_live_groq_chinese_explanations_smoke_optional():
+    """Optional live smoke — not required for CI; skipped without API key."""
+    from app.llm.parser import has_non_chinese_reason
+
+    result = await generate_suggestions(
+        "彼は昨日、東京に行きました",
+        "彼は昨日、東京へ行きます。",
+    )
+    assert has_non_chinese_reason(result) is False
+    assert len(result["suggestions"]) >= 1

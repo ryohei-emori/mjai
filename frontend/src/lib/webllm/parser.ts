@@ -249,3 +249,29 @@ export function parseModelOutput(text: string): ParsedResponse {
 
   return { suggestions, overallComment };
 }
+
+/**
+ * Japanese-script / Japanese-prose signals for explanation fields that must
+ * be Simplified Chinese. Mirrors backend/app/llm/parser.py
+ * `has_non_chinese_reason` (enforce-chinese-suggestion-comments).
+ *
+ * Does NOT check `original` / `sourceExcerpt` (those stay Japanese).
+ */
+const JAPANESE_KANA_PATTERN = /[\u3040-\u30FF\uFF66-\uFF9D]/;
+const JAPANESE_FUNCTION_PATTERN =
+  /(?:です|ます|でした|ました|ません|である|だった|ではない|ではありません|してください|しています|していない|ことができる|ことになる|べきだ|べきで|という|について|に対して|として|のです|なので|ですが|ますが)/;
+
+function textLooksJapanese(text: string): boolean {
+  if (!text) return false;
+  if (JAPANESE_KANA_PATTERN.test(text)) return true;
+  return JAPANESE_FUNCTION_PATTERN.test(text);
+}
+
+/**
+ * True if any suggestion's `reason` or top-level `overallComment` looks
+ * Japanese rather than the required Simplified Chinese.
+ */
+export function hasNonChineseReason(result: ParsedResponse): boolean {
+  if (textLooksJapanese(result.overallComment)) return true;
+  return result.suggestions.some((s) => textLooksJapanese(s.reason));
+}

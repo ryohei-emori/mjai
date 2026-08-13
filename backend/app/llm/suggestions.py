@@ -19,7 +19,8 @@ providers:
      `parser.is_json_extraction_failure`; or
    - it parses successfully but violates the bilingual field-content rule
      (a suggestion's `reason` or the `overallComment` written in Japanese
-     instead of the required Simplified Chinese) — see
+     instead of the required Simplified Chinese; detected via kana /
+     halfwidth kana / Japanese function patterns) — see
      `parser.has_non_chinese_reason`.
    When either condition is true, `generate_suggestions()` retries the
    *entire* Groq-then-Cloudflare pass (not just a single provider call) up

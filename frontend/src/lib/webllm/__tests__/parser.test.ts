@@ -1,4 +1,4 @@
-import { parseModelOutput } from "../parser";
+import { parseModelOutput, hasNonChineseReason } from "../parser";
 
 describe("parseModelOutput", () => {
   it("parses valid JSON with suggestions and overall comment", () => {
@@ -448,6 +448,56 @@ Hope this helps!`;
       const result = parseModelOutput(input);
 
       expect(result.suggestions[0].sourceExcerpt).toBe("優先");
+    });
+  });
+
+  describe("hasNonChineseReason", () => {
+    it("returns false for Simplified Chinese explanations", () => {
+      expect(
+        hasNonChineseReason({
+          suggestions: [
+            {
+              id: "1",
+              original: "行きます",
+              reason: "这里应该用过去式",
+              sourceExcerpt: "行きました",
+            },
+          ],
+          overallComment: "整体表达清楚",
+        })
+      ).toBe(false);
+    });
+
+    it("returns true when reason contains hiragana", () => {
+      expect(
+        hasNonChineseReason({
+          suggestions: [
+            {
+              id: "1",
+              original: "行きます",
+              reason: "ここは過去形です",
+              sourceExcerpt: "",
+            },
+          ],
+          overallComment: "中文总评",
+        })
+      ).toBe(true);
+    });
+
+    it("ignores Japanese in original/sourceExcerpt", () => {
+      expect(
+        hasNonChineseReason({
+          suggestions: [
+            {
+              id: "1",
+              original: "これはひらがなです",
+              reason: "这是中文说明",
+              sourceExcerpt: "行きました",
+            },
+          ],
+          overallComment: "中文总评",
+        })
+      ).toBe(false);
     });
   });
 });

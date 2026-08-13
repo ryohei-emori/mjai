@@ -12,6 +12,10 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("## 問題");
     // Ultra-short SmolLM2-optimized prompt contains JSON instruction
     expect(prompt).toContain("JSON");
+    expect(prompt).toContain(
+      "意味の不一致、文法、流暢さ、スペルミスに焦点を当てて、この課題を添削してください。"
+    );
+    expect(prompt).toContain("简体中文");
   });
 
   it("includes instructionPrompt when provided", () => {

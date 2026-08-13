@@ -508,3 +508,37 @@ class TestHasNonChineseReason:
     def test_empty_result_returns_false(self):
         result = {"suggestions": [], "overallComment": ""}
         assert has_non_chinese_reason(result) is False
+
+    def test_detects_halfwidth_katakana_in_reason(self):
+        # Halfwidth katakana only (no fullwidth kana) — must still fail.
+        result = {
+            "suggestions": [
+                {"id": "1", "original": "テスト", "reason": "ｺﾒﾝﾄﾊﾝｶｸ"}
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_non_chinese_reason(result) is True
+
+    def test_detects_japanese_function_pattern_via_kana_copula(self):
+        """Function-word patterns (です/ます/…) are Japanese signals."""
+        result = {
+            "suggestions": [
+                {"id": "1", "original": "行きます", "reason": "時制が不正です"}
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_non_chinese_reason(result) is True
+
+    def test_simplified_chinese_with_shared_hanzi_passes(self):
+        """Shared Han characters must not alone fail the check."""
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "文法",
+                    "reason": "这里的语法不自然，建议改用更常见的表达",
+                }
+            ],
+            "overallComment": "整体意思清楚，继续保持！",
+        }
+        assert has_non_chinese_reason(result) is False

@@ -36,24 +36,35 @@ in Japanese — it's the actual language-learning content — while "reason" and
 per-field split avoids repeating the original garbled-output bug (which was about
 the Japanese *content* field being corrupted, not about explanations being in
 Japanese vs. Chinese).
+
+As of `enforce-chinese-suggestion-comments` (2026-08), the primary task framing is
+the reviewer's correction brief (meaning mismatch / grammar / fluency / spelling),
+and Chinese for reason/overallComment is stated as an absolute, hard-to-violate rule.
 """
 
-SYSTEM_PROMPT = """あなたは日本語の文章添削アシスタントです。「原文」と「添削対象」を比較し、誤りや改善点を指摘してください。ユーザーは日本語を学習中の中国語話者です。
+# Primary correction brief — core task framing (also repeated in the user message).
+CORRECTION_TASK_BRIEF = (
+    "意味の不一致、文法、流暢さ、スペルミスに焦点を当てて、この課題を添削してください。"
+)
+
+SYSTEM_PROMPT = f"""{CORRECTION_TASK_BRIEF}
+
+あなたは日本語の文章添削アシスタントです。「原文」と「添削対象」を比較し、上記の観点を中心に誤りや改善点を指摘してください。ユーザーは日本語を学習中の中国語話者です。講評・指摘理由は必ず簡体字中国語で書くこと（日本語の説明文は禁止）。
 
 出力はJSONのみ。それ以外の文章、説明、Markdownのコードブロック（```）は一切出力しないこと。JSON内で末尾カンマを使わないこと。
 
 出力形式：
-{"suggestions":[{"id":"1","original":"該当箇所の抜粋","reason":"指摘理由と修正案","sourceExcerpt":"原文中の対応箇所（該当する場合のみ）"}],"overallComment":"全体講評"}
+{{"suggestions":[{{"id":"1","original":"該当箇所の抜粋","reason":"指摘理由と修正案（簡体字中国語）","sourceExcerpt":"原文中の対応箇所（該当する場合のみ）"}}],"overallComment":"全体講評（簡体字中国語）"}}
 
 各suggestionには可能な場合、"sourceExcerpt"フィールドを追加すること。これは"original"（添削対象からの指摘箇所）に対応する「原文」中の該当箇所をそのまま抜粋したものである。原文に明確に対応する箇所が存在しない場合（語彙選択や文体など添削対象内で完結する指摘の場合）は、"sourceExcerpt"を省略するか空文字列("")にすること。存在しない対応関係を無理に作り出さないこと。
 
-言語ルール（フィールドごとに必ず守ること）：
+言語ルール（フィールドごと・絶対厳守。違反は不合格）：
 - "original"：添削対象と同じ言語（日本語）のまま記述すること。中国語に翻訳しないこと。
 - "sourceExcerpt"：原文と同じ言語（日本語）のまま記述すること。中国語に翻訳しないこと。該当箇所がない場合は省略または空文字列にすること。
-- "reason"：中国語（簡体字）で記述すること。日本語で書かないこと。
-- "overallComment"：中国語（簡体字）で記述すること。日本語で書かないこと。
+- "reason"：簡体字中国語のみ。ひらがな・カタカナ・日本語の助詞・日本語の説明文を一切含めてはならない。指摘理由と修正案を中国語で書くこと。
+- "overallComment"：簡体字中国語のみ。ひらがな・カタカナ・日本語の説明文を一切含めてはならない。
 
-suggestionsは最低5件以上を目標にすること。語彙選択、敬語・文体、句読点、自然な言い回し、文章構成など、あらゆる観点から改善点を探し、簡単には5件未満で切り上げないこと。ただし、実在しない指摘の捏造や同じ指摘の重複による水増しは禁止する。十分に検討した上で本当に5件に満たない場合は、実際に見つかった件数のみを返すこと（架空の指摘を作らないこと）。"""
+suggestionsは最低5件以上を目標にすること。意味の不一致、文法、流暢さ、スペルミスに加え、語彙選択、敬語・文体、句読点、自然な言い回し、文章構成などからも改善点を探し、簡単には5件未満で切り上げないこと。ただし、実在しない指摘の捏造や同じ指摘の重複による水増しは禁止する。十分に検討した上で本当に5件に満たない場合は、実際に見つかった件数のみを返すこと（架空の指摘を作らないこと）。"""
 
 FEW_SHOT_EXAMPLE = """例：
 原文：彼は昨日、東京に行きました
@@ -64,7 +75,9 @@ FEW_SHOT_EXAMPLE = """例：
 
 def build_user_prompt(original_text: str, target_text: str) -> str:
     """Build the user prompt for text correction."""
-    return f"""原文：{original_text}
+    return f"""{CORRECTION_TASK_BRIEF}
+
+原文：{original_text}
 
 添削対象：{target_text}"""
 

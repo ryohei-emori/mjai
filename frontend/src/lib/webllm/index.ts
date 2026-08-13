@@ -14,7 +14,12 @@
 export { WEBLLM_MODEL_ID, WEBLLM_MODEL_DISPLAY_NAME, ALTERNATIVE_MODELS } from "./config";
 export { checkWebGPUSupport, checkWebGPUAdapter, type WebGPUStatus } from "./webgpu";
 export { buildPrompt, buildChatMessages, type PromptInput } from "./prompt";
-export { parseModelOutput, type CorrectionSuggestion, type ParsedResponse } from "./parser";
+export {
+  parseModelOutput,
+  hasNonChineseReason,
+  type CorrectionSuggestion,
+  type ParsedResponse,
+} from "./parser";
 export {
   initializeEngine,
   generateSuggestions,

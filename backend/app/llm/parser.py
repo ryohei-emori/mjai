@@ -16,8 +16,9 @@ equivalents) and `overallComment` keys without transforming their language.
 As of 2026-08 the prompts (see backend/app/llm/prompts.py) instruct the
 model to write `original` in Japanese and `reason`/`overallComment` in
 Simplified Chinese. This module additionally exposes `has_non_chinese_reason()`,
-a separate, opt-in content-language check (Hiragana/Katakana detection) that
-callers such as backend/app/llm/suggestions.py use to decide whether to
+a separate, opt-in content-language check (Hiragana/Katakana/halfwidth kana
+plus Japanese function-word patterns; see `enforce-chinese-suggestion-comments`)
+that callers such as backend/app/llm/suggestions.py use to decide whether to
 retry generation — `parse_model_output()` itself still does not validate or
 reject based on language, it only structures the JSON.
 
@@ -342,34 +343,52 @@ def is_json_extraction_failure(result: ParsedResponse) -> bool:
     return not result["suggestions"] and result["overallComment"] == JSON_EXTRACTION_FAILURE_MESSAGE
 
 
-# Hiragana (U+3040-U+309F) and Katakana (U+30A0-U+30FF): Japanese-only
-# syllabaries that never appear in Chinese text. Their presence in a field
-# that is supposed to be Simplified Chinese (per backend/app/llm/prompts.py's
-# SYSTEM_PROMPT language rules) is a cheap, reliable, zero-dependency signal
-# that the model wrote Japanese there instead — see design.md Decision 5 in
-# the `refine-suggestion-card-interactions` change for why this heuristic
-# was chosen over a statistical language-detection library.
-_JAPANESE_KANA_PATTERN = re.compile(r'[\u3040-\u30FF]')
+# Japanese-script / Japanese-prose signals for explanation fields that must
+# be Simplified Chinese. See `enforce-chinese-suggestion-comments` design.md.
+#
+# 1) Hiragana (U+3040-U+309F), Katakana (U+30A0-U+30FF), halfwidth Katakana
+#    (U+FF66-U+FF9D): never appear in Chinese text.
+# 2) Common Japanese particle / function-word patterns (all contain kana, so
+#    they overlap with (1) for dense Japanese, but make the intent explicit
+#    and catch mixed strings in tests/docs). Do NOT use Han-only compounds
+#    that also appear in Simplified Chinese — that would false-positive.
+_JAPANESE_KANA_PATTERN = re.compile(r'[\u3040-\u30FF\uFF66-\uFF9D]')
+_JAPANESE_FUNCTION_PATTERN = re.compile(
+    r'(?:です|ます|でした|ました|ません|である|だった|ではない|ではありません|'
+    r'してください|しています|していない|ことができる|ことになる|'
+    r'べきだ|べきで|という|について|に対して|として|'
+    r'のです|なので|ですが|ますが)'
+)
+
+
+def _text_looks_japanese(text: str) -> bool:
+    """True if `text` contains Japanese kana or Japanese function patterns."""
+    if not text:
+        return False
+    if _JAPANESE_KANA_PATTERN.search(text):
+        return True
+    return bool(_JAPANESE_FUNCTION_PATTERN.search(text))
 
 
 def has_non_chinese_reason(result: ParsedResponse) -> bool:
     """
     True if any suggestion's `reason` or the top-level `overallComment`
-    contains Hiragana/Katakana codepoints, indicating that field was
-    written in Japanese rather than the required Simplified Chinese.
+    looks Japanese (kana / halfwidth kana / Japanese function words),
+    indicating that field was written in Japanese rather than the required
+    Simplified Chinese.
 
-    The `original` and `sourceExcerpt` fields are intentionally NOT checked
-    here — both are required to stay in Japanese, so Hiragana/Katakana there
-    is expected and correct.
+    Pure Simplified Chinese that shares Han characters with Japanese kanji
+    MUST pass (returns False). The `original` and `sourceExcerpt` fields are
+    intentionally NOT checked — both are required to stay in Japanese.
 
     Used by backend/app/llm/suggestions.py to decide whether a generate+parse
     attempt should be retried, composing with (not replacing)
     `is_json_extraction_failure`, both bounded by the same
     MAX_PARSE_RETRY_ATTEMPTS budget.
     """
-    if _JAPANESE_KANA_PATTERN.search(result["overallComment"]):
+    if _text_looks_japanese(result["overallComment"]):
         return True
     return any(
-        _JAPANESE_KANA_PATTERN.search(suggestion["reason"])
+        _text_looks_japanese(suggestion["reason"])
         for suggestion in result["suggestions"]
     )
