@@ -28,4 +28,4 @@
 
 - [x] 5.1 Run backend key-pool pytest
 - [x] 5.2 Run relevant frontend jest tests
-- [ ] 5.3 Commit + push (no secrets; leave unrelated OpenSpec changes alone)
+- [x] 5.3 Commit + push (no secrets; leave unrelated OpenSpec changes alone)
