@@ -421,7 +421,11 @@ async def _generate_suggestions_once(
     )
 
 
-async def generate_suggestions(original_text: str, target_text: str) -> ParsedResponse:
+async def generate_suggestions(
+    original_text: str,
+    target_text: str,
+    exemplar_translation: Optional[str] = None,
+) -> ParsedResponse:
     """
     Generate AI correction suggestions for the given text.
 
@@ -433,6 +437,9 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     Args:
         original_text: The original Japanese text.
         target_text: The target/translated text to correct.
+        exemplar_translation: Optional known-good translation of
+            `original_text` used purely as reference calibration. Omitted
+            from the prompt entirely when empty/whitespace-only.
 
     Returns:
         ParsedResponse with suggestions and overall comment. May be the
@@ -454,7 +461,7 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
             "or GEMINI_API_KEY(S)."
         )
 
-    base_messages = build_messages(original_text, target_text)
+    base_messages = build_messages(original_text, target_text, exemplar_translation)
 
     last_result: Optional[ParsedResponse] = None
     language_failed_last = False

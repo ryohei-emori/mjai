@@ -342,6 +342,8 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
     
     original_text = payload.get("originalText", "")
     target_text = payload.get("targetText", "")
+    # Optional 模範回答訳文: reference calibration only, never required.
+    exemplar_translation = (payload.get("exemplarTranslation") or "").strip()
     
     if not original_text or not target_text:
         return JSONResponse(
@@ -350,7 +352,9 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
         )
     
     try:
-        result = await generate_suggestions(original_text, target_text)
+        result = await generate_suggestions(
+            original_text, target_text, exemplar_translation
+        )
         return result
     except NoProvidersConfiguredError as e:
         return JSONResponse(

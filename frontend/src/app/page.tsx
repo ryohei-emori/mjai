@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { HighlightedTextarea, type TextHighlight } from "@/components/ui/highlighted-textarea"
+import { ExemplarTextCard } from "@/components/ui/exemplar-text-card"
 import { JobQueueCarousel } from "@/components/ui/job-queue-carousel"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -138,6 +139,10 @@ type Session = {
   correctionCount: number
   originalText: string
   targetText: string
+  // 任意の模範回答訳文（原文に対する参考訳）。AIには「対比の参考」としてのみ
+  // 渡し、空なら従来どおりプロンプトへ一切含めない。SOURCEと同様に演習単位で
+  // 固定なので、生成後にTARGETをクリアするときも消さない。
+  exemplarTranslation: string
   suggestions: CorrectionSuggestion[]
   overallComment: string
   savedData: SavedData[]
@@ -174,6 +179,7 @@ const DRAFT_PERSIST_DEBOUNCE_MS = 500
 type PersistedDraft = {
   originalText: string
   targetText: string
+  exemplarTranslation: string
   suggestions: CorrectionSuggestion[]
   overallComment: string
   confirmingHistoryIndex: number | null
@@ -194,6 +200,8 @@ function loadDraftFromStorage(sessionId: string): PersistedDraft | null {
     return {
       originalText: parsed.originalText || '',
       targetText: parsed.targetText || '',
+      // このフィールド追加前に永続化されたDraftにはキーが無いため空文字で補う
+      exemplarTranslation: parsed.exemplarTranslation || '',
       suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
       overallComment: parsed.overallComment || '',
       confirmingHistoryIndex:
@@ -213,6 +221,7 @@ function saveDraftToStorage(sessionId: string, draft: PersistedDraft) {
     const isEmpty =
       !draft.originalText &&
       !draft.targetText &&
+      !draft.exemplarTranslation &&
       draft.suggestions.length === 0 &&
       !draft.overallComment &&
       draft.confirmingHistoryIndex === null &&
@@ -574,7 +583,9 @@ export default function TextCorrectionApp() {
   }, [])
 
   // 単一ジョブを非同期処理する関数（並列実行可能）
-  const processJobAsync = useCallback(async (jobId: string, targetText: string, originalText: string) => {
+  // exemplarTranslation は任意。空文字なら api.ts / WebLLM prompt 側でキーごと
+  // 省略され、プロンプトは従来と完全に同一になる（後方互換）。
+  const processJobAsync = useCallback(async (jobId: string, targetText: string, originalText: string, exemplarTranslation: string = "") => {
     let sessionIdForPersist = ''
     // ジョブをprocessingに更新しつつ sessionId を確保（DB pending 永続化用）
     setJobQueue((prev) =>
@@ -603,7 +614,7 @@ export default function TextCorrectionApp() {
         }
 
         const data = await generateWebLLMSuggestions(
-          { originalText, targetText, instructionPrompt: "CCTalkからの添削指示" },
+          { originalText, targetText, exemplarTranslation, instructionPrompt: "CCTalkからの添削指示" },
           (status) => setWebllmStatus(status)
         )
         suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
@@ -611,7 +622,7 @@ export default function TextCorrectionApp() {
       } else {
         // Cloud API only — failures surface as failed jobs; never call WebLLM.
         try {
-          const data = await suggestionsAPI.generate(originalText, targetText)
+          const data = await suggestionsAPI.generate(originalText, targetText, exemplarTranslation)
           console.log("[processJobAsync] API response received:", {
             suggestionsCount: data.suggestions?.length ?? 0,
             suggestions: data.suggestions,
@@ -785,7 +796,12 @@ export default function TextCorrectionApp() {
     
     if (processingCount < maxConcurrent) {
       // スロットが空いているので即座に処理開始
-      processJobAsync(newJob.id, targetText, currentSession.originalText)
+      processJobAsync(
+        newJob.id,
+        targetText,
+        currentSession.originalText,
+        currentSession.exemplarTranslation,
+      )
     }
     
     toast({
@@ -820,7 +836,12 @@ export default function TextCorrectionApp() {
     
     // 各ジョブを並列で処理開始
     jobsToStart.forEach(job => {
-      processJobAsync(job.id, job.targetText, currentSession.originalText)
+      processJobAsync(
+        job.id,
+        job.targetText,
+        currentSession.originalText,
+        currentSession.exemplarTranslation,
+      )
     })
   }, [jobQueue, currentSession, offlineMode, processJobAsync])
 
@@ -1044,6 +1065,7 @@ export default function TextCorrectionApp() {
                   ...s,
                   originalText: draft.originalText || s.originalText,
                   targetText: draft.targetText || s.targetText,
+                  exemplarTranslation: draft.exemplarTranslation || s.exemplarTranslation,
                   suggestions: draft.suggestions.length > 0 ? draft.suggestions : s.suggestions,
                   overallComment: draft.overallComment || s.overallComment,
                 }
@@ -1212,6 +1234,7 @@ export default function TextCorrectionApp() {
       saveDraftToStorage(currentSessionId, {
         originalText: currentSession.originalText,
         targetText: currentSession.targetText,
+        exemplarTranslation: currentSession.exemplarTranslation,
         suggestions: currentSession.suggestions,
         overallComment: currentSession.overallComment,
         confirmingHistoryIndex,
@@ -1349,6 +1372,8 @@ export default function TextCorrectionApp() {
             correctionCount: s.correctionCount, // 保存済み件数を追加
             originalText: existing?.originalText || draft?.originalText || "",
             targetText: existing?.targetText || draft?.targetText || "",
+            exemplarTranslation:
+              existing?.exemplarTranslation || draft?.exemplarTranslation || "",
             suggestions: existing?.suggestions.length
               ? existing.suggestions
               : draft?.suggestions.length
@@ -1377,6 +1402,7 @@ export default function TextCorrectionApp() {
         correctionCount: 0, // 新しいセッションのため0件で初期化
         originalText: "",
         targetText: "",
+        exemplarTranslation: "",
         suggestions: [],
         overallComment: "",
         savedData: [],
@@ -2442,6 +2468,15 @@ export default function TextCorrectionApp() {
                         />
                       </CardContent>
                     </Card>
+
+                    {/* Exemplar Text Card (optional 模範回答訳文) */}
+                    <ExemplarTextCard
+                      value={currentSession.exemplarTranslation}
+                      onChange={(value) => updateCurrentSession({ exemplarTranslation: value })}
+                      onCopy={(value) =>
+                        copyToClipboard(value, "模範回答訳文がクリップボードにコピーされました")
+                      }
+                    />
 
                     {/* Target Text Card */}
                     <Card className="bg-surface border border-outline-variant shadow-none">

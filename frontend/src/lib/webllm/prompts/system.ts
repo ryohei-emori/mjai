@@ -36,6 +36,15 @@
  *   anti-padding no longer doubles as licence to under-report; per-item length
  *   bound replaces a global brevity cue; explicit note that a JP-internal
  *   grammar fault has no 原文 counterpart so `sourceExcerpt` is omitted.
+ * - Optional exemplar (`add-optional-exemplar-translation-input`): when the
+ *   user pastes a 模範回答訳文, EXEMPLAR_REFERENCE_RULES is appended to this
+ *   prompt and the exemplar gets its own labeled section. Both are withheld
+ *   when the field is empty, so the offline prompt is unchanged for users who
+ *   do not have an exemplar — and a 7B model is never told about a section
+ *   that is not in its context. Kept to two lines because the backend's
+ *   five-line version would eat a noticeable slice of the 7B instruction
+ *   budget; see backend/app/llm/prompts.py for the live A/B evidence behind
+ *   the guard's content.
  * 
  * Works with Mistral 7B (current), SmolLM2, and other instruct models.
  */
@@ -50,3 +59,14 @@ overallComment MUST先写优点再写问题。每个reason MUST用自然通俗�
 对照原文时禁止误引或编造原文；批评生硬日语时勿偏离原文意思。关注规范译词、语域、中式日语→自然日语等。
 sourceExcerpt可选：从原文摘录与original对应的片段；无明确对应则省略或""，禁止编造。日语内部的语法/活用错误在原文里常常没有对应片段，这时就省略。
 至少5条suggestions（多段时MUST逐段扫描覆盖各段真实问题，长文应明显更多）；优先检查意义不一致、语法、流畅度、拼写，并兼顾用词/语气/标点/结构；禁止只写1–2条就提前结束；禁止编造或拆分同一问题来凑数，但“不许凑数”不等于可以少报，真实问题必须全写出来；确实不足5条才可更少。`;
+
+/**
+ * Appended to SYSTEM_PROMPT only when a non-empty 模範回答訳文 is supplied.
+ *
+ * Mirrors backend/app/llm/prompts.py EXEMPLAR_REFERENCE_RULES, condensed for
+ * the 7B instruction budget. The two clauses that must survive condensing are
+ * "still judge against 原文" and "never cite the exemplar as the reason" —
+ * without them a pasted reference measurably reduces issue coverage.
+ */
+export const EXEMPLAR_REFERENCE_RULES = `模範回答訳文（如有）只是参考译文，用来校准原文意图、语域与译词范围；不是评分标准，也不是要把添削対象改写成它。MUST仍以原文为判断依据；禁止把“与参考译文不同”本身当成问题，添削対象另有同样准确自然的写法时不得指为错误。
+禁止在reason/overallComment里提及参考译文（禁止出现“参考译文”“模範回答”“参考訳”字样）；推荐改法必须用语言学理由说明为什么必须改，“参考译文这么写”不是理由。`;

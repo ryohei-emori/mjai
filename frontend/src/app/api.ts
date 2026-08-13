@@ -315,12 +315,21 @@ export const suggestionsAPI = {
   // Generate AI suggestions via backend (Groq/Cloudflare).
   // Uses a dedicated fetch path so 503 bodies (rate_limited / message) are
   // preserved for the UI — unlike the generic apiFetch Error string.
-  generate: async (originalText: string, targetText: string): Promise<SuggestionsResponse> => {
+  // `exemplarTranslation` (模範回答訳文) is optional reference calibration.
+  // The key is omitted entirely when blank so the request body — and therefore
+  // the prompt the backend builds — is unchanged for users without an exemplar.
+  generate: async (
+    originalText: string,
+    targetText: string,
+    exemplarTranslation?: string,
+  ): Promise<SuggestionsResponse> => {
     const fullUrl = `${API_BASE_URL}/suggestions`;
     const { data: { session } } = await supabase.auth.getSession();
     const authHeaders: Record<string, string> = session?.access_token
       ? { Authorization: `Bearer ${session.access_token}` }
       : {};
+
+    const trimmedExemplar = (exemplarTranslation || "").trim();
 
     let response: Response;
     try {
@@ -330,7 +339,11 @@ export const suggestionsAPI = {
           "Content-Type": "application/json",
           ...authHeaders,
         },
-        body: JSON.stringify({ originalText, targetText }),
+        body: JSON.stringify({
+          originalText,
+          targetText,
+          ...(trimmedExemplar ? { exemplarTranslation: trimmedExemplar } : {}),
+        }),
       });
     } catch (networkError) {
       throw new SuggestionsAPIError(

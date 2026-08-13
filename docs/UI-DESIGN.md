@@ -232,21 +232,33 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 │               │  │ SOURCE TEXT     │    │  │ Job Queue │  │
 │  Session 1 ✓  │  │ (原文)          │    │  └───────────┘  │
 │  Session 2    │  └─────────────────┘    │                 │
-│  Session 3    │                         │  ┌───────────┐  │
-│               │  ┌─────────────────┐    │  │ AI Sugg.  │  │
-│               │  │ TARGET TEXT     │    │  │ Option A  │  │
-│               │  │ (翻訳/編集)     │    │  │ Option B  │  │
-│               │  │                 │    │  └───────────┘  │
-│               │  │ [Generate AI]   │    │                 │
-│               │  └─────────────────┘    │  ┌───────────┐  │
-│               │                         │  │ History   │  │
+│  Session 3    │  ┌─────────────────┐    │  ┌───────────┐  │
+│               │  │ EXEMPLAR TEXT   │    │  │ AI Sugg.  │  │
+│               │  │ (模範回答訳文)  │    │  │ Option A  │  │
+│               │  └─────────────────┘    │  │ Option B  │  │
+│               │  ┌─────────────────┐    │  └───────────┘  │
+│               │  │ TARGET TEXT     │    │                 │
+│               │  │ (翻訳/編集)     │    │  ┌───────────┐  │
+│               │  │                 │    │  │ History   │  │
+│               │  │ [Generate AI]   │    │  └───────────┘  │
+│               │  └─────────────────┘    │                 │
 └───────────────┴─────────────────────────┴─────────────────┘
 ```
 
 - Left pane: `w-72` (288px) fixed width, session list with search
-- Center pane: `flex-1`, SOURCE TEXT + TARGET TEXT cards (English-primary bilingual headers)
+- Center pane: `flex-1`, SOURCE TEXT + EXEMPLAR TEXT + TARGET TEXT cards (English-primary bilingual headers)
 - Right pane: Default `448px`, resizable (drag handle between center and right panes, persisted to localStorage)
 - Section headers: `text-label-caps` uppercase style, English primary with Japanese in parentheses
+
+### Exemplar Text Card (optional)
+
+`ExemplarTextCard` (`frontend/src/components/ui/exemplar-text-card.tsx`) sits between the SOURCE and TARGET cards and holds an optional 模範回答訳文 — a known-good translation of the source that the AI uses only to calibrate expected meaning and register.
+
+- Same card chrome as SOURCE/TARGET: `bg-surface`, `border-outline-variant`, `shadow-none`, `text-label-caps` header, copy button.
+- Header carries an inline `任意` marker in `text-metadata` at `text-on-surface-variant/70`, so "optional" reads from the header rather than from a tooltip.
+- Plain `Textarea` at `min-h-[140px]` (shorter than SOURCE's 180px and TARGET's 200px, since it is supplementary). Deliberately **not** `HighlightedTextarea`: suggestion spans only ever point at SOURCE and TARGET excerpts.
+- Never gates the generate button — that stays governed by non-blank SOURCE + TARGET.
+- Lives in its own component file because it is slated to become collapsible; a collapse wrapper goes around the component rather than into `page.tsx`.
 
 ### Session Card
 
@@ -385,6 +397,7 @@ This section documents visual refinements applied after the initial MD3 migratio
 |---------|--------|-------|
 | MJAI logo | `edit_note` icon + "MJAI" text | "MJAI" text wordmark only |
 | Source card header | 原文テキスト | SOURCE TEXT (原文) |
+| Exemplar card header | (did not exist) | EXEMPLAR TEXT (模範回答訳文) + `任意` |
 | Target card header | 添削対象テキスト | TARGET TEXT (翻訳/編集) |
 | Generate button | `smart_toy` + "AI提案を生成" | `auto_awesome` + "Generate AI Suggestions" |
 | Right pane width | `w-96` (384px) fixed | 448px default, resizable (280-600px range) |

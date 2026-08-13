@@ -1,7 +1,9 @@
 import {
   SYSTEM_PROMPT,
+  EXEMPLAR_REFERENCE_RULES,
   FEW_SHOT_EXAMPLES,
   SECTION_ORIGINAL,
+  SECTION_EXEMPLAR,
   SECTION_TARGET,
   SECTION_INSTRUCTION,
   SECTION_ANSWER,
@@ -137,8 +139,30 @@ describe("prompts exports", () => {
     });
   });
 
+  describe("exemplar reference rules", () => {
+    it("keeps the exemplar guard out of the default system prompt", () => {
+      // Withheld unless an exemplar is actually pasted, so users without one
+      // spend none of the 7B instruction budget on it.
+      expect(SYSTEM_PROMPT).not.toContain("模範回答訳文");
+    });
+
+    it("keeps both load-bearing clauses after condensing for 7B", () => {
+      expect(EXEMPLAR_REFERENCE_RULES).toContain("MUST仍以原文为判断依据");
+      expect(EXEMPLAR_REFERENCE_RULES).toContain("与参考译文不同");
+      expect(EXEMPLAR_REFERENCE_RULES).toMatch(/禁止在reason/);
+      expect(EXEMPLAR_REFERENCE_RULES).toContain("不是理由");
+    });
+
+    it("stays short enough not to crowd out the existing rules", () => {
+      expect(EXEMPLAR_REFERENCE_RULES.length).toBeLessThan(
+        SYSTEM_PROMPT.length / 3
+      );
+    });
+  });
+
   it("exports all section templates", () => {
     expect(SECTION_ORIGINAL).toBe("＜中国語または日本語に翻訳する日本語または中国語の文＞");
+    expect(SECTION_EXEMPLAR).toBe("＜模範回答訳文（参考・校准用，禁止直接当作理由或原样照搬）＞");
     expect(SECTION_TARGET).toBe("＜日本語または中国語の文から中国語または日本語に翻訳を試みた文＞");
     expect(SECTION_INSTRUCTION).toBe("## 追加指示");
     expect(SECTION_ANSWER).toBe("## あなたが生成する回答");

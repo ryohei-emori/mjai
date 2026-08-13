@@ -178,6 +178,8 @@ All business routes hang off a FastAPI `APIRouter` with `Depends(get_current_use
 | `PUT /proposals/{id}` | Update proposal selection/edit flags | same |
 | `GET /keepalive` | Supabase keep-alive endpoint for free-tier DB pause prevention | None |
 
+`POST /suggestions` takes `originalText` and `targetText`, plus an optional `exemplarTranslation` (模範回答訳文 — a known-good translation of the source). The optional field is additive: omitted, empty, or whitespace-only values produce exactly the previous SOURCE/TARGET-only prompt, so older clients stay compatible. When non-empty it is threaded into the prompt as reference calibration only, guarded by rules that forbid citing it as a correction reason or treating "differs from the exemplar" as a defect; it is not persisted to `correction_histories` / `ai_proposals`.
+
 AI suggestions are generated via `POST /suggestions` (Gemini → Groq → Cloudflare failover) or client-side WebLLM (offline mode toggle). On successful generation the frontend immediately persists a `pending` history + proposals; 「確定してコピー・保存」 promotes the same row to `confirmed` (no duplicate history junk). ~10s poll hydrates pending into Job Queue and confirmed into History across shared-DB clients.
 
 ### 5.4 Frontend surface (within system design)

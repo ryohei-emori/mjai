@@ -4,8 +4,10 @@ Tests for backend/app/llm/prompts.py framing and language rules.
 
 from app.llm.prompts import (
     CORRECTION_TASK_BRIEF,
+    EXEMPLAR_REFERENCE_RULES,
     SYSTEM_PROMPT,
     FEW_SHOT_EXAMPLE,
+    build_system_prompt,
     build_user_prompt,
     build_messages,
 )
@@ -247,6 +249,56 @@ class TestFewShotExemplarCoherence:
         assert "现状：" not in FEW_SHOT_EXAMPLE
         assert "现状：" in SYSTEM_PROMPT
         assert "现状：" in build_user_prompt("原文", "対象")
+
+
+class TestOptionalExemplarTranslation:
+    """add-optional-exemplar-translation-input — reference-only calibration."""
+
+    BASELINE_USER_PROMPT = build_user_prompt("原文A", "対象B")
+
+    def test_absent_exemplar_leaves_prompt_byte_identical(self):
+        # The whole backward-compat guarantee: users without an exemplar must
+        # get exactly today's prompt, not a prompt with an empty section.
+        for empty in (None, "", "   ", "\n\t "):
+            assert build_user_prompt("原文A", "対象B", empty) == self.BASELINE_USER_PROMPT
+            assert build_system_prompt(empty) == SYSTEM_PROMPT
+
+    def test_absent_exemplar_omits_exemplar_label(self):
+        assert "模範回答訳文" not in self.BASELINE_USER_PROMPT
+
+    def test_non_empty_exemplar_appears_between_source_and_target(self):
+        prompt = build_user_prompt("原文A", "対象B", "模範の訳文C")
+        assert "模範の訳文C" in prompt
+        assert "模範回答訳文" in prompt
+        assert prompt.index("原文A") < prompt.index("模範の訳文C") < prompt.index("対象B")
+
+    def test_exemplar_is_stripped_before_insertion(self):
+        prompt = build_user_prompt("原文A", "対象B", "  模範の訳文C \n")
+        assert "模範回答訳文（参考・校准用，禁止直接当作理由或原样照搬）：模範の訳文C" in prompt
+
+    def test_exemplar_rules_appended_to_system_prompt_only_when_present(self):
+        with_exemplar = build_system_prompt("模範の訳文C")
+        assert with_exemplar.startswith(SYSTEM_PROMPT)
+        assert EXEMPLAR_REFERENCE_RULES.strip() in with_exemplar
+        assert EXEMPLAR_REFERENCE_RULES.strip() not in SYSTEM_PROMPT
+
+    def test_exemplar_rules_forbid_copying_and_citing_the_exemplar(self):
+        # Live A/B probe showed an unguarded exemplar cuts issue coverage; these
+        # are the clauses that keep the critique grounded in 原文.
+        assert "以原文为判断依据" in EXEMPLAR_REFERENCE_RULES
+        assert "与参考译文不同" in EXEMPLAR_REFERENCE_RULES
+        assert "禁止在 reason" in EXEMPLAR_REFERENCE_RULES
+        assert "不是合格的理由" in EXEMPLAR_REFERENCE_RULES or "永远不是" in EXEMPLAR_REFERENCE_RULES
+
+    def test_build_messages_threads_exemplar_into_both_roles(self):
+        messages = build_messages("o", "t", "模範の訳文C")
+        assert messages[0]["role"] == "system"
+        assert "模範回答訳文" in messages[0]["content"]
+        assert "模範の訳文C" in messages[-1]["content"]
+
+    def test_build_messages_without_exemplar_matches_two_arg_form(self):
+        assert build_messages("o", "t", None) == build_messages("o", "t")
+        assert build_messages("o", "t", "") == build_messages("o", "t")
 
 
 class TestNoDownstreamSuggestionCap:

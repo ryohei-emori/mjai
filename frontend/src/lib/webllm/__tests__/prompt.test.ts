@@ -38,6 +38,58 @@ describe("buildPrompt", () => {
 
     expect(prompt).not.toContain("## 追加指示");
   });
+
+  describe("optional exemplarTranslation (模範回答訳文)", () => {
+    const baseInput = { originalText: "テスト", targetText: "测试" };
+
+    it("includes the exemplar section and its guard rules when provided", () => {
+      const prompt = buildPrompt({
+        ...baseInput,
+        exemplarTranslation: "模範の訳文です",
+      });
+
+      expect(prompt).toContain("模範回答訳文");
+      expect(prompt).toContain("模範の訳文です");
+      expect(prompt).toContain("MUST仍以原文为判断依据");
+      expect(prompt).toContain("禁止在reason/overallComment里提及参考译文");
+    });
+
+    it("places the exemplar between SOURCE and TARGET sections", () => {
+      const prompt = buildPrompt({
+        originalText: "原文セクション",
+        targetText: "対象セクション",
+        exemplarTranslation: "模範セクション",
+      });
+
+      expect(prompt.indexOf("原文セクション")).toBeLessThan(
+        prompt.indexOf("模範セクション")
+      );
+      expect(prompt.indexOf("模範セクション")).toBeLessThan(
+        prompt.indexOf("対象セクション")
+      );
+    });
+
+    it("leaves the prompt byte-identical when the exemplar is absent or blank", () => {
+      // The backward-compat guarantee: an offline user without an exemplar
+      // must get exactly the prompt they got before this field existed.
+      const baseline = buildPrompt(baseInput);
+
+      expect(buildPrompt({ ...baseInput, exemplarTranslation: "" })).toBe(baseline);
+      expect(buildPrompt({ ...baseInput, exemplarTranslation: "   \n" })).toBe(
+        baseline
+      );
+      expect(baseline).not.toContain("模範回答訳文");
+    });
+
+    it("trims surrounding whitespace from the exemplar", () => {
+      const prompt = buildPrompt({
+        ...baseInput,
+        exemplarTranslation: "  模範の訳文です \n",
+      });
+
+      expect(prompt).toContain("＞\n模範の訳文です\n\n");
+    });
+  });
 });
 
 describe("buildChatMessages", () => {

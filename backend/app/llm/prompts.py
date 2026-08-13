@@ -88,6 +88,35 @@ or shorter items: `质量优先于条数` became an explicit statement that the
 anti-fabrication rule is not licence to under-report, and the global `宜简明`
 cue became a per-item length bound. SYSTEM_PROMPT is grouped into numbered
 sections so coverage/count is not buried mid-paragraph.
+
+As of `add-optional-exemplar-translation-input` (2026-08): the user may paste
+an optional 模範回答訳文 (a known-good translation of 原文). It is threaded in
+as *reference calibration only*, and both the rules block
+(`EXEMPLAR_REFERENCE_RULES`) and the user-message block are added only when
+the exemplar is non-empty after strip, so the empty case stays byte-identical
+to the two-block prompt above.
+
+The guard wording is not decorative. A live A/B probe on the multi-paragraph
+epic fixture (`backend/scripts/live_exemplar_compare.py`) compared three
+conditions on `gemini-3.7-flash`:
+
+- baseline (no exemplar): 13 / 13 suggestions across two runs.
+- guarded (exemplar + these rules): 11 / 12 suggestions, and it additionally
+  caught modality faults baseline missed or buried — 「想像してみる」 losing
+  the original's invitation to the reader, and 「聞き取るわけではない」 turning
+  an objective "not everyone could hear it clearly" into a subjective denial.
+  Those are exactly the meaning-shift / modality categories section 【三】
+  calls highest priority, and the exemplar makes 原文 intent explicit enough
+  for the model to see them.
+- naive (exemplar pasted with *no* guard): 9 suggestions — a coverage
+  regression, because an unguarded reference invites the model to stop at the
+  diffs it happens to notice.
+
+No run in any condition mentioned the exemplar inside `reason` /
+`overallComment` (that would violate section 【三】's ban on non-teaching
+source-token matching). Recommended Japanese forms do sometimes land verbatim
+on exemplar wording, which is fine and intended — the reason prose still has
+to carry its own linguistic justification.
 """
 
 # Primary correction brief — core task framing (also repeated in the user message).
@@ -142,21 +171,59 @@ FEW_SHOT_EXAMPLE = """例（中译日文学/学术；教学型指摘，自然中
 输出：{"suggestions":[{"id":"1","original":"史詩","reason":"「史詩」像未消化的中文词形，宜改为「叙事詩」（じょじし）：日语社科/文学里“史诗”的规范译词是「叙事詩」。混用会暴露领域译词基础不足，后续译文也容易继续写错专名","sourceExcerpt":"史诗"},{"id":"2","original":"でも、","reason":"「でも」偏日常口语转折，读起来像会话，宜改为「しかし」：后者是书面论述转折。本文是学术随笔开篇，应用后者，否则语域掉到口语，影响今后同类论述译的语体判断","sourceExcerpt":"可实际上"},{"id":"3","original":"紙に印する文字","reason":"「紙に印する文字」宜改为「紙に印刷された文字」：原文“印在纸上的文字”说的是印成的文字成品，而「印する」不是自然的日语对应，读者难以立刻看出指印刷文本，属于词汇搭配理解不足","sourceExcerpt":"印在纸上的文字"},{"id":"4","original":"経験は、史詩を紙に印する文字として読む","reason":"句子骨架不成立：主语是「経験」，谓语却直接接动作动词「読む」，读起来像“经验在读书”。谓语应改成名词性结尾，例如「…文字として読むことだ」。主语与谓语能否对上是日语造句的基本功，这类破损会让整段读不通，今后写长句时也会反复出错"},{"id":"5","original":"として読む。","reason":"原文“大概是……来读”是带保留的推测，译文写成了断定，把作者的猜测变成了事实认定，意思出现偏移。宜补回推量语气，写成「…読むことだろう」。推测与断定的取舍会直接改变论述强度，是今后翻译议论文时必须把住的一环","sourceExcerpt":"大概"}],"overallComment":"已能传达“史诗首先是声音、而非只是纸面文字”这一核心对比，语序也基本跟住了原文节奏。主要问题集中在四类：规范译词（专名宜用「叙事詩」）、语域（论述转折宜用书面语）、词汇搭配（印刷义的表达），以及句子骨架与情态（主谓不配、推量脱落）。"}"""
 
 
-def build_user_prompt(original_text: str, target_text: str) -> str:
+# Appended to SYSTEM_PROMPT only when a non-empty 模範回答訳文 is supplied.
+# Withheld when absent so the model is never told about a section it cannot see.
+EXEMPLAR_REFERENCE_RULES = """
+【六】模範回答訳文（可选参考）：
+- 「模範回答訳文」是同一原文的一份高质量参考译文，只用来校准“原文意图 → 理想日语表达”的范围（语域、专名译词、情态强度）。它不是评分标准，也不是要把添削対象改写成它。
+- MUST 仍以原文为判断依据评价添削対象。禁止把“与参考译文不同”本身当成问题；添削対象另有同样准确、同样自然的写法时，不得指为错误。
+- 禁止在 reason / overallComment 里提及或引用参考译文的存在（禁止出现“参考译文”“模範回答”“参考訳”等字样）。推荐改法必须像没有参考译文时一样，用语言学理由说明为什么必须改。
+- 参考译文的措辞可以启发推荐形，但“参考译文这么写”永远不是合格的理由。
+"""
+
+# Label for the optional exemplar block inside the user message.
+EXEMPLAR_USER_BLOCK_LABEL = "模範回答訳文（参考・校准用，禁止直接当作理由或原样照搬）："
+
+
+def build_system_prompt(exemplar_translation: str | None = None) -> str:
+    """SYSTEM_PROMPT, plus exemplar rules only when an exemplar is supplied."""
+    if (exemplar_translation or "").strip():
+        return f"{SYSTEM_PROMPT}\n{EXEMPLAR_REFERENCE_RULES}"
+    return SYSTEM_PROMPT
+
+
+def build_user_prompt(
+    original_text: str,
+    target_text: str,
+    exemplar_translation: str | None = None,
+) -> str:
     """Build the user prompt for text correction."""
+    exemplar = (exemplar_translation or "").strip()
+    exemplar_block = (
+        f"{EXEMPLAR_USER_BLOCK_LABEL}{exemplar}\n\n" if exemplar else ""
+    )
     return f"""{CORRECTION_TASK_BRIEF}
 
 【再确认】reason 与 overallComment 必须是简体中文；禁止日语说明文。中文引用用 "" / “”；日语词形可用「」，禁止用「」包中文说明词。overallComment 先写优点再写问题。每个 reason MUST 用自然中文（约 2–4 句）写清：问题、推荐改法（如有）、为什么必须改（尽量点明对今后翻译能力的影响）；禁止强制「现状：」「推荐：」「現状：」「推奨：」等冒号标签口播；禁止只写位置的 缺少"X"在…。优先实质问题（意义偏移、系统性语法、情态错位、语域/领域译词）；禁止表面省略当主指摘；禁止无教学的“跟原文对词”；词汇升级须先对比两词语感再推荐。不要臆造不必要的“缺少”助词；对照原文时禁止误引/编造原文；sourceExcerpt 无明确对应就省略。多段时逐段扫描覆盖各段真实问题，勿只写 1–2 条就停；不许编造凑数，但也不许把真实问题漏报。只输出 JSON。
 
 原文：{original_text}
 
-添削対象：{target_text}"""
+{exemplar_block}添削対象：{target_text}"""
 
 
-def build_messages(original_text: str, target_text: str) -> list[dict]:
+def build_messages(
+    original_text: str,
+    target_text: str,
+    exemplar_translation: str | None = None,
+) -> list[dict]:
     """Build the full message list for chat completion API."""
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": build_system_prompt(exemplar_translation)},
         {"role": "user", "content": FEW_SHOT_EXAMPLE},
-        {"role": "user", "content": build_user_prompt(original_text, target_text)},
+        {
+            "role": "user",
+            "content": build_user_prompt(
+                original_text, target_text, exemplar_translation
+            ),
+        },
     ]

@@ -652,6 +652,54 @@ class TestChineseEnforcementFifteenIterations:
             asyncio.run(_once(i))
 
 
+@pytest.mark.asyncio
+class TestGenerateSuggestionsExemplarTranslation:
+    """add-optional-exemplar-translation-input — optional 3rd prompt input."""
+
+    @staticmethod
+    def _sent_messages(mock_groq) -> list[dict]:
+        return mock_groq.call_args.args[0]
+
+    async def test_omitted_exemplar_sends_todays_messages(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                await generate_suggestions("原文", "訳文")
+                sent = self._sent_messages(mock_groq)
+
+        from app.llm.prompts import build_messages
+
+        assert sent == build_messages("原文", "訳文")
+        assert all("模範回答訳文" not in m["content"] for m in sent)
+
+    async def test_blank_exemplar_is_treated_as_absent(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                await generate_suggestions("原文", "訳文", "   \n ")
+                sent = self._sent_messages(mock_groq)
+
+        assert all("模範回答訳文" not in m["content"] for m in sent)
+
+    async def test_non_empty_exemplar_reaches_the_prompt(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                result = await generate_suggestions("原文", "訳文", "模範の訳文")
+                sent = self._sent_messages(mock_groq)
+
+        assert "模範の訳文" in sent[-1]["content"]
+        assert "模範回答訳文" in sent[0]["content"]
+        # Response contract is unchanged by the extra input.
+        assert result["overallComment"] == "整体质量良好"
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     __import__("os").environ.get("GROQ_API_KEY") in (None, ""),

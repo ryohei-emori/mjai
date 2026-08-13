@@ -14,6 +14,15 @@ export const SECTION_ORIGINAL = '＜中国語または日本語に翻訳する�
 /** Section header for the target text (translation attempt) */
 export const SECTION_TARGET = '＜日本語または中国語の文から中国語または日本語に翻訳を試みた文＞';
 
+/**
+ * Section header for the optional exemplar translation (模範回答訳文).
+ *
+ * Only emitted when the user supplied one — see buildPrompt(). The label
+ * carries the "reference only" framing inline because a 7B model reads the
+ * nearest header far more reliably than a rule stated paragraphs earlier.
+ */
+export const SECTION_EXEMPLAR = '＜模範回答訳文（参考・校准用，禁止直接当作理由或原样照搬）＞';
+
 /** Section header for additional instructions */
 export const SECTION_INSTRUCTION = '## 追加指示';
 

@@ -360,6 +360,22 @@ frontend/src/lib/webllm/prompts/
 backend/app/llm/prompts.py  # Python port of above
 ```
 
+### Request Schema
+
+`POST /api/suggestions` body:
+
+```json
+{
+  "originalText": "原文",
+  "targetText": "添削対象",
+  "exemplarTranslation": "模範回答訳文（任意・省略可）"
+}
+```
+
+`exemplarTranslation` (added 2026-08, `add-optional-exemplar-translation-input` change) is optional: a known-good translation of `originalText` that the user may paste into the EXEMPLAR TEXT (模範回答訳文) card. **Omitted / empty / whitespace-only produces byte-identical prompts to before the field existed** — the exemplar block and its rules section are both withheld, never sent as an empty placeholder. When non-empty it is used as *reference calibration only*: `EXEMPLAR_REFERENCE_RULES` is appended to the system prompt to forbid citing the exemplar as a correction reason and to forbid treating "differs from the exemplar" as a defect. Same optional field threads into the WebLLM offline prompt (`PromptInput.exemplarTranslation`). Not persisted server-side (no DB column, not sent to `POST /histories` or `POST /proposals`); the frontend keeps it in the per-session localStorage draft.
+
+A live A/B probe (`backend/scripts/live_exemplar_compare.py`) is why the guard rules exist rather than pasting the exemplar bare: on the multi-paragraph epic fixture with `gemini-3.7-flash`, baseline returned 13/13 suggestions across two runs, guarded returned 11/12 while additionally catching modality faults baseline missed, and an unguarded exemplar dropped to 9 — a coverage regression. Prompt tokens rose ~21% (3089 → 3723) for a three-paragraph exemplar with latency unchanged (~10-13s), comfortably inside the Gemini 22s timeout and 55s wall-clock budget.
+
 ### Response Schema
 
 All providers return the same JSON structure:
