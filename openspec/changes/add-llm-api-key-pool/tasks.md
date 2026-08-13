@@ -22,6 +22,6 @@
 
 ## 5. Verify and ship
 
-- [ ] 5.1 Run key-pool unit tests plus relevant `backend/tests/test_groq_provider.py` / `test_llm_suggestions.py` (and CF tests if present)
-- [ ] 5.2 Optional smoke: one Groq call via key A and one via key B without logging secrets
-- [ ] 5.3 Commit and push code + openspec + `.env.example` + `AGENTS.md` only (never `conf/.env`)
+- [x] 5.1 Run key-pool unit tests plus relevant `backend/tests/test_groq_provider.py` / `test_llm_suggestions.py` (and CF tests if present)
+- [x] 5.2 Optional smoke: one Groq call via key A and one via key B without logging secrets
+- [x] 5.3 Commit and push code + openspec + `.env.example` + `AGENTS.md` only (never `conf/.env`)
