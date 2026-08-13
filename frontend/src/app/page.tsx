@@ -2581,8 +2581,6 @@ export default function TextCorrectionApp() {
                         {offlineMode 
                           ? "WebLLMモード: 逐次処理（1件ずつ）" 
                           : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
-                        {" · "}
-                        未確定ジョブはこの端末のみ（確定保存後に共有DBのHistoryへ）
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
