@@ -43,8 +43,10 @@ prompts. This module also exposes:
   `缺少"X"在…` / legacy `缺少「X」在…` reasons that omit necessity cues.
   Intentionally NOT wired into `generate_suggestions()` retry (too noisy).
 - `has_japanese_corner_quotes_in_critique()` — True if reason/overallComment
-  contains Japanese corner brackets 「」. Low-noise; wired into suggestions
-  retry alongside `has_non_chinese_reason`.
+  *misuses* Japanese corner brackets 「」 to wrap Chinese prose (or has
+  unpaired brackets). Allowed JP TARGET cites inside 「」 do not trip this.
+  Wired into suggestions retry alongside `has_non_chinese_reason`
+  (`raise-suggestion-quality-to-gemini-bar`).
 """
 
 from __future__ import annotations
@@ -382,11 +384,47 @@ _QUOTED_JP_SPAN_PATTERN = re.compile(
     re.DOTALL,
 )
 _CORNER_QUOTE_CHARS = re.compile(r'[「」]')
+# Complete 「…」 spans (non-greedy; no nesting expected in critique fields).
+_CORNER_SPAN_PATTERN = re.compile(r'「([^」]*)」')
+# Markers that the span is Chinese meta-prose / critique label, not a JP cite.
+_CN_PROSE_IN_CORNER = re.compile(
+    r'(?:时态|语法|助词|问题|错误|缺少|不自然|流畅|语境|语域|必须|应该|'
+    r'因为|因此|改用|活用|拼写|标点|'
+    r'[语这们对还说]|[的了吗呢吧])'
+)
+# Short shared-CJK / kanji citation (e.g. 「叙事詩」) without CN prose markers.
+_SHORT_CJK_CITE = re.compile(r'^[\u4e00-\u9fff々ー･・\u30a0-\u30ff\u3040-\u309f\uff66-\uff9d]{1,16}$')
 
 
 def _strip_quoted_japanese_spans(text: str) -> str:
     """Remove citation quote spans so cited Japanese forms do not trip the check."""
     return _QUOTED_JP_SPAN_PATTERN.sub("", text)
+
+
+def _corner_span_is_allowed_jp_cite(inner: str) -> bool:
+    """True if 「inner」 looks like a Japanese TARGET citation (not Chinese prose)."""
+    s = (inner or "").strip()
+    if not s:
+        return False
+    if _CN_PROSE_IN_CORNER.search(s):
+        return False
+    if _JAPANESE_KANA_PATTERN.search(s):
+        return True
+    return bool(_SHORT_CJK_CITE.fullmatch(s))
+
+
+def _text_has_misused_corner_quotes(text: str) -> bool:
+    """
+    True if text misuses 「」: unpaired brackets, or any complete span that is
+    not an allowed Japanese TARGET citation (Chinese prose / labels inside 「」).
+    """
+    if not text:
+        return False
+    spans = list(_CORNER_SPAN_PATTERN.finditer(text))
+    stripped = _CORNER_SPAN_PATTERN.sub("", text)
+    if _CORNER_QUOTE_CHARS.search(stripped):
+        return True  # unpaired leftover 「 or 」
+    return any(not _corner_span_is_allowed_jp_cite(m.group(1)) for m in spans)
 
 
 def _text_looks_japanese(text: str) -> bool:
@@ -430,16 +468,19 @@ def has_non_chinese_reason(result: ParsedResponse) -> bool:
 
 def has_japanese_corner_quotes_in_critique(result: ParsedResponse) -> bool:
     """
-    True if any `reason` or `overallComment` contains Japanese corner brackets
-    「 or 」. Spec MUST (`harden-semantic-suggestion-reasons`): Chinese critique
-    fields must use "" / “”, never 「」. Low-noise; wired into
+    True if any `reason` or `overallComment` *misuses* Japanese corner brackets:
+    unpaired 「/」, or 「…」 wrapping Chinese prose/labels (e.g. 「时态」).
+
+    Spec (`raise-suggestion-quality-to-gemini-bar`): Chinese meta-prose MUST use
+    "" / “”; 「」 is allowed only for Japanese TARGET word/phrase citations
+    (e.g. 「叙事詩」「行きました」). Legitimate JP cites MUST NOT trip retry.
+    Does not inspect `original` / `sourceExcerpt`. Wired into
     `generate_suggestions()` retry alongside `has_non_chinese_reason`.
-    Does not inspect `original` / `sourceExcerpt`.
     """
-    if _CORNER_QUOTE_CHARS.search(result.get("overallComment") or ""):
+    if _text_has_misused_corner_quotes(result.get("overallComment") or ""):
         return True
     return any(
-        _CORNER_QUOTE_CHARS.search(suggestion.get("reason") or "")
+        _text_has_misused_corner_quotes(suggestion.get("reason") or "")
         for suggestion in result["suggestions"]
     )
 

@@ -16,11 +16,14 @@ Case C — meaning / wording drift:
 Manual verify (UI /api/suggestions):
   1. Paste Case A TARGET → confirm no false 缺少"が" inventing.
   2. Paste Case B TARGET → if particle critique appears, reason includes why
-     in accessible Chinese with "" / “” quotes (never 「」).
+     in accessible Chinese; Chinese meta uses "" / “”; JP forms MAY use 「」.
   3. Paste Case C TARGET (+ CN SOURCE if available) → meaning critiques quote
      SOURCE accurately; no drift rewrite; accessible why.
   4. Multi-paragraph TARGET → issues appear across paragraphs when real.
   5. Spot-check reasons are understandable without JP↔CN craft knowledge.
+
+See also gemini_quality_bar_cases.py for Gemini-style 現状→推奨 shapes
+and epic SOURCE/TARGET manual paste (`raise-suggestion-quality-to-gemini-bar`).
 """
 
 # --- Case A -----------------------------------------------------------------

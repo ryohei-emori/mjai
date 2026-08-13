@@ -19,8 +19,8 @@ providers:
      `parser.is_json_extraction_failure`; or
    - it parses successfully but violates Chinese critique-field rules:
      Japanese prose in `reason`/`overallComment` (`parser.has_non_chinese_reason`)
-     or Japanese corner brackets 「」 in those fields
-     (`parser.has_japanese_corner_quotes_in_critique`).
+     or misused Japanese corner brackets 「」 wrapping Chinese prose
+     (`parser.has_japanese_corner_quotes_in_critique`; JP TARGET cites OK).
    Within a single pass, if Groq returns either failure mode, this module
    still tries Cloudflare once before returning (same-pass salvage), so a
    usable CF response can rescue a Japanese/unparseable Groq body without
@@ -83,7 +83,8 @@ MAX_PARSE_RETRY_ATTEMPTS = 4
 # prompt for the first attempt.
 LANGUAGE_RETRY_NUDGE = (
     "上次输出不合格。请只用简体中文重写全部 reason 与 overallComment。"
-    "禁止日语说明文、禁止です/ます。引用用英文双引号或中文双引号，禁止使用「」。"
+    "禁止日语说明文、禁止です/ます。中文引用用英文或中文双引号；日语词形可用「」，"
+    "禁止用「」包裹中文说明词。overallComment 先优点再问题；reason 含现状→推荐与为什么。"
     "即使原文是中文也必须用中文说明。只输出完整 JSON，不要其他文字。"
 )
 

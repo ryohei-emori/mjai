@@ -604,9 +604,10 @@ class TestHasNonChineseReason:
 
 
 class TestHasJapaneseCornerQuotesInCritique:
-    """Low-noise Spec MUST: Chinese critique fields must not use 「」."""
+    """Misuse detector: Chinese prose in 「」 retries; JP TARGET cites OK."""
 
-    def test_corner_quotes_in_reason_detected(self):
+    def test_jp_cite_corner_quotes_in_reason_allowed(self):
+        """「昨日」「行きました」 are JP cites — must not trip retry."""
         result = {
             "suggestions": [
                 {
@@ -617,7 +618,25 @@ class TestHasJapaneseCornerQuotesInCritique:
             ],
             "overallComment": "中文总评",
         }
-        assert has_japanese_corner_quotes_in_critique(result) is True
+        assert has_japanese_corner_quotes_in_critique(result) is False
+
+    def test_gemini_style_academic_term_cite_allowed(self):
+        from tests.fixtures.gemini_quality_bar_cases import (
+            QUALITY_BAR_COMPLIANT_REASON,
+            QUALITY_BAR_COMPLIANT_OVERALL,
+        )
+
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "史詩",
+                    "reason": QUALITY_BAR_COMPLIANT_REASON,
+                }
+            ],
+            "overallComment": QUALITY_BAR_COMPLIANT_OVERALL,
+        }
+        assert has_japanese_corner_quotes_in_critique(result) is False
 
     def test_double_quote_reason_passes(self):
         result = {
@@ -632,7 +651,7 @@ class TestHasJapaneseCornerQuotesInCritique:
         }
         assert has_japanese_corner_quotes_in_critique(result) is False
 
-    def test_corner_quotes_in_overall_comment_detected(self):
+    def test_chinese_prose_corner_quotes_in_overall_detected(self):
         result = {
             "suggestions": [
                 {
@@ -642,6 +661,23 @@ class TestHasJapaneseCornerQuotesInCritique:
                 }
             ],
             "overallComment": "存在「时态」问题",
+        }
+        assert has_japanese_corner_quotes_in_critique(result) is True
+
+    def test_chinese_prose_corner_misuse_in_reason_detected(self):
+        from tests.fixtures.gemini_quality_bar_cases import (
+            QUALITY_BAR_CN_PROSE_CORNER_MISUSE,
+        )
+
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": QUALITY_BAR_CN_PROSE_CORNER_MISUSE,
+                }
+            ],
+            "overallComment": "中文总评",
         }
         assert has_japanese_corner_quotes_in_critique(result) is True
 

@@ -45,8 +45,8 @@ class TestLanguageRulesInPrompt:
         assert "日语" in SYSTEM_PROMPT or "日本語" in SYSTEM_PROMPT
 
     def test_few_shot_uses_chinese_reasons(self):
-        assert "应该使用过去式" in FEW_SHOT_EXAMPLE or "过去" in FEW_SHOT_EXAMPLE
-        assert "本次添削" in FEW_SHOT_EXAMPLE or "整体" in FEW_SHOT_EXAMPLE
+        assert "规范" in FEW_SHOT_EXAMPLE or "语域" in FEW_SHOT_EXAMPLE
+        assert "优点" in FEW_SHOT_EXAMPLE or "已能传达" in FEW_SHOT_EXAMPLE or "核心" in FEW_SHOT_EXAMPLE
 
     def test_build_messages_order(self):
         messages = build_messages("o", "t")
@@ -57,7 +57,7 @@ class TestLanguageRulesInPrompt:
 
 
 class TestSemanticReasonQualityInPrompt:
-    """harden-semantic-suggestion-reasons: why + accessibility + quotes + SOURCE."""
+    """harden-semantic-suggestion-reasons + gemini quality bar."""
 
     def test_system_prompt_requires_why_in_every_reason(self):
         assert "为什么必须" in SYSTEM_PROMPT or "为什么必须改" in SYSTEM_PROMPT
@@ -68,9 +68,12 @@ class TestSemanticReasonQualityInPrompt:
         assert "通俗" in SYSTEM_PROMPT or "不懂日中翻译" in SYSTEM_PROMPT
         assert "为什么" in SYSTEM_PROMPT
 
-    def test_system_prompt_forbids_japanese_corner_quotes_in_chinese_fields(self):
-        assert "禁止" in SYSTEM_PROMPT and "「」" in SYSTEM_PROMPT
+    def test_system_prompt_quote_policy_jp_cites_vs_chinese_meta(self):
+        # 「」 allowed for JP TARGET cites; Chinese meta uses "" / “”;
+        # forbid 「」 wrapping Chinese explanation words.
+        assert "「」" in SYSTEM_PROMPT
         assert '""' in SYSTEM_PROMPT or "双引号" in SYSTEM_PROMPT
+        assert "时态" in SYSTEM_PROMPT or "中文说明" in SYSTEM_PROMPT
 
     def test_system_prompt_requires_accurate_source_citation(self):
         assert "误引" in SYSTEM_PROMPT or "编造" in SYSTEM_PROMPT
@@ -88,21 +91,31 @@ class TestSemanticReasonQualityInPrompt:
         assert "臆造" in SYSTEM_PROMPT or "编造" in SYSTEM_PROMPT
         assert "助词" in SYSTEM_PROMPT
 
+    def test_system_prompt_overall_comment_strengths_then_gaps(self):
+        assert "优点" in SYSTEM_PROMPT
+        assert "先" in SYSTEM_PROMPT
+
+    def test_system_prompt_reason_shape_status_to_recommendation(self):
+        assert "→" in SYSTEM_PROMPT or "现状" in SYSTEM_PROMPT
+        assert "推荐" in SYSTEM_PROMPT or "修正" in SYSTEM_PROMPT
+
+    def test_system_prompt_cn_jp_literary_academic_domain(self):
+        assert "中译日" in SYSTEM_PROMPT or "文学" in SYSTEM_PROMPT
+        assert "规范译词" in SYSTEM_PROMPT or "语域" in SYSTEM_PROMPT
+
     def test_user_prompt_reinforces_why_quotes_and_coverage(self):
         prompt = build_user_prompt("原文", "対象")
         assert "为什么必须改" in prompt
         assert "缺少" in prompt
-        assert "「」" in prompt  # forbid mention
+        assert "「」" in prompt
+        assert "优点" in prompt or "先写优点" in prompt
         assert "多段" in prompt or "覆盖" in prompt
 
     def test_few_shot_reasons_include_necessity_cues(self):
-        # Compliant few-shot should not be location-only 缺少 patterns.
-        assert "因此" in FEW_SHOT_EXAMPLE or "必须" in FEW_SHOT_EXAMPLE
-        assert "才能" in FEW_SHOT_EXAMPLE or "需要" in FEW_SHOT_EXAMPLE
+        assert "规范" in FEW_SHOT_EXAMPLE or "语域" in FEW_SHOT_EXAMPLE
+        assert "→" in FEW_SHOT_EXAMPLE
 
-    def test_few_shot_uses_chinese_double_quotes_not_corner_brackets(self):
-        assert "“" in FEW_SHOT_EXAMPLE or '"' in FEW_SHOT_EXAMPLE
-        # Reasons in the JSON output example must not teach 「」 cites.
-        # (Prompt meta text may still use 「原文」 labels — check reason bodies.)
-        assert '"reason":"“' in FEW_SHOT_EXAMPLE or '"reason":"' in FEW_SHOT_EXAMPLE
-        assert "「昨日」" not in FEW_SHOT_EXAMPLE
+    def test_few_shot_gemini_shaped_quotes_and_overall(self):
+        assert "“史诗”" in FEW_SHOT_EXAMPLE or "“" in FEW_SHOT_EXAMPLE
+        assert "「叙事詩」" in FEW_SHOT_EXAMPLE
+        assert "已能传达" in FEW_SHOT_EXAMPLE or "优点" in FEW_SHOT_EXAMPLE
