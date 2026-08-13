@@ -29,29 +29,30 @@ jest.mock("@/lib/supabaseClient", () => {
   };
 });
 
-// WebLLMをモック - WebGPU非対応をシミュレート
-jest.mock("@/lib/webllm", () => ({
-  generateSuggestions: jest.fn(),
-  checkWebGPUSupport: jest.fn().mockReturnValue({ supported: false, reason: "WebGPU非対応ブラウザ" }),
+// Cold-path WebLLM modules (page.tsx no longer imports the barrel / engine)
+jest.mock("@/lib/webllm/webgpu", () => ({
+  checkWebGPUSupport: jest.fn().mockReturnValue({
+    supported: false,
+    reason: "WebGPU非対応ブラウザ",
+  }),
+}));
+jest.mock("@/lib/webllm/engineReady", () => ({
   isEngineReady: jest.fn().mockReturnValue(false),
-  WebGPUUnsupportedError: class WebGPUUnsupportedError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "WebGPUUnsupportedError";
-    }
-  },
-  ModelLoadError: class ModelLoadError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "ModelLoadError";
-    }
-  },
-  InferenceError: class InferenceError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "InferenceError";
-    }
-  },
+}));
+jest.mock("@/lib/webllm/config", () => ({
+  WEBLLM_MODEL_DISPLAY_NAME: "test-model",
+  WEBLLM_MODEL_ID: "test-model-id",
+}));
+jest.mock("@/lib/webllm/diagnostics", () => ({
+  formatElapsedTime: (ms: number) => `${ms}ms`,
+  formatDownloadProgress: () => "0%",
+  PHASE_LABELS: {},
+  getDiagnosticsTracker: () => ({
+    getState: () => ({}),
+  }),
+}));
+jest.mock("@/lib/webllm/engine", () => ({
+  generateSuggestions: jest.fn(),
 }));
 
 // navigator.clipboard.writeTextをモック
@@ -115,7 +116,7 @@ test("WebGPU非対応時にボタンが無効化され、メッセージが表�
 
   // AI提案生成ボタンはAPI経由で利用可能なため、有効のままであることを確認
   // （旧アーキテクチャではWebGPU必須だったが、新アーキテクチャではクラウドAPI優先）
-  const generateButton = screen.getByRole("button", { name: /AI提案を生成/ });
+  const generateButton = screen.getByRole("button", { name: /Generate AI Suggestions/i });
   expect(generateButton).not.toBeDisabled();
 
   // オフラインモードのチェックボックスは無効化されていることを確認

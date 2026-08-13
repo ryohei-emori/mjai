@@ -181,8 +181,8 @@ export const proposalAPI = {
 };
 
 // AI提案生成API
-// Primary: Cloud LLM (Groq/Cloudflare) via backend
-// Fallback: Client-side WebLLM (when API unavailable or offline mode)
+// Primary: Cloud LLM (Groq/Cloudflare) via backend.
+// WebLLM is NOT an automatic fallback — only when the user enables オフラインモード.
 export type SuggestionsResponse = {
   suggestions: Array<{
     id: string;
@@ -202,15 +202,117 @@ export type SuggestionsErrorResponse = {
   message?: string;
   groq_error?: string;
   cf_error?: string;
+  /** True when cloud providers failed due to rate-limit / quota / cooldown. */
+  rate_limited?: boolean;
 };
 
+/** Structured cloud-suggestions failure (quota/rate-limit visible to UI). */
+export class SuggestionsAPIError extends Error {
+  status: number;
+  rateLimited: boolean;
+  body: SuggestionsErrorResponse | null;
+
+  constructor(
+    status: number,
+    body: SuggestionsErrorResponse | null,
+    fallbackMessage: string,
+  ) {
+    const msg =
+      body?.message ||
+      body?.error ||
+      fallbackMessage;
+    super(msg);
+    this.name = "SuggestionsAPIError";
+    this.status = status;
+    this.body = body;
+    const haystack = [
+      body?.message,
+      body?.error,
+      body?.groq_error,
+      body?.cf_error,
+      fallbackMessage,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    this.rateLimited =
+      !!body?.rate_limited ||
+      /rate.?limit|quota|cooldown|exhausted|429/.test(haystack);
+  }
+}
+
+export function isSuggestionsAPIError(err: unknown): err is SuggestionsAPIError {
+  return err instanceof SuggestionsAPIError;
+}
+
 export const suggestionsAPI = {
-  // Generate AI suggestions via backend (Groq/Cloudflare)
+  // Generate AI suggestions via backend (Groq/Cloudflare).
+  // Uses a dedicated fetch path so 503 bodies (rate_limited / message) are
+  // preserved for the UI — unlike the generic apiFetch Error string.
   generate: async (originalText: string, targetText: string): Promise<SuggestionsResponse> => {
-    const response = await apiFetch('/suggestions', {
-      method: 'POST',
-      body: JSON.stringify({ originalText, targetText })
-    });
-    return response as SuggestionsResponse;
+    const fullUrl = `${API_BASE_URL}/suggestions`;
+    const { data: { session } } = await supabase.auth.getSession();
+    const authHeaders: Record<string, string> = session?.access_token
+      ? { Authorization: `Bearer ${session.access_token}` }
+      : {};
+
+    let response: Response;
+    try {
+      response = await fetch(fullUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+        },
+        body: JSON.stringify({ originalText, targetText }),
+      });
+    } catch (networkError) {
+      throw new SuggestionsAPIError(
+        0,
+        null,
+        networkError instanceof Error
+          ? networkError.message
+          : "クラウドAPIへの接続に失敗しました",
+      );
+    }
+
+    const responseText = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = responseText ? JSON.parse(responseText) : null;
+    } catch {
+      parsed = null;
+    }
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        if (responseText.includes("Authentication is not configured")) {
+          throw new SuggestionsAPIError(
+            401,
+            null,
+            "サーバー認証設定エラー: バックエンドの環境変数を確認してください",
+          );
+        }
+        notifyUnauthorized();
+      }
+      const body =
+        parsed && typeof parsed === "object"
+          ? (parsed as SuggestionsErrorResponse)
+          : null;
+      throw new SuggestionsAPIError(
+        response.status,
+        body,
+        `API Error: ${response.status}${responseText ? ` - ${responseText.slice(0, 200)}` : ""}`,
+      );
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+      throw new SuggestionsAPIError(
+        response.status,
+        null,
+        "Invalid JSON response from /suggestions",
+      );
+    }
+    return parsed as SuggestionsResponse;
   },
 };

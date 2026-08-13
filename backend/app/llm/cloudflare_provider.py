@@ -13,6 +13,8 @@ from typing import Any, Optional, Tuple, List, Dict, Set
 from .key_pool import (
     acquire_cloudflare,
     cooldown_status_codes,
+    credential_pool_index,
+    format_credential_ref,
     is_cloudflare_configured,
     load_cloudflare_credentials,
     mark_cooldown,
@@ -161,6 +163,8 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
             "(CLOUDFLARE_ACCOUNT_ID/TOKEN or CLOUDFLARE_ACCOUNT_IDS/API_TOKENS)"
         )
 
+    pool = load_cloudflare_credentials()
+    pool_size = len(pool)
     attempted: Set[str] = set()
     last_error: Optional[CloudflareError] = None
     cooldown_codes = cooldown_status_codes()
@@ -169,13 +173,20 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
         cred = acquire_cloudflare(exclude_ids=list(attempted))
         if cred is None:
             if last_error is not None:
-                raise last_error
+                raise CloudflareRateLimitError(
+                    f"All Cloudflare credentials are in cooldown or exhausted "
+                    f"(pool_size={pool_size}, cooled_or_tried={len(attempted)})",
+                    status_code=getattr(last_error, "status_code", None) or 429,
+                )
             raise CloudflareRateLimitError(
-                "All Cloudflare credentials are in cooldown or exhausted",
+                f"All Cloudflare credentials are in cooldown or exhausted "
+                f"(pool_size={pool_size})",
                 status_code=429,
             )
 
         attempted.add(cred.id)
+        idx = credential_pool_index(pool, cred.id)
+        cred_ref = format_credential_ref("cloudflare", idx, cred.label)
         try:
             return await _call_cloudflare_once(
                 cred.account_id, cred.api_token, messages
@@ -185,9 +196,8 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
             if status in cooldown_codes:
                 mark_cooldown(cred.id)
                 logger.warning(
-                    "Cloudflare credential %s failed with HTTP %s; "
-                    "cooling down and trying next credential",
-                    cred.label,
+                    "%s failed with HTTP %s; cooling down and trying next credential",
+                    cred_ref,
                     status,
                 )
                 last_error = e

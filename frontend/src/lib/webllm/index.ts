@@ -11,6 +11,15 @@
  * - getLastRunSummary() - Phase durations from last run
  */
 
+/**
+ * Barrel export for tests and offline tooling.
+ *
+ * App cloud path (`page.tsx`) MUST NOT statically import this barrel or
+ * `./engine` — that pulls `@mlc-ai/web-llm`. Prefer:
+ * - `./webgpu`, `./config`, `./diagnostics`, `./types`, `./engineReady` (cold path)
+ * - `await import("./engine")` only when オフラインモード is explicitly ON (never on API failure)
+ */
+
 export { WEBLLM_MODEL_ID, WEBLLM_MODEL_DISPLAY_NAME, ALTERNATIVE_MODELS } from "./config";
 export { checkWebGPUSupport, checkWebGPUAdapter, type WebGPUStatus } from "./webgpu";
 export { buildPrompt, buildChatMessages, type PromptInput } from "./prompt";
@@ -20,10 +29,11 @@ export {
   type CorrectionSuggestion,
   type ParsedResponse,
 } from "./parser";
+export { isEngineReady } from "./engineReady";
+export type { EngineStatus, ProgressCallback } from "./types";
 export {
   initializeEngine,
   generateSuggestions,
-  isEngineReady,
   getCachedEngine,
   resetEngine,
   WebGPUUnsupportedError,
@@ -32,8 +42,6 @@ export {
   TimeoutError,
   MODEL_LOAD_TIMEOUT_MS,
   INFERENCE_TIMEOUT_MS,
-  type EngineStatus,
-  type ProgressCallback,
   type DiagnosticsState,
 } from "./engine";
 export {

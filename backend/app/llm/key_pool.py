@@ -17,7 +17,9 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple, TypeVar
+
+_TCred = TypeVar("_TCred")
 
 DEFAULT_COOLDOWN_SECONDS = 60.0
 
@@ -50,6 +52,19 @@ def _split_csv(raw: Optional[str]) -> List[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _dedupe_by_id(credentials: Sequence[_TCred]) -> List[_TCred]:
+    """Preserve first occurrence of each credential.id (identical keys collapse)."""
+    seen: Set[str] = set()
+    out: List[_TCred] = []
+    for cred in credentials:
+        cred_id = cred.id  # type: ignore[attr-defined]
+        if cred_id in seen:
+            continue
+        seen.add(cred_id)
+        out.append(cred)
+    return out
+
+
 @dataclass(frozen=True)
 class GroqCredential:
     api_key: str
@@ -78,10 +93,14 @@ class CloudflareCredential:
 
 
 def load_groq_credentials() -> List[GroqCredential]:
-    """Load Groq keys: GROQ_API_KEYS if non-empty, else GROQ_API_KEY."""
+    """Load Groq keys: GROQ_API_KEYS if non-empty, else GROQ_API_KEY.
+
+    Plural wins when non-empty (singular is not merged). Duplicate keys
+    in the plural list are collapsed to one entry.
+    """
     plural = _split_csv(os.environ.get("GROQ_API_KEYS"))
     if plural:
-        return [GroqCredential(api_key=k) for k in plural]
+        return _dedupe_by_id([GroqCredential(api_key=k) for k in plural])
     single = (os.environ.get("GROQ_API_KEY") or "").strip()
     if single:
         return [GroqCredential(api_key=single)]
@@ -92,22 +111,38 @@ def load_cloudflare_credentials() -> List[CloudflareCredential]:
     """Load CF pairs from parallel lists or singular back-compat vars.
 
     Mismatched non-empty parallel list lengths yield an empty pool (no
-    silent mis-pairing).
+    silent mis-pairing). Duplicate pairs are collapsed. Plural lists win
+    when either is set (singular is not merged).
     """
     ids = _split_csv(os.environ.get("CLOUDFLARE_ACCOUNT_IDS"))
     tokens = _split_csv(os.environ.get("CLOUDFLARE_API_TOKENS"))
     if ids or tokens:
         if len(ids) != len(tokens) or not ids:
             return []
-        return [
-            CloudflareCredential(account_id=i, api_token=t)
-            for i, t in zip(ids, tokens)
-        ]
+        return _dedupe_by_id(
+            [
+                CloudflareCredential(account_id=i, api_token=t)
+                for i, t in zip(ids, tokens)
+            ]
+        )
     account_id = (os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "").strip()
     api_token = (os.environ.get("CLOUDFLARE_API_TOKEN") or "").strip()
     if account_id and api_token:
         return [CloudflareCredential(account_id=account_id, api_token=api_token)]
     return []
+
+
+def credential_pool_index(credentials: Sequence, credential_id: str) -> int:
+    """Return 0-based index of credential_id in the loaded pool, or -1."""
+    for i, cred in enumerate(credentials):
+        if cred.id == credential_id:
+            return i
+    return -1
+
+
+def format_credential_ref(provider: str, index: int, label: str) -> str:
+    """Safe log/error label: provider[index] + redacted secret label."""
+    return f"{provider}[{index}] ({label})"
 
 
 def _is_cooled_down(credential_id: str, now: float) -> bool:

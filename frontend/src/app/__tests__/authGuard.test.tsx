@@ -7,29 +7,27 @@ import { AuthProvider } from "../auth-provider";
 import fetchMock from "jest-fetch-mock";
 fetchMock.enableMocks();
 
-// WebLLMモジュールをモック（ESM互換性の問題を回避）
-jest.mock("@/lib/webllm", () => ({
-  generateSuggestions: jest.fn(),
+// Cold-path WebLLM modules (page.tsx no longer imports the barrel / engine)
+jest.mock("@/lib/webllm/webgpu", () => ({
   checkWebGPUSupport: jest.fn().mockReturnValue({ supported: true }),
+}));
+jest.mock("@/lib/webllm/engineReady", () => ({
   isEngineReady: jest.fn().mockReturnValue(false),
-  WebGPUUnsupportedError: class WebGPUUnsupportedError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "WebGPUUnsupportedError";
-    }
-  },
-  ModelLoadError: class ModelLoadError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "ModelLoadError";
-    }
-  },
-  InferenceError: class InferenceError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "InferenceError";
-    }
-  },
+}));
+jest.mock("@/lib/webllm/config", () => ({
+  WEBLLM_MODEL_DISPLAY_NAME: "test-model",
+  WEBLLM_MODEL_ID: "test-model-id",
+}));
+jest.mock("@/lib/webllm/diagnostics", () => ({
+  formatElapsedTime: (ms: number) => `${ms}ms`,
+  formatDownloadProgress: () => "0%",
+  PHASE_LABELS: {},
+  getDiagnosticsTracker: () => ({
+    getState: () => ({}),
+  }),
+}));
+jest.mock("@/lib/webllm/engine", () => ({
+  generateSuggestions: jest.fn(),
 }));
 
 // Supabaseクライアントをモックする。テストごとにセッションの有無を切り替えられるようにする。

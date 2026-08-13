@@ -14,6 +14,8 @@ from typing import Any, Optional, List, Dict, Set
 from .key_pool import (
     acquire_groq,
     cooldown_status_codes,
+    credential_pool_index,
+    format_credential_ref,
     is_groq_configured,
     load_groq_credentials,
     mark_cooldown,
@@ -247,6 +249,8 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         raise GroqError("GROQ_API_KEY not configured")
 
     resolved_model = model or get_groq_model()
+    pool = load_groq_credentials()
+    pool_size = len(pool)
     attempted: Set[str] = set()
     last_error: Optional[GroqError] = None
     cooldown_codes = cooldown_status_codes()
@@ -255,14 +259,21 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         cred = acquire_groq(exclude_ids=list(attempted))
         if cred is None:
             if last_error is not None:
-                raise last_error
+                # Preserve original status when possible; wrap message for ops clarity.
+                raise GroqRateLimitError(
+                    f"All Groq API keys are in cooldown or exhausted "
+                    f"(pool_size={pool_size}, cooled_or_tried={len(attempted)})",
+                    status_code=getattr(last_error, "status_code", None) or 429,
+                )
             # Pool has keys but all are cooled down (or excluded).
             raise GroqRateLimitError(
-                "All Groq API keys are in cooldown or exhausted",
+                f"All Groq API keys are in cooldown or exhausted (pool_size={pool_size})",
                 status_code=429,
             )
 
         attempted.add(cred.id)
+        idx = credential_pool_index(pool, cred.id)
+        cred_ref = format_credential_ref("groq", idx, cred.label)
         try:
             return await _call_groq_once(cred.api_key, messages, resolved_model)
         except GroqError as e:
@@ -270,8 +281,8 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
             if status in cooldown_codes:
                 mark_cooldown(cred.id)
                 logger.warning(
-                    "Groq credential %s failed with HTTP %s; cooling down and trying next key",
-                    cred.label,
+                    "%s failed with HTTP %s; cooling down and trying next key",
+                    cred_ref,
                     status,
                 )
                 last_error = e

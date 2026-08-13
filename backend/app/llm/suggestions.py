@@ -98,15 +98,39 @@ PARSE_RETRY_NUDGE = (
 
 class SuggestionsError(Exception):
     """Error generating suggestions from all providers."""
-    def __init__(self, message: str, groq_error: Optional[str] = None, cf_error: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        groq_error: Optional[str] = None,
+        cf_error: Optional[str] = None,
+        *,
+        rate_limited: bool = False,
+    ):
         super().__init__(message)
         self.groq_error = groq_error
         self.cf_error = cf_error
+        self.rate_limited = rate_limited
 
 
 class NoProvidersConfiguredError(SuggestionsError):
     """No LLM providers are configured."""
     pass
+
+
+def _error_looks_rate_limited(err: Optional[str]) -> bool:
+    """True if an error string indicates 429 / cooldown / quota exhaustion."""
+    if not err:
+        return False
+    lower = err.lower()
+    needles = (
+        "rate limit",
+        "cooldown",
+        "exhausted",
+        "quota",
+        "429",
+        "http 429",
+    )
+    return any(n in lower for n in needles)
 
 
 def are_providers_configured() -> bool:
@@ -232,10 +256,19 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
         if groq_result is not None:
             return groq_result
     
+    rate_limited = _error_looks_rate_limited(groq_error) or _error_looks_rate_limited(
+        cf_error
+    )
+    message = (
+        "All LLM providers rate-limited or quota exhausted"
+        if rate_limited
+        else "All LLM providers failed"
+    )
     raise SuggestionsError(
-        "All LLM providers failed",
+        message,
         groq_error=groq_error,
         cf_error=cf_error,
+        rate_limited=rate_limited,
     )
 
 

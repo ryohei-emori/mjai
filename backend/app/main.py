@@ -333,6 +333,17 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
             }
         )
     except SuggestionsError as e:
+        if getattr(e, "rate_limited", False):
+            client_message = (
+                "Cloud providers are rate-limited or quota-exhausted. "
+                "The API key pool spreads load across accounts but does not raise "
+                "per-account RPD/quota limits — check the Groq/Cloudflare dashboards. "
+                "Retry later, or enable WebLLM offline mode."
+            )
+        else:
+            client_message = (
+                "All cloud providers failed. Try WebLLM offline mode."
+            )
         return JSONResponse(
             status_code=503,
             content={
@@ -340,7 +351,8 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "groq_error": e.groq_error,
                 "cf_error": e.cf_error,
                 "fallback_available": True,
-                "message": "All cloud providers failed. Try WebLLM offline mode."
+                "rate_limited": bool(getattr(e, "rate_limited", False)),
+                "message": client_message,
             }
         )
 

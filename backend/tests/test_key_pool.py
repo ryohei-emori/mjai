@@ -57,6 +57,11 @@ class TestLoadGroq:
         monkeypatch.setenv("GROQ_API_KEYS", "key-a,,key-b,")
         assert [c.api_key for c in load_groq_credentials()] == ["key-a", "key-b"]
 
+    def test_dedupes_identical_keys(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEYS", "key-a,key-a,key-b")
+        monkeypatch.setenv("GROQ_API_KEY", "key-ignored")
+        assert [c.api_key for c in load_groq_credentials()] == ["key-a", "key-b"]
+
     def test_empty_pool(self, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEYS", raising=False)
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -180,10 +185,39 @@ class TestProviderKeyFallback:
         mock_client.__aexit__.return_value = False
 
         with patch("app.llm.groq_provider.httpx.AsyncClient", return_value=mock_client):
-            with pytest.raises(GroqRateLimitError):
+            with pytest.raises(GroqRateLimitError) as exc_info:
                 await call_groq([{"role": "user", "content": "hi"}])
 
         assert mock_client.post.call_count == 2
+        assert "pool_size=2" in str(exc_info.value)
+        # Cooled keys must not be selected again within the same process.
+        assert acquire_groq() is None
+
+    async def test_groq_does_not_retry_cooled_key(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEYS", "key-a,key-b")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = [
+            _FakeResponse(status_code=429, text="rate"),
+            _FakeResponse(status_code=200),
+        ]
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+
+        with patch("app.llm.groq_provider.httpx.AsyncClient", return_value=mock_client):
+            await call_groq([{"role": "user", "content": "hi"}])
+
+        # Second call should skip cooled key-a and hit key-b only once.
+        mock_client.post.reset_mock()
+        mock_client.post.side_effect = None
+        mock_client.post.return_value = _FakeResponse(status_code=200)
+        with patch("app.llm.groq_provider.httpx.AsyncClient", return_value=mock_client):
+            await call_groq([{"role": "user", "content": "hi"}])
+
+        assert mock_client.post.call_count == 1
+        auth = mock_client.post.call_args.kwargs["headers"]["Authorization"]
+        assert auth == "Bearer key-b"
 
     async def test_cloudflare_retries_next_credential_on_429(self, monkeypatch):
         monkeypatch.setenv("CLOUDFLARE_ACCOUNT_IDS", "acc-a,acc-b")

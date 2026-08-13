@@ -4,7 +4,7 @@ Agent-facing environment/operational constraints for MJAI (Japanese text-correct
 
 ## ⚠️ Reality check: docs vs. repo state
 
-`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). Ngrok tunnel vars/`NGROK_*` are **not** part of the active env templates (`conf/.env.example`); do not reintroduce them. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq primary, Cloudflare failover) with WebLLM as offline fallback** — do **not** configure `GEMINI_*`.
+`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). Ngrok tunnel vars/`NGROK_*` are **not** part of the active env templates (`conf/.env.example`); do not reintroduce them. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq primary, Cloudflare failover); WebLLM only when オフラインモード is ON** — do **not** configure `GEMINI_*`.
 
 ## Multi-Environment Architecture: Shared DB, Environment-Aware Auth
 
@@ -77,7 +77,9 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | `CLOUDFLARE_ACCOUNT_ID` | Singular back-compat. Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
 | `CLOUDFLARE_API_TOKEN` | Singular back-compat. Cloudflare API token with Workers AI access |
 
-**Key pool behavior:** each outbound Groq/Cloudflare call selects a credential via round-robin among non-cooled-down entries; on HTTP 401/403/429 the failing credential is cooled down (~60s) and the next key/pair is tried before the provider fails over. Single-key Vercel setups need no change.
+**Key pool behavior:** each outbound Groq/Cloudflare call selects a credential via round-robin among non-cooled-down entries; on HTTP 401/403/429 the failing credential is cooled down (~60s) and the next key/pair is tried before the provider fails over. Single-key Vercel setups need no change. Plural vars override singular (they are not merged — no double-counting). Duplicate identical keys in a plural list collapse to one entry. Cooldown is process-local (best-effort on Vercel warm instances; not shared across concurrent serverless isolates).
+
+**Quota vs pool:** the pool spreads load and fails over across accounts; it does **not** raise each account’s hard RPD/TPM/quota. “Quota exceeded” on one or more keys is almost always a **provider-side** limit on those accounts (or normal aggregate usage across retries), not a pool bug that burns both keys from a single 429. Check Groq/Cloudflare dashboards per key when limits trip.
 
 WebLLM (client-side) requires no backend configuration — it runs in the browser using WebGPU.
 
@@ -242,25 +244,25 @@ printf '%s' "$GROQ_API_KEYS" | vercel env add GROQ_API_KEYS preview --sensitive 
 - Never make an infrastructure or architecture change (new deployment target, database/persistence backend swap, new or removed external service dependency, etc.) without reviewing and updating this file **and** `docs/SYSTEM-DESIGN.md` to match — that's exactly how README's old Quick Start section, documented in the Reality check above, went stale in the first place.
 ## AI Suggestion Generation
 
-AI correction suggestions use a **hybrid architecture**: cloud APIs for speed with client-side WebLLM as offline fallback.
+AI correction suggestions use a **hybrid architecture**: cloud APIs by default, with client-side WebLLM only when the user explicitly enables オフラインモード (no automatic client fallback).
 
 ### Architecture Overview
 
 ```
 User Request → POST /api/suggestions (authenticated)
-              ↓
-         Groq API (primary, ~1-3s)
-              ↓ 429/5xx/timeout
-         Cloudflare Workers AI (fallback)
-              ↓ both fail
-         Frontend falls back to WebLLM (offline)
+ ↓
+ Groq API (primary, ~1-3s)
+ ↓ 429/5xx/timeout
+ Cloudflare Workers AI (fallback)
+ ↓ both fail
+ Frontend shows error (toast + failed job) — does NOT auto-start WebLLM
 ```
 
 | Path | Provider | Latency | When Used |
 |------|----------|---------|-----------|
 | **Default** | Groq, model rotation pool (see below), overridable/pinnable via `GROQ_MODEL` | ~1-3s | API keys configured, Groq available |
 | **Failover** | Cloudflare Workers AI | ~2-5s | Both attempted Groq models rate-limited/error/timeout |
-| **Offline** | WebLLM (Mistral 7B) | ~10-30s | API unavailable OR user enables オフラインモード |
+| **Offline** | WebLLM (Mistral 7B) | ~10-30s | **Only** when user enables オフラインモード |
 
 **Groq model rotation (added 2026-08 ahead of `llama-3.3-70b-versatile`'s 2026-08-16 deprecation):** rather than pinning to a single hardcoded model, `backend/app/llm/groq_provider.py` selects a model per request from a curated allow-list (`ALLOWED_GROQ_MODELS`):
 
@@ -301,8 +303,8 @@ If neither is configured, `/api/suggestions` returns 503 and frontend auto-falls
 ### Frontend UX
 
 - **Default behavior**: Calls `/api/suggestions` first for fast response
-- **Auto-fallback**: If API fails, automatically switches to WebLLM with toast notification
-- **オフラインモード toggle**: User can explicitly enable WebLLM-only mode (checkbox near generate button)
+- **No auto-fallback**: If the cloud API fails (429/quota, 503, network, etc.), the job fails and the UI shows the error — WebLLM is **not** started unless オフラインモード is already ON
+- **オフラインモード toggle**: Explicit WebLLM-only mode (checkbox near generate button); required to use local AI
 - **Visual indicator**: Badge shows "クラウドAPI" or "ローカルAI" after generation
 
 ### WebLLM (Offline Fallback)

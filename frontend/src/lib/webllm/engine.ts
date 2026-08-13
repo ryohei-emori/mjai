@@ -32,27 +32,19 @@ import { buildChatMessages, PromptInput } from "./prompt";
 import { parseModelOutput, ParsedResponse } from "./parser";
 import {
   getDiagnosticsTracker,
-  type DiagnosticsState,
   logWebLLM,
 } from "./diagnostics";
+import { clearEngineReady, markEngineModelReady } from "./engineReady";
+import type { EngineStatus, ProgressCallback } from "./types";
 
 // Timeout constants (in milliseconds)
 export const MODEL_LOAD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for model download/init
 export const INFERENCE_TIMEOUT_MS = 2 * 60 * 1000;  // 2 minutes for inference
 
-export type EngineStatus = 
-  | { state: "idle"; diagnostics?: DiagnosticsState }
-  | { state: "checking_webgpu"; diagnostics?: DiagnosticsState }
-  | { state: "loading"; progress: number; text: string; diagnostics?: DiagnosticsState }
-  | { state: "ready"; diagnostics?: DiagnosticsState }
-  | { state: "generating"; diagnostics?: DiagnosticsState }
-  | { state: "error"; error: string; diagnostics?: DiagnosticsState }
-  | { state: "unsupported"; reason: string; diagnostics?: DiagnosticsState };
-
-export type ProgressCallback = (status: EngineStatus) => void;
-
+export type { EngineStatus, ProgressCallback } from "./types";
 // Re-export DiagnosticsState for consumers
 export type { DiagnosticsState } from "./diagnostics";
+export { isEngineReady } from "./engineReady";
 
 // Module-scoped engine instance for caching across generations
 let cachedEngine: MLCEngine | null = null;
@@ -84,17 +76,12 @@ async function withTimeout<T>(
 }
 
 /**
- * Check if the engine is already loaded and ready
- */
-export function isEngineReady(): boolean {
-  return cachedEngine !== null && engineModelId === WEBLLM_MODEL_ID;
-}
-
-/**
  * Get the cached engine if available
  */
 export function getCachedEngine(): MLCEngine | null {
-  return isEngineReady() ? cachedEngine : null;
+  return cachedEngine !== null && engineModelId === WEBLLM_MODEL_ID
+    ? cachedEngine
+    : null;
 }
 
 /**
@@ -112,10 +99,11 @@ export async function initializeEngine(
   const tracker = getDiagnosticsTracker();
   
   // Return cached engine if already loaded
-  if (isEngineReady()) {
+  if (cachedEngine !== null && engineModelId === WEBLLM_MODEL_ID) {
+    markEngineModelReady(WEBLLM_MODEL_ID);
     logWebLLM("info", "engine-init", "Using cached engine");
     onProgress?.({ state: "ready", diagnostics: tracker.getState() });
-    return cachedEngine!;
+    return cachedEngine;
   }
 
   // Start diagnostics tracking
@@ -190,6 +178,7 @@ export async function initializeEngine(
     // Cache the engine for subsequent requests
     cachedEngine = engine;
     engineModelId = WEBLLM_MODEL_ID;
+    markEngineModelReady(WEBLLM_MODEL_ID);
 
     logWebLLM("info", "engine-init", "Engine initialized successfully", {
       modelId: WEBLLM_MODEL_ID,
@@ -329,6 +318,7 @@ export async function generateSuggestions(
 export function resetEngine(): void {
   cachedEngine = null;
   engineModelId = null;
+  clearEngineReady();
 }
 
 // Custom error classes for different failure modes

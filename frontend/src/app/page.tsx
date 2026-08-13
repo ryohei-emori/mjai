@@ -15,20 +15,37 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
-import { sessionAPI, historyAPI, proposalAPI, suggestionsAPI } from "./api"
+import {
+  sessionAPI,
+  historyAPI,
+  proposalAPI,
+  suggestionsAPI,
+  isSuggestionsAPIError,
+} from "./api"
 import { useAuth } from "./auth-provider"
 import { LoginScreen } from "./login-screen"
+// Cold path: never statically import `@/lib/webllm` or `@/lib/webllm/engine`
+// (those pull `@mlc-ai/web-llm`). Engine loads only via dynamic import below.
+import { checkWebGPUSupport } from "@/lib/webllm/webgpu"
+import { WEBLLM_MODEL_DISPLAY_NAME } from "@/lib/webllm/config"
 import {
-  generateSuggestions as generateWebLLMSuggestions,
-  checkWebGPUSupport,
-  isEngineReady,
-  WEBLLM_MODEL_DISPLAY_NAME,
   formatElapsedTime,
   formatDownloadProgress,
   PHASE_LABELS,
   getDiagnosticsTracker,
-  type EngineStatus,
-} from "@/lib/webllm"
+} from "@/lib/webllm/diagnostics"
+import { isEngineReady } from "@/lib/webllm/engineReady"
+import type { EngineStatus } from "@/lib/webllm/types"
+
+/** Lazy-load WebLLM engine only for offline mode or intentional API fallback. */
+async function generateWebLLMSuggestions(
+  ...args: Parameters<
+    typeof import("@/lib/webllm/engine").generateSuggestions
+  >
+): ReturnType<typeof import("@/lib/webllm/engine").generateSuggestions> {
+  const { generateSuggestions } = await import("@/lib/webllm/engine")
+  return generateSuggestions(...args)
+}
 
 type ActiveNav = 'sessions' | 'dashboard' | 'archive'
 
@@ -562,12 +579,12 @@ export default function TextCorrectionApp() {
       let source: 'api' | 'webllm' = 'api'
 
       if (offlineMode) {
-        // WebLLMモード
+        // WebLLM ONLY when オフラインモード is explicitly ON (no API auto-fallback).
         source = 'webllm'
         if (!webgpuSupported) {
           throw new Error(webgpuUnsupportedReason || "WebGPU非対応")
         }
-        
+
         const data = await generateWebLLMSuggestions(
           { originalText, targetText, instructionPrompt: "CCTalkからの添削指示" },
           (status) => setWebllmStatus(status)
@@ -575,7 +592,7 @@ export default function TextCorrectionApp() {
         suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
         overallComment = data.overallComment
       } else {
-        // APIモード（並列実行可能）
+        // Cloud API only — failures surface as failed jobs; never call WebLLM.
         try {
           const data = await suggestionsAPI.generate(originalText, targetText)
           console.log("[processJobAsync] API response received:", {
@@ -587,26 +604,19 @@ export default function TextCorrectionApp() {
           overallComment = data.overallComment
           source = 'api'
         } catch (apiError) {
-          console.warn("[suggestions] API failed, falling back to WebLLM:", apiError)
-          
-          if (!webgpuSupported) {
-            throw new Error("クラウドAPIに接続できませんでした。WebGPUも非対応のため、AI提案機能を利用できません。")
+          if (isSuggestionsAPIError(apiError) && apiError.rateLimited) {
+            console.warn("[suggestions] Rate-limited / quota exhausted:", apiError)
+            throw new Error(
+              apiError.message ||
+                "クラウドAPIのレート制限またはクォータ超過です。しばらく待つか、オフラインモードを有効にしてください。",
+            )
           }
-
-          // WebLLMフォールバックをユーザーに通知
-          toast({
-            title: "APIエラー",
-            description: "クラウドAPIに接続できませんでした。ローカルAI（WebLLM）にフォールバックします。",
-          })
-
-          // WebLLMにフォールバック
-          source = 'webllm'
-          const data = await generateWebLLMSuggestions(
-            { originalText, targetText, instructionPrompt: "CCTalkからの添削指示" },
-            (status) => setWebllmStatus(status)
-          )
-          suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
-          overallComment = data.overallComment
+          const detail =
+            apiError instanceof Error
+              ? apiError.message
+              : "クラウドAPIに接続できませんでした"
+          console.warn("[suggestions] API failed (no WebLLM fallback):", apiError)
+          throw new Error(detail)
         }
       }
 
@@ -660,7 +670,7 @@ export default function TextCorrectionApp() {
     if (!currentSession) return false
 
     // 原文テキストが未入力の場合、API呼び出し（originalText/targetText必須）が
-    // 400エラーになり不必要にWebLLMへフォールバックしてしまうため、事前にガードする
+    // 400エラーになるため、事前にガードする
     if (!currentSession.originalText.trim()) {
       toast({
         title: "原文テキストが未入力です",
@@ -762,14 +772,16 @@ export default function TextCorrectionApp() {
     updateCurrentSession({ targetText: "" })
   }, [currentSession, addJobAndProcess, updateCurrentSession])
 
-  // セッション詳細をオンデマンドで取得
+  // セッション詳細をオンデマンドで取得（共有DB上の histories + ai_proposals）。
+  // 他端末/他環境で保存された最新を取り込むため、セッション選択時に加え
+  // 定期ポーリングからも呼ばれる。jobQueue / 未確定 suggestions は触らない。
   const loadSessionDetails = useCallback(async (sessionId: string) => {
     try {
       console.log("Loading session details for:", sessionId)
       const historiesData = await historyAPI.getHistories(sessionId)
       console.log("Histories for session", sessionId, ":", historiesData)
 
-      const savedData: SavedData[] = []
+      const serverSaved: SavedData[] = []
       for (const history of historiesData) {
         const proposalsData: ProposalAPIResponse[] = await proposalAPI.getProposals(history.historyId)
         const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal) => ({
@@ -784,7 +796,7 @@ export default function TextCorrectionApp() {
           isCustom: !!proposal.isCustom,
         }))
 
-        savedData.push({
+        serverSaved.push({
           originalText: history.originalText,
           instructionPrompt: history.instructionPrompt,
           targetText: history.targetText,
@@ -803,9 +815,26 @@ export default function TextCorrectionApp() {
       }
 
       setSessions((prevSessions) =>
-        prevSessions.map((s) =>
-          s.id === sessionId ? { ...s, savedData } : s
-        ),
+        prevSessions.map((s) => {
+          if (s.id !== sessionId) return s
+          // Keep optimistic local History rows that do not yet have historyId
+          // (background save in flight after confirm-copy).
+          const pendingLocal = (s.savedData || []).filter((d) => !d.historyId)
+          const serverIds = new Set(
+            serverSaved.map((d) => d.historyId).filter(Boolean) as string[],
+          )
+          const stillPending = pendingLocal.filter((local) => {
+            // Drop pending once a matching server row exists (same comment + time window).
+            return !serverSaved.some(
+              (srv) =>
+                srv.combinedComment === local.combinedComment &&
+                Math.abs(srv.timestamp.getTime() - local.timestamp.getTime()) < 120_000,
+            )
+          })
+          // Prefer server order; append unresolved optimistic rows.
+          void serverIds
+          return { ...s, savedData: [...serverSaved, ...stillPending] }
+        }),
       )
     } catch (error) {
       console.error("Error loading session details:", error)
@@ -891,6 +920,22 @@ export default function TextCorrectionApp() {
 
     loadSessionDetails(sessionId)
   }, [jobQueue, currentSessionId, loadSessionDetails, toast])
+
+  // Shared-DB refresh: while a session is open, poll histories/proposals so
+  // saves from another browser/environment appear in right-pane History.
+  // Job Queue remains device-local until confirm+save.
+  useEffect(() => {
+    if (!currentSessionId || !session) return
+    const POLL_MS = 10_000
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return
+      }
+      void loadSessionDetails(currentSessionId)
+    }
+    const id = window.setInterval(tick, POLL_MS)
+    return () => window.clearInterval(id)
+  }, [currentSessionId, session, loadSessionDetails])
 
   // 確認中のジョブID（ジョブキューからの確認用）
   const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null)
@@ -2332,6 +2377,8 @@ export default function TextCorrectionApp() {
                         {offlineMode 
                           ? "WebLLMモード: 逐次処理（1件ずつ）" 
                           : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
+                        {" · "}
+                        未確定ジョブはこの端末のみ（確定保存後に共有DBのHistoryへ）
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
