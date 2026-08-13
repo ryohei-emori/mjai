@@ -36,8 +36,8 @@ from .db_helper import (
     delete_session as db_delete_session, 
     update_session as db_update_session, 
     fetch_session as db_fetch_session,
-    fetch_histories_by_session, insert_history,
-    fetch_proposals_by_history, insert_proposal,
+    fetch_histories_by_session, insert_history, update_history,
+    fetch_proposals_by_history, insert_proposal, update_proposal,
     archive_history as db_archive_history,
 )
 from uuid import uuid4
@@ -211,6 +211,11 @@ async def create_history(payload: dict = Body(...)):
             'combined_comment': payload.get('combinedComment'),
             'selected_proposal_ids': payload.get('selectedProposalIds'),
             'custom_proposals': payload.get('customProposals'),
+            # Default confirmed keeps legacy confirm-only clients working.
+            'status': payload.get('status', 'confirmed'),
+            'overall_comment': payload.get('overallComment'),
+            'provider': payload.get('provider'),
+            'client_job_id': payload.get('clientJobId'),
         }
         # 必須項目チェック
         # NOTE: this must raise (not `return {"error": ...}`) so the response is a
@@ -232,11 +237,27 @@ async def create_history(payload: dict = Body(...)):
         print(f"[create_history] Exception: {e}, payload: {payload}")
         raise HTTPException(status_code=400, detail=str(e))
 
-    created = await insert_history(history)
+    try:
+        created = await insert_history(history)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     # Serialize timestamp as ISO string for the frontend
     if isinstance(created.get('timestamp'), datetime):
         created['timestamp'] = now_iso
     return created
+
+@router.put("/histories/{history_id}")
+async def put_history(history_id: str, payload: dict = Body(...)):
+    """Promote/finalize a history (e.g. pending → confirmed) without double-insert."""
+    try:
+        updated = await update_history(history_id, payload or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="History not found")
+    if isinstance(updated.get('timestamp'), datetime):
+        updated['timestamp'] = updated['timestamp'].isoformat(sep=' ', timespec='milliseconds')
+    return updated
 
 @router.delete("/histories/{history_id}")
 async def archive_history(history_id: str):
@@ -276,6 +297,14 @@ async def create_proposal(payload: dict = Body(...)):
         'selectedOrder': payload.get('selectedOrder')
     }
     return await insert_proposal(proposal)
+
+@router.put("/proposals/{proposal_id}")
+async def put_proposal(proposal_id: str, payload: dict = Body(...)):
+    """Update selection/edit metadata on an existing proposal (confirm path)."""
+    updated = await update_proposal(proposal_id, payload or {})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return updated
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):

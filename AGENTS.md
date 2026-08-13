@@ -100,6 +100,7 @@ Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commente
 
 - **Single Supabase Postgres backend**: All app data (sessions, correction histories, AI proposals) is persisted to Supabase Postgres via `asyncpg`. The SQLite dual-path code has been removed.
 - Tables use snake_case columns (`sessions`, `correction_histories`, `ai_proposals`); `backend/app/db_helper.py` maps to camelCase for API responses.
+- **Suggestion persistence**: Successful AI generation writes a `correction_histories` row with `status=pending` plus full `ai_proposals` immediately (not only after 「確定してコピー・保存」). Confirm/save promotes the same history to `status=confirmed` via `PUT /histories/{id}` and updates proposal selection flags. Apply `backend/supabase/migrations/005_pending_suggestion_histories.sql` to the shared Supabase project before relying on this path in production.
 - Supabase is used for both **Auth** (Google OAuth, JWT) and **app data persistence** — a unified platform.
 - RLS is enabled on all tables with permissive `USING (true)` policies. Tightening to per-user scope is deferred to a future change.
 - **Historical files**: `backend/db/app.db` is retained as historical data reference but is no longer used by the application. SQLite scripts and schema have been removed. Local development requires a Postgres connection (Supabase).
@@ -306,6 +307,7 @@ If neither is configured, `/api/suggestions` returns 503 and frontend auto-falls
 - **No auto-fallback**: If the cloud API fails (429/quota, 503, network, etc.), the job fails and the UI shows the error — WebLLM is **not** started unless オフラインモード is already ON
 - **オフラインモード toggle**: Explicit WebLLM-only mode (checkbox near generate button); required to use local AI
 - **Visual indicator**: Badge shows "クラウドAPI" or "ローカルAI" after generation
+- **DB sync on generation**: When a job completes with suggestions, the UI persists `pending` history + proposals to shared Postgres so another browser/environment on the same DB can see them via session load / ~10s poll (Job Queue). Confirm promotes to `confirmed` History without a second history insert when `historyId` is already known.
 
 ### WebLLM (Offline Fallback)
 

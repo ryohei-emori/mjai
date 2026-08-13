@@ -148,10 +148,10 @@ Domain: `Session` → `CorrectionHistory` → `AIProposal`.
 | Table | Columns | Notes |
 |---|---|---|
 | `sessions` | `session_id`, `name`, `created_at`, `updated_at`, `correction_count`, `is_open`, `status` | `status` for soft-archive: `active` / `archived` |
-| `correction_histories` | `history_id`, `session_id`, `timestamp`, `original_text`, `instruction_prompt`, `target_text`, `combined_comment`, `selected_proposal_ids`, `custom_proposals` | |
-| `ai_proposals` | `proposal_id`, `history_id`, `type`, `original_after_text`, `original_reason`, `modified_after_text`, `modified_reason`, `is_selected`, `is_modified`, `is_custom`, `selected_order`, `created_at` | Full field set aligned with app model |
+| `correction_histories` | `history_id`, `session_id`, `timestamp`, `original_text`, `instruction_prompt`, `target_text`, `combined_comment`, `selected_proposal_ids`, `custom_proposals`, `status`, `overall_comment`, `provider`, `client_job_id` | `status`: `pending` (generated, unconfirmed) / `confirmed` (after HITL save) / optional `failed` |
+| `ai_proposals` | `proposal_id`, `history_id`, `type`, `original_after_text`, `original_reason`, `modified_after_text`, `modified_reason`, `is_selected`, `is_modified`, `is_custom`, `selected_order`, `created_at` | Full field set aligned with app model; written on generation for pending histories |
 
-Schema migrations: `backend/supabase/migrations/001_initial_schema.sql`, `002_add_session_status.sql`, `003_align_ai_proposals_schema.sql`.
+Schema migrations: `backend/supabase/migrations/001_initial_schema.sql`, `002_add_session_status.sql`, `003_align_ai_proposals_schema.sql`, `004_add_history_archive.sql`, `005_pending_suggestion_histories.sql`.
 
 **Historical files**: `backend/db/app.db` is retained for reference (contains historical data from SQLite era) but no longer used by the application. SQLite migration scripts have been removed.
 
@@ -167,13 +167,15 @@ All business routes hang off a FastAPI `APIRouter` with `Depends(get_current_use
 | `GET /sessions/{id}` | Get one session | same |
 | `PUT /sessions/{id}` | Update session fields (`name`, counts, open flag, timestamps) | same |
 | `DELETE /sessions/{id}` | Soft-archive session (`status='archived'`) | same |
-| `GET /sessions/{id}/histories` | List histories for a session | same |
-| `POST /histories` | Create history entry | same |
+| `GET /sessions/{id}/histories` | List histories for a session (includes `status`, pending + confirmed) | same |
+| `POST /histories` | Create history (`status` default `confirmed`; generation uses `pending`) | same |
+| `PUT /histories/{id}` | Update/promote history (pending → confirmed) | same |
 | `GET /histories/{id}/proposals` | List proposals | same |
 | `POST /proposals` | Create proposal (AI or custom) | same |
+| `PUT /proposals/{id}` | Update proposal selection/edit flags | same |
 | `GET /keepalive` | Supabase keep-alive endpoint for free-tier DB pause prevention | None |
 
-AI suggestions are generated via `POST /suggestions` (Groq → Cloudflare failover) or client-side WebLLM (offline mode toggle).
+AI suggestions are generated via `POST /suggestions` (Groq → Cloudflare failover) or client-side WebLLM (offline mode toggle). On successful generation the frontend immediately persists a `pending` history + proposals; 「確定してコピー・保存」 promotes the same row to `confirmed` (no duplicate history junk). ~10s poll hydrates pending into Job Queue and confirmed into History across shared-DB clients.
 
 ### 5.4 Frontend surface (within system design)
 

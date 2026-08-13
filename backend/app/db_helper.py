@@ -122,7 +122,11 @@ async def fetch_histories_by_session(session_id):
                 target_text AS "targetText",
                 combined_comment AS "combinedComment",
                 selected_proposal_ids AS "selectedProposalIds",
-                custom_proposals AS "customProposals"
+                custom_proposals AS "customProposals",
+                status,
+                overall_comment AS "overallComment",
+                provider,
+                client_job_id AS "clientJobId"
             FROM correction_histories 
             WHERE session_id = $1 AND is_archived = false
             ORDER BY timestamp DESC
@@ -138,13 +142,48 @@ async def archive_history(history_id):
             history_id
         )
 
+def _normalize_history_status(value, default='confirmed'):
+    if value is None or value == '':
+        return default
+    status = str(value).strip().lower()
+    if status not in ('pending', 'confirmed', 'failed'):
+        raise ValueError(f"Invalid history status: {value}")
+    return status
+
+
+def _history_row_to_camel(history):
+    return {
+        'historyId': history['history_id'],
+        'sessionId': history['session_id'],
+        'timestamp': history['timestamp'],
+        'originalText': history['original_text'],
+        'instructionPrompt': history.get('instruction_prompt'),
+        'targetText': history.get('target_text'),
+        'combinedComment': history.get('combined_comment'),
+        'selectedProposalIds': history.get('selected_proposal_ids'),
+        'customProposals': history.get('custom_proposals'),
+        'status': history.get('status', 'confirmed'),
+        'overallComment': history.get('overall_comment'),
+        'provider': history.get('provider'),
+        'clientJobId': history.get('client_job_id'),
+    }
+
+
 # 履歴追加（作成したオブジェクトを返す）
 async def insert_history(history):
+    status = _normalize_history_status(history.get('status'), default='confirmed')
+    overall_comment = history.get('overall_comment')
+    if overall_comment is None:
+        overall_comment = history.get('combined_comment')
     async with get_db() as conn:
         await conn.execute(
             '''
-            INSERT INTO correction_histories (history_id, session_id, timestamp, original_text, instruction_prompt, target_text, combined_comment, selected_proposal_ids, custom_proposals) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO correction_histories (
+                history_id, session_id, timestamp, original_text, instruction_prompt,
+                target_text, combined_comment, selected_proposal_ids, custom_proposals,
+                status, overall_comment, provider, client_job_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ''',
             history['history_id'],
             history['session_id'],
@@ -154,20 +193,98 @@ async def insert_history(history):
             history.get('target_text'),
             history.get('combined_comment'),
             history.get('selected_proposal_ids'),
-            history.get('custom_proposals')
+            history.get('custom_proposals'),
+            status,
+            overall_comment,
+            history.get('provider'),
+            history.get('client_job_id'),
         )
-        # Return camelCase dict
-        return {
-            'historyId': history['history_id'],
-            'sessionId': history['session_id'],
-            'timestamp': history['timestamp'],
-            'originalText': history['original_text'],
-            'instructionPrompt': history.get('instruction_prompt'),
-            'targetText': history.get('target_text'),
-            'combinedComment': history.get('combined_comment'),
-            'selectedProposalIds': history.get('selected_proposal_ids'),
-            'customProposals': history.get('custom_proposals')
-        }
+        return _history_row_to_camel({
+            **history,
+            'status': status,
+            'overall_comment': overall_comment,
+        })
+
+
+async def update_history(history_id, updates):
+    """Update a correction_histories row. Returns camelCase dict or None if missing."""
+    allowed = {
+        'combined_comment': 'combined_comment',
+        'combinedComment': 'combined_comment',
+        'overall_comment': 'overall_comment',
+        'overallComment': 'overall_comment',
+        'selected_proposal_ids': 'selected_proposal_ids',
+        'selectedProposalIds': 'selected_proposal_ids',
+        'custom_proposals': 'custom_proposals',
+        'customProposals': 'custom_proposals',
+        'status': 'status',
+        'provider': 'provider',
+        'client_job_id': 'client_job_id',
+        'clientJobId': 'client_job_id',
+        'instruction_prompt': 'instruction_prompt',
+        'instructionPrompt': 'instruction_prompt',
+    }
+    set_parts = []
+    params = []
+    for key, column in allowed.items():
+        if key not in updates:
+            continue
+        value = updates[key]
+        if column == 'status':
+            value = _normalize_history_status(value)
+        # Avoid duplicate column sets when both camel and snake keys are present
+        if any(part.startswith(f"{column} =") for part in set_parts):
+            continue
+        params.append(value)
+        set_parts.append(f"{column} = ${len(params)}")
+    if not set_parts:
+        async with get_db() as conn:
+            row = await conn.fetchrow(
+                '''
+                SELECT
+                    history_id AS "historyId",
+                    session_id AS "sessionId",
+                    timestamp,
+                    original_text AS "originalText",
+                    instruction_prompt AS "instructionPrompt",
+                    target_text AS "targetText",
+                    combined_comment AS "combinedComment",
+                    selected_proposal_ids AS "selectedProposalIds",
+                    custom_proposals AS "customProposals",
+                    status,
+                    overall_comment AS "overallComment",
+                    provider,
+                    client_job_id AS "clientJobId"
+                FROM correction_histories
+                WHERE history_id = $1 AND is_archived = false
+                ''',
+                history_id,
+            )
+            return dict(row) if row else None
+
+    params.append(history_id)
+    query = f'''
+        UPDATE correction_histories
+        SET {", ".join(set_parts)}
+        WHERE history_id = ${len(params)} AND is_archived = false
+        RETURNING
+            history_id AS "historyId",
+            session_id AS "sessionId",
+            timestamp,
+            original_text AS "originalText",
+            instruction_prompt AS "instructionPrompt",
+            target_text AS "targetText",
+            combined_comment AS "combinedComment",
+            selected_proposal_ids AS "selectedProposalIds",
+            custom_proposals AS "customProposals",
+            status,
+            overall_comment AS "overallComment",
+            provider,
+            client_job_id AS "clientJobId"
+    '''
+    async with get_db() as conn:
+        row = await conn.fetchrow(query, *params)
+        return dict(row) if row else None
 
 # 提案一覧取得（フル field set, camelCase)
 async def fetch_proposals_by_history(history_id):
@@ -275,3 +392,84 @@ async def insert_proposal(proposal):
             'isCustom': is_custom,
             'selectedOrder': selected_order,
         }
+
+
+async def update_proposal(proposal_id, updates):
+    """Update selection/edit fields on an ai_proposals row. Returns camelCase or None."""
+    field_map = {
+        'originalAfterText': ('original_after_text', False),
+        'original_after_text': ('original_after_text', False),
+        'originalReason': ('original_reason', False),
+        'original_reason': ('original_reason', False),
+        'modifiedAfterText': ('modified_after_text', False),
+        'modified_after_text': ('modified_after_text', False),
+        'modifiedReason': ('modified_reason', False),
+        'modified_reason': ('modified_reason', False),
+        'isSelected': ('is_selected', True),
+        'is_selected': ('is_selected', True),
+        'isModified': ('is_modified', True),
+        'is_modified': ('is_modified', True),
+        'isCustom': ('is_custom', True),
+        'is_custom': ('is_custom', True),
+        'selectedOrder': ('selected_order', False),
+        'selected_order': ('selected_order', False),
+        'type': ('type', False),
+    }
+    set_parts = []
+    params = []
+    seen_columns = set()
+    for key, (column, is_bool) in field_map.items():
+        if key not in updates or column in seen_columns:
+            continue
+        value = updates[key]
+        if is_bool:
+            value = _coerce_bool(value)
+        seen_columns.add(column)
+        params.append(value)
+        set_parts.append(f"{column} = ${len(params)}")
+    if not set_parts:
+        async with get_db() as conn:
+            row = await conn.fetchrow(
+                '''
+                SELECT
+                    proposal_id AS "proposalId",
+                    history_id AS "historyId",
+                    type,
+                    original_after_text AS "originalAfterText",
+                    original_reason AS "originalReason",
+                    modified_after_text AS "modifiedAfterText",
+                    modified_reason AS "modifiedReason",
+                    is_selected AS "isSelected",
+                    is_modified AS "isModified",
+                    is_custom AS "isCustom",
+                    selected_order AS "selectedOrder",
+                    created_at AS "createdAt"
+                FROM ai_proposals
+                WHERE proposal_id = $1
+                ''',
+                proposal_id,
+            )
+            return dict(row) if row else None
+
+    params.append(proposal_id)
+    query = f'''
+        UPDATE ai_proposals
+        SET {", ".join(set_parts)}
+        WHERE proposal_id = ${len(params)}
+        RETURNING
+            proposal_id AS "proposalId",
+            history_id AS "historyId",
+            type,
+            original_after_text AS "originalAfterText",
+            original_reason AS "originalReason",
+            modified_after_text AS "modifiedAfterText",
+            modified_reason AS "modifiedReason",
+            is_selected AS "isSelected",
+            is_modified AS "isModified",
+            is_custom AS "isCustom",
+            selected_order AS "selectedOrder",
+            created_at AS "createdAt"
+    '''
+    async with get_db() as conn:
+        row = await conn.fetchrow(query, *params)
+        return dict(row) if row else None

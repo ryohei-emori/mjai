@@ -122,14 +122,32 @@ export const sessionAPI = {
   }
 };
 
+export type HistoryStatus = 'pending' | 'confirmed' | 'failed';
+
+export type HistoryAPIResponse = {
+  historyId: string;
+  sessionId: string;
+  timestamp?: string;
+  originalText: string;
+  instructionPrompt?: string;
+  targetText: string;
+  combinedComment?: string;
+  selectedProposalIds?: string;
+  customProposals?: string;
+  status?: HistoryStatus;
+  overallComment?: string;
+  provider?: string;
+  clientJobId?: string;
+};
+
 // 履歴関連API
 export const historyAPI = {
   // セッションの履歴一覧取得
-  getHistories: async (sessionId: string) => {
+  getHistories: async (sessionId: string): Promise<HistoryAPIResponse[]> => {
     return await apiFetch(`/sessions/${sessionId}/histories`);
   },
 
-  // 履歴作成
+  // 履歴作成（生成直後は status=pending、従来の確定保存は confirmed 既定）
   createHistory: async (historyData: {
     sessionId: string;
     originalText: string;
@@ -138,10 +156,34 @@ export const historyAPI = {
     combinedComment?: string;
     selectedProposalIds?: string;
     customProposals?: string;
+    status?: HistoryStatus;
+    overallComment?: string;
+    provider?: string;
+    clientJobId?: string;
   }) => {
     return await apiFetch('/histories', {
       method: 'POST',
       body: JSON.stringify(historyData)
+    });
+  },
+
+  // pending → confirmed など、同一生成ラウンドの更新（二重 INSERT を避ける）
+  updateHistory: async (
+    historyId: string,
+    updates: {
+      status?: HistoryStatus;
+      combinedComment?: string;
+      overallComment?: string;
+      selectedProposalIds?: string;
+      customProposals?: string;
+      provider?: string;
+      clientJobId?: string;
+      instructionPrompt?: string;
+    },
+  ) => {
+    return await apiFetch(`/histories/${historyId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
     });
   },
 
@@ -177,7 +219,28 @@ export const proposalAPI = {
       method: 'POST',
       body: JSON.stringify(proposalData)
     });
-  }
+  },
+
+  // 確定時の選択/編集フラグ更新（既存 AI 提案の二重作成を避ける）
+  updateProposal: async (
+    proposalId: string,
+    updates: {
+      isSelected?: boolean;
+      isModified?: boolean;
+      isCustom?: boolean;
+      selectedOrder?: number | null;
+      modifiedAfterText?: string;
+      modifiedReason?: string;
+      originalAfterText?: string;
+      originalReason?: string;
+      type?: 'AI' | 'Custom';
+    },
+  ) => {
+    return await apiFetch(`/proposals/${proposalId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
 };
 
 // AI提案生成API

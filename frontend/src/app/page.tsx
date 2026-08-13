@@ -90,6 +90,8 @@ type QueuedJob = {
   // 使う（add-suggestion-generation-timer改訂、design.md Decision 7参照）。
   sessionId: string
   targetText: string
+  // 生成時の原文。他端末から pending を復元するとき currentSession とズレても使える。
+  originalText?: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
   suggestions?: CorrectionSuggestion[]
   overallComment?: string
@@ -97,6 +99,8 @@ type QueuedJob = {
   queuedAt: Date
   completedAt?: Date
   source?: 'api' | 'webllm'
+  // 生成成功後に DB へ書いた pending history（確定時は PUT で promote）
+  historyId?: string
 }
 
 // ユーザーが実際にそのジョブのHITLレビューに向き合っていた時間（＝
@@ -428,6 +432,9 @@ export default function TextCorrectionApp() {
   const restoredDraftSessionIdsRef = useRef<Set<string>>(new Set())
   const draftSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const jobQueueSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // loadSessionDetails は confirmingJobId state より前に定義されるため、
+  // アクティブなレビュー上書き防止はこの ref 経由で読む。
+  const confirmingJobIdRef = useRef<string | null>(null)
   const { toast } = useToast()
 
   // Load persisted right pane width and detect screen size on mount
@@ -563,10 +570,15 @@ export default function TextCorrectionApp() {
 
   // 単一ジョブを非同期処理する関数（並列実行可能）
   const processJobAsync = useCallback(async (jobId: string, targetText: string, originalText: string) => {
-    // ジョブをprocessingに更新
-    setJobQueue(prev => prev.map(j => 
-      j.id === jobId ? { ...j, status: 'processing' as const } : j
-    ))
+    let sessionIdForPersist = ''
+    // ジョブをprocessingに更新しつつ sessionId を確保（DB pending 永続化用）
+    setJobQueue((prev) =>
+      prev.map((j) => {
+        if (j.id !== jobId) return j
+        sessionIdForPersist = j.sessionId
+        return { ...j, status: 'processing' as const, originalText }
+      }),
+    )
 
     toast({
       title: "処理開始",
@@ -620,7 +632,7 @@ export default function TextCorrectionApp() {
         }
       }
 
-      // ジョブを完了に更新
+      // ジョブを完了に更新（DB 永続化は続けて行い historyId を後付け）
       setJobQueue(prev => prev.map(j => 
         j.id === jobId 
           ? { 
@@ -629,6 +641,7 @@ export default function TextCorrectionApp() {
               suggestions,
               overallComment,
               source,
+              originalText,
               completedAt: new Date() 
             } 
           : j
@@ -647,6 +660,64 @@ export default function TextCorrectionApp() {
         title: "完了",
         description: `ジョブ ${jobId.slice(-4)} が完了しました`,
       })
+
+      // Shared DB: persist pending history + proposals so other envs can see them
+      if (sessionIdForPersist) {
+        try {
+          const savedHistory = await historyAPI.createHistory({
+            sessionId: sessionIdForPersist,
+            originalText,
+            targetText,
+            instructionPrompt: "CCTalkからの添削指示",
+            combinedComment: overallComment,
+            overallComment,
+            status: "pending",
+            provider: source,
+            clientJobId: jobId,
+          })
+          if (!savedHistory?.historyId) {
+            throw new Error("pending historyId missing")
+          }
+          const persistedSuggestions: CorrectionSuggestion[] = []
+          for (const suggestion of suggestions) {
+            const created = await proposalAPI.createProposal({
+              historyId: savedHistory.historyId,
+              type: "AI",
+              originalAfterText: suggestion.original,
+              originalReason: suggestion.reason,
+              modifiedAfterText: suggestion.original,
+              modifiedReason: suggestion.reason,
+              isSelected: false,
+              isModified: false,
+              isCustom: false,
+            })
+            persistedSuggestions.push({
+              ...suggestion,
+              id: created.proposalId || suggestion.id,
+              selected: false,
+            })
+          }
+          setJobQueue((prev) =>
+            prev.map((j) =>
+              j.id === jobId
+                ? {
+                    ...j,
+                    historyId: savedHistory.historyId,
+                    suggestions: persistedSuggestions,
+                  }
+                : j,
+            ),
+          )
+        } catch (persistError) {
+          console.error("[processJobAsync] Failed to persist pending suggestions:", persistError)
+          toast({
+            title: "DB同期失敗",
+            description:
+              "提案は表示されていますが、共有DBへの保存に失敗しました。この端末のジョブは残っています。",
+            variant: "destructive",
+          })
+        }
+      }
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "不明なエラー"
@@ -696,6 +767,7 @@ export default function TextCorrectionApp() {
       id: `job-${Date.now()}`,
       sessionId: currentSession.id,
       targetText,
+      originalText: currentSession.originalText,
       status: 'queued',
       queuedAt: new Date(),
     }
@@ -773,8 +845,7 @@ export default function TextCorrectionApp() {
   }, [currentSession, addJobAndProcess, updateCurrentSession])
 
   // セッション詳細をオンデマンドで取得（共有DB上の histories + ai_proposals）。
-  // 他端末/他環境で保存された最新を取り込むため、セッション選択時に加え
-  // 定期ポーリングからも呼ばれる。jobQueue / 未確定 suggestions は触らない。
+  // confirmed → History、pending → Job Queue へマージ（他端末/他環境の未確定提案を可視化）。
   const loadSessionDetails = useCallback(async (sessionId: string) => {
     try {
       console.log("Loading session details for:", sessionId)
@@ -782,6 +853,8 @@ export default function TextCorrectionApp() {
       console.log("Histories for session", sessionId, ":", historiesData)
 
       const serverSaved: SavedData[] = []
+      const pendingJobs: QueuedJob[] = []
+
       for (const history of historiesData) {
         const proposalsData: ProposalAPIResponse[] = await proposalAPI.getProposals(history.historyId)
         const aiSuggestions: CorrectionSuggestion[] = proposalsData.map((proposal) => ({
@@ -796,19 +869,38 @@ export default function TextCorrectionApp() {
           isCustom: !!proposal.isCustom,
         }))
 
+        const status = history.status || "confirmed"
+        const overall =
+          history.overallComment || history.combinedComment || ""
+        const ts = history.timestamp ? new Date(history.timestamp) : new Date()
+
+        if (status === "pending" || status === "failed") {
+          pendingJobs.push({
+            id: history.clientJobId || `history-${history.historyId}`,
+            sessionId,
+            targetText: history.targetText || "",
+            originalText: history.originalText,
+            status: status === "failed" ? "failed" : "completed",
+            suggestions: status === "failed" ? undefined : aiSuggestions,
+            overallComment: overall,
+            error: status === "failed" ? overall || "生成に失敗しました" : undefined,
+            queuedAt: ts,
+            completedAt: ts,
+            source: history.provider === "webllm" ? "webllm" : "api",
+            historyId: history.historyId,
+          })
+          continue
+        }
+
         serverSaved.push({
           originalText: history.originalText,
-          instructionPrompt: history.instructionPrompt,
+          instructionPrompt: history.instructionPrompt || "",
           targetText: history.targetText,
           aiSuggestions,
           selectedCorrections: aiSuggestions.filter((s) => s.selected),
-          overallComment: history.combinedComment,
-          combinedComment: history.combinedComment,
-          timestamp: new Date(history.timestamp),
-          // Any history persisted to the backend was, by definition, already
-          // confirmed via saveCorrections() — reopening a session must not
-          // regress it back to "未確認"/unconfirmed (see execution-history-
-          // hitl-queue spec.md "Savedステータスの正確な永続化と表示").
+          overallComment: overall,
+          combinedComment: history.combinedComment || overall,
+          timestamp: ts,
           confirmed: true,
           historyId: history.historyId,
         })
@@ -820,22 +912,81 @@ export default function TextCorrectionApp() {
           // Keep optimistic local History rows that do not yet have historyId
           // (background save in flight after confirm-copy).
           const pendingLocal = (s.savedData || []).filter((d) => !d.historyId)
-          const serverIds = new Set(
-            serverSaved.map((d) => d.historyId).filter(Boolean) as string[],
-          )
           const stillPending = pendingLocal.filter((local) => {
-            // Drop pending once a matching server row exists (same comment + time window).
             return !serverSaved.some(
               (srv) =>
                 srv.combinedComment === local.combinedComment &&
                 Math.abs(srv.timestamp.getTime() - local.timestamp.getTime()) < 120_000,
             )
           })
-          // Prefer server order; append unresolved optimistic rows.
-          void serverIds
           return { ...s, savedData: [...serverSaved, ...stillPending] }
         }),
       )
+
+      setJobQueue((prev) => {
+        const otherSession = prev.filter((j) => j.sessionId !== sessionId)
+        const local = prev.filter((j) => j.sessionId === sessionId)
+        const activeId = confirmingJobIdRef.current
+
+        const mergedPending = pendingJobs.map((pj) => {
+          const match = local.find(
+            (j) =>
+              (j.historyId && j.historyId === pj.historyId) ||
+              j.id === pj.id,
+          )
+          if (match && match.id === activeId) {
+            return {
+              ...match,
+              historyId: pj.historyId || match.historyId,
+              originalText: match.originalText || pj.originalText,
+            }
+          }
+          if (match) {
+            return {
+              ...pj,
+              id: match.id,
+              suggestions:
+                match.suggestions && match.suggestions.length > 0
+                  ? match.suggestions
+                  : pj.suggestions,
+              overallComment: match.overallComment || pj.overallComment,
+            }
+          }
+          return pj
+        })
+
+        const pendingHistoryIds = new Set(
+          mergedPending.map((j) => j.historyId).filter(Boolean) as string[],
+        )
+        const pendingClientIds = new Set(mergedPending.map((j) => j.id))
+
+        const inFlight = local.filter(
+          (j) => j.status === "queued" || j.status === "processing",
+        )
+        const localOnly = local.filter(
+          (j) =>
+            (j.status === "completed" || j.status === "failed") &&
+            !j.historyId &&
+            j.id !== activeId,
+        )
+        const activeLocal = activeId
+          ? local.find((j) => j.id === activeId)
+          : undefined
+        const activeAlreadyMerged =
+          !!activeId && mergedPending.some((j) => j.id === activeId)
+
+        const extras = [
+          ...inFlight,
+          ...localOnly,
+          ...(activeLocal && !activeAlreadyMerged ? [activeLocal] : []),
+        ].filter(
+          (j) =>
+            (!j.historyId || !pendingHistoryIds.has(j.historyId)) &&
+            !pendingClientIds.has(j.id),
+        )
+
+        return [...otherSession, ...mergedPending, ...extras]
+      })
     } catch (error) {
       console.error("Error loading session details:", error)
     }
@@ -922,8 +1073,7 @@ export default function TextCorrectionApp() {
   }, [jobQueue, currentSessionId, loadSessionDetails, toast])
 
   // Shared-DB refresh: while a session is open, poll histories/proposals so
-  // saves from another browser/environment appear in right-pane History.
-  // Job Queue remains device-local until confirm+save.
+  // confirmed History and pending Job Queue items appear across browsers/envs.
   useEffect(() => {
     if (!currentSessionId || !session) return
     const POLL_MS = 10_000
@@ -939,6 +1089,10 @@ export default function TextCorrectionApp() {
 
   // 確認中のジョブID（ジョブキューからの確認用）
   const [confirmingJobId, setConfirmingJobId] = useState<string | null>(null)
+
+  useEffect(() => {
+    confirmingJobIdRef.current = confirmingJobId
+  }, [confirmingJobId])
 
   // Tracks which confirmingJobId has already triggered the one-time
   // scroll-into-view below, so selecting/deselecting/editing a suggestion
@@ -1138,6 +1292,7 @@ export default function TextCorrectionApp() {
     // job.suggestions で置き換える。
     const preservedCustomSuggestions = currentSession.suggestions.filter((s) => s.isCustom)
     updateCurrentSession({
+      ...(job.originalText ? { originalText: job.originalText } : {}),
       targetText: job.targetText,
       suggestions: [...job.suggestions, ...preservedCustomSuggestions],
       overallComment: job.overallComment || '',
@@ -1429,6 +1584,10 @@ export default function TextCorrectionApp() {
     const suggestionsSnapshot = currentSession.suggestions
     const jobIdToConfirm = confirmingJobId
     const historyIndexToConfirm = confirmingHistoryIndex
+    const pendingHistoryId =
+      jobIdToConfirm !== null
+        ? jobQueue.find((j) => j.id === jobIdToConfirm)?.historyId
+        : undefined
 
     const numberedCorrections = selectedSuggestions
       .map((suggestion, index) => {
@@ -1559,39 +1718,86 @@ export default function TextCorrectionApp() {
       })
 
       // 3) バックグラウンドで履歴/提案を永続化
+      // pending 生成済みなら PUT で promote（二重 History を避ける）
       try {
-        const historyData = {
-          sessionId,
-          originalText,
-          targetText,
-          instructionPrompt: "CCTalkからの添削指示",
-          combinedComment: overallComment,
-          selectedProposalIds: JSON.stringify(selectedSuggestions.map((s) => s.id)),
-          customProposals: JSON.stringify(selectedSuggestions.filter((s) => s.isCustom)),
-        }
+        const selectedIdsJson = JSON.stringify(selectedSuggestions.map((s) => s.id))
+        const customJson = JSON.stringify(selectedSuggestions.filter((s) => s.isCustom))
+        let resolvedHistoryId = pendingHistoryId
 
-        const savedHistory = await historyAPI.createHistory(historyData)
-        if (!savedHistory?.historyId) {
-          throw new Error("履歴の保存に失敗しました（historyIdが返却されませんでした）")
-        }
-
-        for (const suggestion of suggestionsSnapshot) {
-          const proposalData = {
-            historyId: savedHistory.historyId,
-            type: (suggestion.isCustom ? "Custom" : "AI") as "AI" | "Custom",
-            originalAfterText: suggestion.original,
-            originalReason: suggestion.reason,
-            modifiedAfterText: suggestion.userModifiedReason ? suggestion.original : suggestion.original,
-            modifiedReason: suggestion.userModifiedReason || suggestion.reason,
-            isSelected: !!suggestion.selected,
-            isModified: !!suggestion.userModifiedReason,
-            isCustom: !!suggestion.isCustom,
-            selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
+        if (pendingHistoryId) {
+          await historyAPI.updateHistory(pendingHistoryId, {
+            status: "confirmed",
+            combinedComment: overallComment,
+            overallComment,
+            selectedProposalIds: selectedIdsJson,
+            customProposals: customJson,
+          })
+          for (const suggestion of suggestionsSnapshot) {
+            const looksLikeUuid =
+              typeof suggestion.id === "string" &&
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                suggestion.id,
+              )
+            if (looksLikeUuid && !suggestion.isCustom) {
+              await proposalAPI.updateProposal(suggestion.id, {
+                isSelected: !!suggestion.selected,
+                isModified: !!suggestion.userModifiedReason,
+                modifiedAfterText: suggestion.original,
+                modifiedReason: suggestion.userModifiedReason || suggestion.reason,
+                selectedOrder: suggestion.selected ? suggestion.selectedOrder : null,
+              })
+            } else if (suggestion.isCustom || !looksLikeUuid) {
+              // レビュー中に追加したカスタム、または persist 前のローカル id
+              await proposalAPI.createProposal({
+                historyId: pendingHistoryId,
+                type: suggestion.isCustom ? "Custom" : "AI",
+                originalAfterText: suggestion.original,
+                originalReason: suggestion.reason,
+                modifiedAfterText: suggestion.original,
+                modifiedReason: suggestion.userModifiedReason || suggestion.reason,
+                isSelected: !!suggestion.selected,
+                isModified: !!suggestion.userModifiedReason,
+                isCustom: !!suggestion.isCustom,
+                selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
+              })
+            }
           }
-          await proposalAPI.createProposal(proposalData)
+        } else {
+          const historyData = {
+            sessionId,
+            originalText,
+            targetText,
+            instructionPrompt: "CCTalkからの添削指示",
+            combinedComment: overallComment,
+            overallComment,
+            status: "confirmed" as const,
+            selectedProposalIds: selectedIdsJson,
+            customProposals: customJson,
+          }
+
+          const savedHistory = await historyAPI.createHistory(historyData)
+          if (!savedHistory?.historyId) {
+            throw new Error("履歴の保存に失敗しました（historyIdが返却されませんでした）")
+          }
+          resolvedHistoryId = savedHistory.historyId
+
+          for (const suggestion of suggestionsSnapshot) {
+            await proposalAPI.createProposal({
+              historyId: savedHistory.historyId,
+              type: (suggestion.isCustom ? "Custom" : "AI") as "AI" | "Custom",
+              originalAfterText: suggestion.original,
+              originalReason: suggestion.reason,
+              modifiedAfterText: suggestion.original,
+              modifiedReason: suggestion.userModifiedReason || suggestion.reason,
+              isSelected: !!suggestion.selected,
+              isModified: !!suggestion.userModifiedReason,
+              isCustom: !!suggestion.isCustom,
+              selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
+            })
+          }
         }
 
-        if (shouldAppendSavedData) {
+        if (shouldAppendSavedData && resolvedHistoryId) {
           setSessions((prev) =>
             prev.map((session) => {
               if (session.id !== sessionId) return session
@@ -1601,7 +1807,7 @@ export default function TextCorrectionApp() {
                   d.combinedComment === combinedComment &&
                   d.timestamp instanceof Date &&
                   d.timestamp.getTime() === commitTimestamp.getTime()
-                    ? { ...d, historyId: savedHistory.historyId }
+                    ? { ...d, historyId: resolvedHistoryId }
                     : d,
                 ),
               }
