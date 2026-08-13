@@ -281,6 +281,14 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 - Hover: reveals copy/confirm icons
 - **Text-span highlighting** (2026-08): hovering a card previews (and selecting a card persists) a highlight of the card's flagged excerpt inside the actual SOURCE TEXT and TARGET TEXT textareas, using the `--suggestion-highlight` token (see Core Tokens table above). Implemented via `HighlightedTextarea`, a non-interactive overlay layered behind the native `<textarea>` — see `docs/SYSTEM-DESIGN.md` / `openspec/changes/highlight-suggestion-text-spans/design.md` for the technique.
 
+### Confirm / Save Button Loading
+
+"確定してコピー・保存" (`saveCorrections`):
+
+- While in flight (`isSaving`): button **disabled**; leading icon is Material Symbols `progress_activity` with Tailwind `animate-spin` (same ぐるぐる pattern as job `processing` / LATEST live timer). A static `progress_activity` glyph without spin is not allowed.
+- Label while waiting: `保存中...`
+- Interaction: clipboard copy + local UI commit run first; server history/proposal persistence continues in the background with separate success/failure toasts (see OpenSpec change `async-confirm-copy-background-save`).
+
 ### Bell Shake Animation
 
 CSS animation triggered when a job **completes** (transitions to `completed` / badge would increase). Not triggered on enqueue or when a job merely enters `processing`.

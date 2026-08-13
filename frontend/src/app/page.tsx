@@ -1340,12 +1340,14 @@ export default function TextCorrectionApp() {
     }
   }
 
-  // 履歴をAPIに保存
+  // 確定してコピー・保存: クリップボード＋ローカル UI 確定を先に行い、
+  // 履歴/提案の API 永続化はバックグラウンドで続行する
+  // （async-confirm-copy-background-save）。
   const saveCorrections = async () => {
     if (!currentSession) return
 
-    // 二重クリック/連続送信ガード: 保存処理が完了するまで再入を防ぎ、
-    // 同一の生成ラウンドから複数の「添削データ」エントリが誤って
+    // 二重クリック/連続送信ガード: コピー〜バックグラウンド保存が完了するまで
+    // 再入を防ぎ、同一の生成ラウンドから複数の「添削データ」エントリが誤って
     // 作成されることを防止する
     if (isSaving) return
 
@@ -1374,163 +1376,211 @@ export default function TextCorrectionApp() {
       return
     }
 
+    // API / ローカル確定用にクリア前のスナップショットを保持する
+    const sessionId = currentSession.id
+    const originalText = currentSession.originalText
+    const targetText = currentSession.targetText
+    const overallComment = currentSession.overallComment
+    const suggestionsSnapshot = currentSession.suggestions
+    const jobIdToConfirm = confirmingJobId
+    const historyIndexToConfirm = confirmingHistoryIndex
+
+    const numberedCorrections = selectedSuggestions
+      .map((suggestion, index) => {
+        const reasonText = suggestion.userModifiedReason || suggestion.reason
+        return `${index + 1}.${suggestion.original}\n${reasonText}`
+      })
+      .join("\n\n")
+    const combinedComment = `${numberedCorrections}\n\n${overallComment}`
+    const commitTimestamp = new Date()
+    const shouldAppendSavedData = historyIndexToConfirm === null
+
     setIsSaving(true)
     try {
-      // 履歴データを作成
-      const historyData = {
-        sessionId: currentSession.id,
-        originalText: currentSession.originalText,
-        targetText: currentSession.targetText,
-        instructionPrompt: "CCTalkからの添削指示",
-        combinedComment: currentSession.overallComment,
-        selectedProposalIds: JSON.stringify(selectedSuggestions.map((s) => s.id)),
-        customProposals: JSON.stringify(selectedSuggestions.filter((s) => s.isCustom)),
-      }
-
-      // 履歴をAPIに保存
-      const savedHistory = await historyAPI.createHistory(historyData)
-      if (!savedHistory?.historyId) {
-        throw new Error("履歴の保存に失敗しました（historyIdが返却されませんでした）")
-      }
-
-      // すべての提案をAPIに保存（選択されたものも選択されていないものも）
-      for (const suggestion of currentSession.suggestions) {
-        const proposalData = {
-          historyId: savedHistory.historyId,
-          type: (suggestion.isCustom ? "Custom" : "AI") as "AI" | "Custom",
-          originalAfterText: suggestion.original,
-          originalReason: suggestion.reason,
-          modifiedAfterText: suggestion.userModifiedReason ? suggestion.original : suggestion.original,
-          modifiedReason: suggestion.userModifiedReason || suggestion.reason,
-          isSelected: !!suggestion.selected,
-          isModified: !!suggestion.userModifiedReason,
-          isCustom: !!suggestion.isCustom,
-          selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
-        }
-        await proposalAPI.createProposal(proposalData)
-      }
-
-      // クリップボードにコピー
-      const numberedCorrections = selectedSuggestions
-        .map((suggestion, index) => {
-          const reasonText = suggestion.userModifiedReason || suggestion.reason
-          return `${index + 1}.${suggestion.original}\n${reasonText}`
+      // 1) クリップボード（ネットワークを待たない）
+      try {
+        await navigator.clipboard.writeText(combinedComment)
+      } catch {
+        toast({
+          title: "コピー失敗",
+          description: "クリップボードへのコピーに失敗しました",
+          variant: "destructive",
         })
-        .join("\n\n")
+        return
+      }
 
-      const combinedComment = `${numberedCorrections}\n\n${currentSession.overallComment}`
-      await copyToClipboard(combinedComment, "修正内容がクリップボードにコピーされました")
-
-      // フロントエンドの状態を更新
-      if (confirmingJobId !== null) {
-        // ジョブキューからの確認フロー: ジョブを完了済みとしてマーク、履歴に保存
+      // 2) ローカル UI 確定（historyId は後でパッチ）
+      if (jobIdToConfirm !== null) {
         const savedData: SavedData = {
-          originalText: currentSession.originalText,
+          originalText,
           instructionPrompt: "CCTalkからの添削指示",
-          targetText: currentSession.targetText,
-          aiSuggestions: currentSession.suggestions,
+          targetText,
+          aiSuggestions: suggestionsSnapshot,
           selectedCorrections: selectedSuggestions,
-          overallComment: currentSession.overallComment,
+          overallComment,
           combinedComment,
-          timestamp: new Date(),
+          timestamp: commitTimestamp,
           confirmed: true,
-          historyId: savedHistory.historyId,
         }
 
-        updateCurrentSession({
-          savedData: [...currentSession.savedData, savedData],
-          targetText: "",
-          suggestions: [],
-          overallComment: "",
-        })
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  savedData: [...session.savedData, savedData],
+                  targetText: "",
+                  suggestions: [],
+                  overallComment: "",
+                }
+              : session,
+          ),
+        )
 
         // このジョブの累計レビュー作業時間（キュー待機/AI処理時間を含まない）を
         // 記録する（add-suggestion-generation-timer改訂、design.md Decision 7）。
         // getReviewElapsedSecondsはクローズ済みセグメント＋現在オープン中の
-        // セグメント（保存操作自体はレビュー画面を開いたまま行われるため、通常は
-        // 常にオープン中）を合算するので、setConfirmingJobId(null)より前に
-        // 呼び出す必要がある
-        const timedJob = jobQueue.find(j => j.id === confirmingJobId)
+        // セグメントを合算するので、setConfirmingJobId(null)より前に呼び出す
+        const timedJob = jobQueue.find((j) => j.id === jobIdToConfirm)
         if (timedJob) {
           const elapsedSeconds = getReviewElapsedSeconds(timedJob.id)
-          setJobTimingHistory(prev => [
-            ...prev,
-            { jobId: timedJob.id, elapsedSeconds, completedAt: new Date() },
-          ].slice(-MAX_JOB_TIMING_HISTORY))
-          // 記録済みジョブのセグメント状態は不要になるため破棄する（refが
-          // 際限なく肥大化するのを防ぐ）
+          setJobTimingHistory((prev) =>
+            [
+              ...prev,
+              { jobId: timedJob.id, elapsedSeconds, completedAt: new Date() },
+            ].slice(-MAX_JOB_TIMING_HISTORY),
+          )
           reviewAccumulatedMsRef.current.delete(timedJob.id)
           reviewSegmentStartRef.current.delete(timedJob.id)
         }
-        
-        // 確認済みジョブをキューから削除
-        setJobQueue(prev => prev.filter(j => j.id !== confirmingJobId))
+
+        setJobQueue((prev) => prev.filter((j) => j.id !== jobIdToConfirm))
         setConfirmingJobId(null)
-        // Draftが実データ（History）として確定したため、永続化していたDraftを削除する
-        clearDraftFromStorage(currentSession.id)
-        
-        toast({
-          title: "確認完了",
-          description: "ジョブを確認済みにしました。クリップボードにコピーしました。",
-        })
-      } else if (confirmingHistoryIndex !== null) {
-        // 実行履歴からの確認フロー: 既存の履歴を確認済みにマーク
-        const updatedSavedData = currentSession.savedData.map((data, idx) => 
-          idx === confirmingHistoryIndex ? { ...data, confirmed: true } : data
+        clearDraftFromStorage(sessionId)
+      } else if (historyIndexToConfirm !== null) {
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  savedData: session.savedData.map((data, idx) =>
+                    idx === historyIndexToConfirm ? { ...data, confirmed: true } : data,
+                  ),
+                  targetText: "",
+                  suggestions: [],
+                  overallComment: "",
+                }
+              : session,
+          ),
         )
-        updateCurrentSession({
-          savedData: updatedSavedData,
-          targetText: "",
-          suggestions: [],
-          overallComment: "",
-        })
         setConfirmingHistoryIndex(null)
-        // Draftが実データ（History）として確定したため、永続化していたDraftを削除する
-        clearDraftFromStorage(currentSession.id)
-        toast({
-          title: "確認完了",
-          description: "履歴を確認済みにしました。クリップボードにコピーしました。",
-        })
+        clearDraftFromStorage(sessionId)
       } else {
-        // 新規保存フロー
         const savedData: SavedData = {
-          originalText: currentSession.originalText,
+          originalText,
           instructionPrompt: "CCTalkからの添削指示",
-          targetText: currentSession.targetText,
-          aiSuggestions: currentSession.suggestions,
+          targetText,
+          aiSuggestions: suggestionsSnapshot,
           selectedCorrections: selectedSuggestions,
-          overallComment: currentSession.overallComment,
+          overallComment,
           combinedComment,
-          timestamp: new Date(),
+          timestamp: commitTimestamp,
           confirmed: true,
-          historyId: savedHistory.historyId,
         }
 
-        updateCurrentSession({
-          savedData: [...currentSession.savedData, savedData],
-          targetText: "",
-          suggestions: [],
-          overallComment: "",
-        })
-        // Draftが実データ（History）として確定したため、永続化していたDraftを削除する
-        clearDraftFromStorage(currentSession.id)
-        
-        toast({
-          title: "保存完了",
-          description: "修正内容が保存され、クリップボードにコピーされました",
-        })
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  savedData: [...session.savedData, savedData],
+                  targetText: "",
+                  suggestions: [],
+                  overallComment: "",
+                }
+              : session,
+          ),
+        )
+        clearDraftFromStorage(sessionId)
       }
 
       setShowCustomForm(false)
       setCustomCorrection({ original: "", reason: "" })
       setSelectionCounter(0)
-    } catch (error) {
-      console.error("Failed to save corrections:", error)
+
       toast({
-        title: "エラー",
-        description: "修正内容の保存に失敗しました",
-        variant: "destructive",
+        title: "コピー完了",
+        description: "修正内容をクリップボードにコピーしました。サーバーへ保存しています...",
       })
+
+      // 3) バックグラウンドで履歴/提案を永続化
+      try {
+        const historyData = {
+          sessionId,
+          originalText,
+          targetText,
+          instructionPrompt: "CCTalkからの添削指示",
+          combinedComment: overallComment,
+          selectedProposalIds: JSON.stringify(selectedSuggestions.map((s) => s.id)),
+          customProposals: JSON.stringify(selectedSuggestions.filter((s) => s.isCustom)),
+        }
+
+        const savedHistory = await historyAPI.createHistory(historyData)
+        if (!savedHistory?.historyId) {
+          throw new Error("履歴の保存に失敗しました（historyIdが返却されませんでした）")
+        }
+
+        for (const suggestion of suggestionsSnapshot) {
+          const proposalData = {
+            historyId: savedHistory.historyId,
+            type: (suggestion.isCustom ? "Custom" : "AI") as "AI" | "Custom",
+            originalAfterText: suggestion.original,
+            originalReason: suggestion.reason,
+            modifiedAfterText: suggestion.userModifiedReason ? suggestion.original : suggestion.original,
+            modifiedReason: suggestion.userModifiedReason || suggestion.reason,
+            isSelected: !!suggestion.selected,
+            isModified: !!suggestion.userModifiedReason,
+            isCustom: !!suggestion.isCustom,
+            selectedOrder: suggestion.selected ? suggestion.selectedOrder : undefined,
+          }
+          await proposalAPI.createProposal(proposalData)
+        }
+
+        if (shouldAppendSavedData) {
+          setSessions((prev) =>
+            prev.map((session) => {
+              if (session.id !== sessionId) return session
+              return {
+                ...session,
+                savedData: session.savedData.map((d) =>
+                  d.combinedComment === combinedComment &&
+                  d.timestamp instanceof Date &&
+                  d.timestamp.getTime() === commitTimestamp.getTime()
+                    ? { ...d, historyId: savedHistory.historyId }
+                    : d,
+                ),
+              }
+            }),
+          )
+        }
+
+        toast({
+          title: "保存完了",
+          description:
+            jobIdToConfirm !== null
+              ? "ジョブを確認済みにし、サーバーに保存しました。"
+              : historyIndexToConfirm !== null
+                ? "履歴を確認済みにし、サーバーに保存しました。"
+                : "修正内容をサーバーに保存しました。",
+        })
+      } catch (saveError) {
+        console.error("Failed to save corrections:", saveError)
+        toast({
+          title: "保存失敗",
+          description: "コピーは完了しましたが、サーバーへの保存に失敗しました",
+          variant: "destructive",
+        })
+      }
     } finally {
       setIsSaving(false)
     }
@@ -2558,7 +2608,9 @@ export default function TextCorrectionApp() {
                         className="w-full bg-md3-primary text-on-primary hover:bg-md3-primary/90"
                         size="lg"
                       >
-                        <span className="material-symbols-outlined md-18 mr-2">
+                        <span
+                          className={`material-symbols-outlined md-18 mr-2${isSaving ? " animate-spin" : ""}`}
+                        >
                           {isSaving ? "progress_activity" : "content_copy"}
                         </span>
                         {isSaving ? "保存中..." : `確定してコピー・保存 (${selectedCount}/3)`}
