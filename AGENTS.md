@@ -237,14 +237,14 @@ User Request → POST /api/suggestions (authenticated)
 |---|---|
 | `openai/gpt-oss-120b` | Rotation pool — Production tier, quality-focused |
 | `openai/gpt-oss-20b` | Rotation pool — Production tier, speed/cost-focused |
-| `qwen/qwen3.6-27b` | Rotation pool — **Preview tier**, may be pulled by Groq at short notice |
 
 - **Selection**: `random.choice`-style (`random.sample`) per request, not a stateful round-robin — Vercel serverless functions are stateless per-invocation, so an in-memory counter would not reliably rotate in production.
-- **In-provider retry**: on a retriable Groq failure (429/5xx/timeout), the provider retries once against a second, different model from the pool (`call_groq_with_rotation()`) before the `suggestions.py` failover chain falls over to Cloudflare — bounding the Groq phase to at most 2 attempts (~20s worst case) to keep total request latency predictable.
+- **In-provider retry**: on a retriable Groq failure (429/5xx/timeout), the provider retries once against a second, different model from the pool (`call_groq_with_rotation()`) before the `suggestions.py` failover chain falls over to Cloudflare — bounding the Groq phase to at most 2 attempts to keep total request latency predictable.
 - **`GROQ_MODEL` override**: if set to a non-empty value, rotation is fully disabled and every request pins to that exact model id, with no in-provider retry — unchanged from prior behavior, useful for debugging or pinning to a specific model.
-- **`qwen/qwen3.6-27b` reasoning quirk**: this model emits a `<think>...</think>` block inside the response content by default, which can consume the entire `max_tokens` budget before any JSON is produced (discovered via live smoke-testing — the parser then silently falls back to the system prompt's placeholder text as if it were a real answer, without raising). Fixed by sending `reasoning_effort: "none"` in the request payload for this model specifically (see `QWEN_REASONING_MODELS` in `groq_provider.py`); `openai/gpt-oss-*` models do not need this and don't accept `"none"` for that parameter (only `low`/`medium`/`high`).
-- **Excluded from the pool** (and why): `llama-3.3-70b-versatile` / `llama-3.1-8b-instant` (Groq shutdown date 2026-08-16), `qwen/qwen3-32b` (already deprecated/404s), `openai/gpt-oss-safeguard-20b` (safety/policy-classification tuned), `groq/compound`/`compound-mini` (agentic/tool-use, low RPD), `meta-llama/llama-prompt-guard-2-*` (classifier models), `allam-2-7b` (Arabic-focused, not evaluated for Japanese quality).
-- **Maintenance note**: `ALLOWED_GROQ_MODELS` is a static, manually-reviewed constant — there is no runtime catalog-refresh mechanism. If Groq announces further deprecations (especially for the Preview-tier `qwen/qwen3.6-27b`), update this list (and this table) as a small follow-up change; do not wait for production errors to surface it.
+- **JSON mode**: Groq requests send `response_format: {"type": "json_object"}` plus `max_tokens: 4096` so long epic corpora do not truncate mid-JSON or drift into prose.
+- **Content salvage**: if Groq returns HTTP-OK but unparseable or non-Chinese `reason`/`overallComment`, `suggestions.py` still tries Cloudflare in the same pass before the outer language/parse retry loop.
+- **Excluded from the pool** (and why): `qwen/qwen3.6-27b` (live Chinese-enforcement smoke on CN-source/JP-target corpora frequently returned Japanese explanations or empty bodies despite `reasoning_effort: "none"`; still pin-able via `GROQ_MODEL`), `llama-3.3-70b-versatile` / `llama-3.1-8b-instant` (Groq shutdown date 2026-08-16), `qwen/qwen3-32b` (already deprecated/404s), `openai/gpt-oss-safeguard-20b` (safety/policy-classification tuned), `groq/compound`/`compound-mini` (agentic/tool-use, low RPD), `meta-llama/llama-prompt-guard-2-*` (classifier models), `allam-2-7b` (Arabic-focused, not evaluated for Japanese quality).
+- **Maintenance note**: `ALLOWED_GROQ_MODELS` is a static, manually-reviewed constant — there is no runtime catalog-refresh mechanism. If Groq announces further deprecations, update this list (and this table) as a small follow-up change; do not wait for production errors to surface it.
 
 ### Backend Providers (`backend/app/llm/`)
 
@@ -252,8 +252,8 @@ User Request → POST /api/suggestions (authenticated)
 |--------|---------|
 | `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
 | `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
-| `groq_provider.py` | Groq API client, 10s timeout, model rotation pool (`ALLOWED_GROQ_MODELS`) + in-provider retry |
-| `cloudflare_provider.py` | Cloudflare Workers AI client with 15s timeout |
+| `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + in-provider retry |
+| `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 45s timeout) with response-shape normalize |
 | `suggestions.py` | Failover chain logic |
 
 ### Environment Variables (Vercel Production)

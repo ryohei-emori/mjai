@@ -22,26 +22,23 @@ providers:
      instead of the required Simplified Chinese; detected via kana /
      halfwidth kana / Japanese function patterns) — see
      `parser.has_non_chinese_reason`.
-   When either condition is true, `generate_suggestions()` retries the
-   *entire* Groq-then-Cloudflare pass (not just a single provider call) up
-   to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing one attempt budget across
-   both conditions, before giving up and returning the last result as-is
-   (the parse-failure placeholder, or the best available but
-   still-non-Chinese response). A genuine network-level failure
-   (`SuggestionsError`, raised when both providers fail at the HTTP layer
-   even after their own retries) is NOT retried by this axis and propagates
-   immediately — retrying a fully-down network path would not help and
-   would only add latency.
+   Within a single pass, if Groq returns either failure mode, this module
+   still tries Cloudflare once before returning (same-pass salvage), so a
+   usable CF response can rescue a Japanese/unparseable Groq body without
+   burning the outer retry budget. When both providers in a pass still fail
+   the content checks, `generate_suggestions()` retries the *entire*
+   Groq-then-Cloudflare pass up to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing
+   one attempt budget across both conditions, before giving up and returning
+   the last result as-is. A genuine network-level failure (`SuggestionsError`,
+   raised when both providers fail at the HTTP layer even after their own
+   retries) is NOT retried by this axis and propagates immediately.
 
 Worst case total LLM calls for axis 2, per `generate_suggestions()` call:
 `MAX_PARSE_RETRY_ATTEMPTS` passes * (up to 2 Groq attempts via rotation,
-plus 1 Cloudflare attempt if Groq raises) = up to 9 calls. In practice
-almost every pass succeeds at parsing on the first attempt (parse/language
-failures are rare), so this bound is a deliberate trade-off favoring
-eventual success over a strict latency guarantee for the rare failure case
-— see design.md Decision 8 in the `add-groq-cloudflare-suggestions` change,
-and Decision 6 in the `refine-suggestion-card-interactions` change for the
-language-check addition.
+plus 1 Cloudflare attempt) = up to 12 calls when every pass needs CF.
+In practice most passes succeed on the first provider, so this bound is a
+deliberate trade-off favoring eventual Chinese/JSON success over a strict
+latency guarantee for the rare failure case.
 """
 
 from __future__ import annotations
@@ -63,6 +60,7 @@ from .groq_provider import (
     GroqRateLimitError,
     GroqServerError,
     GroqTimeoutError,
+    GroqJsonValidateError,
 )
 from .cloudflare_provider import (
     call_cloudflare,
@@ -78,15 +76,22 @@ logger = logging.getLogger(__name__)
 # before giving up. Both conditions share this one attempt budget. See
 # module docstring for how this composes with each provider's own
 # network-level retry.
-MAX_PARSE_RETRY_ATTEMPTS = 3
+MAX_PARSE_RETRY_ATTEMPTS = 4
 
 # Appended on language-check retries only (not JSON-parse failures) so the
 # next pass gets an explicit correction signal without changing the base
 # prompt for the first attempt.
 LANGUAGE_RETRY_NUDGE = (
-    '前回の出力は不合格です。"reason"と"overallComment"の説明文は簡体字中国語のみで書いてください。'
-    "日本語の説明文・です/ます調は禁止。日本語の語形は「」内の短い引用のみ可。"
-    "引用の外にひらがな・カタカナを書かないこと。JSONのみ再出力してください。"
+    "上次输出不合格。请只用简体中文重写全部 reason 与 overallComment。"
+    "禁止日语说明文、禁止です/ます、禁止在「」外写假名。"
+    "即使原文是中文也必须用中文说明。只输出完整 JSON，不要其他文字。"
+)
+
+# Appended when the previous pass failed JSON extraction (prose / truncated).
+PARSE_RETRY_NUDGE = (
+    "上次没有返回可解析的 JSON。请只输出一个完整 JSON 对象，"
+    '格式为 {"suggestions":[...],"overallComment":"..."}，'
+    "不要前言、后记或 Markdown 代码块。reason/overallComment 用简体中文。"
 )
 
 
@@ -110,25 +115,28 @@ def are_providers_configured() -> bool:
     return bool(groq_key) or (bool(cf_account) and bool(cf_token))
 
 
+def _content_usable(result: ParsedResponse) -> bool:
+    """True if result is parseable JSON and passes the Chinese-content check."""
+    return (not is_json_extraction_failure(result)) and (not has_non_chinese_reason(result))
+
+
 async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
     """
     Single generate+parse pass: try Groq (with its own in-provider model
-    rotation/retry), fall back to Cloudflare on failure.
+    rotation/retry), fall back to Cloudflare on network failure *or* when
+    Groq's body is empty / unparseable / non-Chinese (same-pass salvage).
 
-    This is the body of what used to be `generate_suggestions()` before the
-    JSON-parse retry loop (see module docstring) was added around it. May
-    return a ParsedResponse that is itself a parse failure (see
-    `parser.is_json_extraction_failure`) — that is not treated as an
-    exception here, since it's a valid (if unhelpful) response from the
-    caller's perspective; the retry loop in `generate_suggestions()`
-    decides whether to retry based on that.
+    May return a ParsedResponse that is itself a parse failure or still
+    non-Chinese — the outer retry loop in `generate_suggestions()` decides
+    whether to retry.
 
     Raises:
         SuggestionsError: If all configured providers fail at the network
-            level.
+            level (no usable HTTP body from any provider).
     """
     groq_error: Optional[str] = None
     cf_error: Optional[str] = None
+    groq_result: Optional[ParsedResponse] = None
 
     groq_key = get_groq_api_key()
     if groq_key:
@@ -147,12 +155,27 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
                     f"Groq inference successful, raw output length: {len(raw_output)}"
                 )
                 logger.debug(f"Groq raw output: {raw_output[:500]}...")
-                result = parse_model_output(raw_output)
-                logger.info(
-                    f"Parsed result: {len(result['suggestions'])} suggestions"
+                groq_result = parse_model_output(raw_output)
+                if _content_usable(groq_result):
+                    logger.info(
+                        f"Parsed result: {len(groq_result['suggestions'])} suggestions"
+                    )
+                    return groq_result
+                reason = (
+                    "JSON parse failure"
+                    if is_json_extraction_failure(groq_result)
+                    else "non-Chinese reason/overallComment"
                 )
-                return result
-        except (GroqRateLimitError, GroqServerError, GroqTimeoutError) as e:
+                logger.warning(
+                    f"Groq content unusable ({reason}); trying Cloudflare salvage"
+                )
+                groq_error = f"Groq content unusable: {reason}"
+        except (
+            GroqRateLimitError,
+            GroqServerError,
+            GroqTimeoutError,
+            GroqJsonValidateError,
+        ) as e:
             logger.warning(f"Groq failed with retriable error, falling back to Cloudflare: {e}")
             groq_error = str(e)
         except GroqError as e:
@@ -169,14 +192,38 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
             raw_output = await call_cloudflare(messages)
             logger.info(f"Cloudflare inference successful, raw output length: {len(raw_output)}")
             logger.debug(f"Cloudflare raw output: {raw_output[:500]}...")
-            result = parse_model_output(raw_output)
-            logger.info(f"Parsed result: {len(result['suggestions'])} suggestions")
-            return result
+            cf_result = parse_model_output(raw_output)
+            if _content_usable(cf_result):
+                logger.info(
+                    f"Parsed result: {len(cf_result['suggestions'])} suggestions"
+                )
+                return cf_result
+            # Prefer CF body over Groq when Groq was also unusable but CF at
+            # least parsed — or keep whichever is less broken for the outer
+            # retry (prefer non-parse-failure over parse-failure).
+            if groq_result is not None:
+                if is_json_extraction_failure(cf_result) and not is_json_extraction_failure(
+                    groq_result
+                ):
+                    logger.warning(
+                        "Cloudflare also unusable; returning prior Groq parse result"
+                    )
+                    return groq_result
+            logger.warning(
+                "Cloudflare content unusable; returning CF result for outer retry"
+            )
+            return cf_result
         except CloudflareError as e:
             logger.error(f"Cloudflare also failed: {e}")
             cf_error = str(e)
+            if groq_result is not None:
+                # Network CF failure after a soft-failed Groq body: surface
+                # Groq's parse/language result so the outer retry can nudge.
+                return groq_result
     else:
         cf_error = "Cloudflare credentials not configured"
+        if groq_result is not None:
+            return groq_result
     
     raise SuggestionsError(
         "All LLM providers failed",
@@ -191,13 +238,9 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     
     Tries Groq first (with in-provider model rotation and one retry across
     a different Groq model on a retriable failure), falls back to
-    Cloudflare on failure. If a pass succeeds at the network level but its
-    content either fails to parse as JSON or fails the Chinese-language
-    content check (a suggestion's `reason` or `overallComment` written in
-    Japanese instead of the required Simplified Chinese), the whole pass is
-    retried up to `MAX_PARSE_RETRY_ATTEMPTS` times before giving up (see
-    module docstring for how this composes with the network-level retry
-    above).
+    Cloudflare on failure or unusable Groq content. If a pass still fails
+    JSON parse or the Chinese-language content check, the whole pass is
+    retried up to `MAX_PARSE_RETRY_ATTEMPTS` times before giving up.
     
     Args:
         original_text: The original Japanese text.
@@ -224,16 +267,20 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
 
     last_result: Optional[ParsedResponse] = None
     language_failed_last = False
+    parse_failed_last = False
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
         messages = list(base_messages)
         if language_failed_last:
             messages.append({"role": "user", "content": LANGUAGE_RETRY_NUDGE})
+        elif parse_failed_last:
+            messages.append({"role": "user", "content": PARSE_RETRY_NUDGE})
 
         result = await _generate_suggestions_once(messages)
-        if not is_json_extraction_failure(result) and not has_non_chinese_reason(result):
+        if _content_usable(result):
             return result
         parse_failed = is_json_extraction_failure(result)
         language_failed_last = (not parse_failed) and has_non_chinese_reason(result)
+        parse_failed_last = parse_failed
         reason = (
             "JSON parse failure" if parse_failed else "non-Chinese reason/overallComment"
         )

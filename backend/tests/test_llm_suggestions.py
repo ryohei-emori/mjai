@@ -222,6 +222,48 @@ class TestGenerateSuggestionsCloudflareOnly:
 
 
 UNPARSEABLE_LLM_RESPONSE = "I'm sorry, I cannot help with that request."
+NON_CHINESE_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "これは日本語のコメントです"}], "全体講評": "全体的に良いです"}'''
+
+
+@pytest.mark.asyncio
+class TestGenerateSuggestionsContentSalvage:
+    """Same-pass Cloudflare salvage when Groq body is unusable."""
+
+    async def test_groq_non_chinese_salvaged_by_cloudflare_same_pass(self):
+        """Groq returns Japanese reasons -> CF Chinese in same pass (no outer retry)."""
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok'
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    mock_groq.return_value = NON_CHINESE_LLM_RESPONSE
+                    mock_cf.return_value = VALID_LLM_RESPONSE
+
+                    result = await generate_suggestions("原文", "訳文")
+
+                    assert result["suggestions"][0]["reason"] == "修正建议内容"
+                    assert mock_groq.call_count == 1
+                    mock_cf.assert_called_once()
+
+    async def test_groq_unparseable_salvaged_by_cloudflare_same_pass(self):
+        """Groq prose (no JSON) -> CF JSON in same pass."""
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok'
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    mock_groq.return_value = UNPARSEABLE_LLM_RESPONSE
+                    mock_cf.return_value = VALID_LLM_RESPONSE
+
+                    result = await generate_suggestions("原文", "訳文")
+
+                    assert len(result["suggestions"]) == 1
+                    assert mock_groq.call_count == 1
+                    mock_cf.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -261,7 +303,7 @@ class TestGenerateSuggestionsParseFailureRetry:
 
                 assert result["suggestions"] == []
                 assert "抽出できませんでした" in result["overallComment"]
-                assert mock_groq.call_count == 3
+                assert mock_groq.call_count == 4
 
     async def test_parse_failure_retry_does_not_affect_network_failure_raising(self):
         """A genuine network-level failure (both providers down) still
@@ -282,9 +324,6 @@ class TestGenerateSuggestionsParseFailureRetry:
 
                     mock_groq.assert_called_once()
                     mock_cf.assert_called_once()
-
-
-NON_CHINESE_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "これは日本語のコメントです"}], "全体講評": "全体的に良いです"}'''
 
 
 @pytest.mark.asyncio
@@ -325,7 +364,7 @@ class TestGenerateSuggestionsChineseLanguageRetry:
 
                 assert len(result["suggestions"]) == 1
                 assert result["suggestions"][0]["reason"] == "これは日本語のコメントです"
-                assert mock_groq.call_count == 3
+                assert mock_groq.call_count == 4
 
     async def test_parse_failure_and_language_failure_share_one_attempt_budget(self):
         """A JSON-parse failure on attempt 1 and a non-Chinese-reason

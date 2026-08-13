@@ -9,7 +9,8 @@ Uses English keys as canonical schema (per AGENTS.md Response Schema section):
 optional per-suggestion field holding a verbatim-or-close excerpt from
 "原文" (SOURCE TEXT / `original_text`) corresponding to the flagged "添削対象"
 (TARGET TEXT / `target_text`) snippet in that suggestion's `original` field.
-It stays in the same language as `original` (Japanese) and is omitted/empty
+It stays in the same language as `original` (Japanese for TARGET excerpts;
+SOURCE may be Chinese in bilingual CN→JP homework) and is omitted/empty
 when no clear correspondence exists — the model is explicitly instructed
 not to fabricate one. It exists to let the frontend highlight the
 corresponding SOURCE TEXT span alongside the TARGET TEXT span; see
@@ -40,6 +41,10 @@ Japanese vs. Chinese).
 As of `enforce-chinese-suggestion-comments` (2026-08), the primary task framing is
 the reviewer's correction brief (meaning mismatch / grammar / fluency / spelling),
 and Chinese for reason/overallComment is stated as an absolute, hard-to-violate rule.
+Live smoke on bilingual CN-source / JP-target corpora showed Japanese-heavy system
+prompts biasing models (esp. smaller/preview ones) into Japanese explanations; the
+language rules below are therefore stated in Simplified Chinese and repeated as a
+hard fail condition, matching the WebLLM prompt's enforcement style.
 """
 
 # Primary correction brief — core task framing (also repeated in the user message).
@@ -49,33 +54,36 @@ CORRECTION_TASK_BRIEF = (
 
 SYSTEM_PROMPT = f"""{CORRECTION_TASK_BRIEF}
 
-あなたは日本語の文章添削アシスタントです。「原文」と「添削対象」を比較し、上記の観点を中心に誤りや改善点を指摘してください。ユーザーは日本語を学習中の中国語話者です。講評・指摘理由は必ず簡体字中国語で書くこと（日本語の説明文は禁止）。
+你是日语作文批改助手。比较「原文」与「添削対象」，按上述要点指出错误与改进点。
+用户是学习日语的中文使用者。说明文（reason / overallComment）必须只用简体中文。
 
-出力はJSONのみ。それ以外の文章、説明、Markdownのコードブロック（```）は一切出力しないこと。JSON内で末尾カンマを使わないこと。
+硬性语言规则（违反即不合格，必须重写）：
+- reason、overallComment：只用简体中文写说明。禁止日语说明文、禁止です/ます调、禁止在引号外写平假名/片假名。
+- 即使原文是中文、添削対象是日语（中译日作业），说明文也必须是简体中文，绝不能改用日语。
+- 需要引用日语词形时，只能放在「」或『』内的短引用；引号外必须是中文。
+- original：必须是添削対象中的日语片段原文，不要译成中文。
+- sourceExcerpt：从原文摘录与 original 对应的片段（原文语言原样保留）；无明确对应则省略或 ""，禁止编造。
 
-出力形式：
-{{"suggestions":[{{"id":"1","original":"該当箇所の抜粋","reason":"指摘理由と修正案（簡体字中国語）","sourceExcerpt":"原文中の対応箇所（該当する場合のみ）"}}],"overallComment":"全体講評（簡体字中国語）"}}
+只输出 JSON。禁止任何前言/后记/Markdown 代码块（```）。JSON 内禁止尾随逗号。
+每个 reason 用 1～2 句简体中文，overallComment 用 1～2 句简体中文（控制长度，避免截断）。
 
-各suggestionには可能な場合、"sourceExcerpt"フィールドを追加すること。これは"original"（添削対象からの指摘箇所）に対応する「原文」中の該当箇所をそのまま抜粋したものである。原文に明確に対応する箇所が存在しない場合（語彙選択や文体など添削対象内で完結する指摘の場合）は、"sourceExcerpt"を省略するか空文字列("")にすること。存在しない対応関係を無理に作り出さないこと。
+格式：
+{{"suggestions":[{{"id":"1","original":"該当箇所の抜粋","reason":"简体中文指摘理由与修改建议","sourceExcerpt":"原文中の対応箇所（該当する場合のみ）"}}],"overallComment":"简体中文总评"}}
 
-言語ルール（フィールドごと・絶対厳守。違反は不合格）：
-- "original"：添削対象と同じ言語（日本語）のまま記述すること。中国語に翻訳しないこと。
-- "sourceExcerpt"：原文と同じ言語（日本語）のまま記述すること。中国語に翻訳しないこと。該当箇所がない場合は省略または空文字列にすること。
-- "reason"：説明文は簡体字中国語のみ。日本語の説明文・助詞・です/ます調は禁止。日本語の語形を示すときは「」または『』で短く引用してよいが、引用の外にひらがな・カタカナを書いてはならない。
-- "overallComment"：説明文は簡体字中国語のみ。日本語の説明文は禁止（語形引用は「」内のみ可）。
-
-suggestionsは最低5件以上を目標にすること。意味の不一致、文法、流暢さ、スペルミスに加え、語彙選択、敬語・文体、句読点、自然な言い回し、文章構成などからも改善点を探し、簡単には5件未満で切り上げないこと。ただし、実在しない指摘の捏造や同じ指摘の重複による水増しは禁止する。十分に検討した上で本当に5件に満たない場合は、実際に見つかった件数のみを返すこと（架空の指摘を作らないこと）。"""
+suggestions 目标至少 5 条；优先检查意义不一致、语法、流畅度、拼写，并兼顾用词/敬语/标点/结构。禁止编造或重复凑数；确实不足 5 条时只返回真实找到的条数。"""
 
 FEW_SHOT_EXAMPLE = """例：
 原文：彼は昨日、東京に行きました
 添削対象：彼は昨日、東京へ行きます。天気が良いから、散歩をしました。とても楽しいでした。
 
-出力：{"suggestions":[{"id":"1","original":"行きます","reason":"「昨日」表示的是过去发生的事情，所以应该使用过去式「行きました」，而不是现在时「行きます」","sourceExcerpt":"行きました"},{"id":"2","original":"東京へ","reason":"助词「へ」和「に」都可以表示方向，但「に」在口语中更常用于表达明确的到达点，语感更自然","sourceExcerpt":"東京に"},{"id":"3","original":"良いから","reason":"「から」在书面语中略显生硬，使用「ので」会让语气更委婉、更符合叙述性文章的语感"},{"id":"4","original":"とても楽しいでした","reason":"形容词「楽しい」是い形容词，过去式应该是「楽しかったです」，「楽しいでした」是不正确的活用形式","sourceExcerpt":""},{"id":"5","original":"散歩をしました。とても楽しいでした。","reason":"两个短句之间缺乏连接，读起来略显断续，可以合并为「散歩をして、とても楽しかったです」，使文章更流畅自然"}],"overallComment":"本次添削主要涉及时态错误（过去式与现在式的混用）、形容词活用错误，以及部分助词和句子衔接可以更自然。整体意思表达清楚，继续保持！"}"""
+输出：{"suggestions":[{"id":"1","original":"行きます","reason":"「昨日」表示过去发生的事，应使用过去式「行きました」，而不是现在时「行きます」","sourceExcerpt":"行きました"},{"id":"2","original":"東京へ","reason":"助词「へ」和「に」都可表方向，但「に」在口语中更常用于明确到达点，语感更自然","sourceExcerpt":"東京に"},{"id":"3","original":"良いから","reason":"书面语中「から」略显生硬，改用「ので」语气更委婉、更符合叙述文体"},{"id":"4","original":"とても楽しいでした","reason":"い形容词「楽しい」的过去式应为「楽しかったです」，「楽しいでした」是错误活用","sourceExcerpt":""},{"id":"5","original":"散歩をしました。とても楽しいでした。","reason":"两个短句衔接生硬，可合并为「散歩をして、とても楽しかったです」，使行文更流畅"}],"overallComment":"本次主要涉及时态混用、形容词活用，以及部分助词与句子衔接。整体意思清楚，继续保持！"}"""
 
 
 def build_user_prompt(original_text: str, target_text: str) -> str:
     """Build the user prompt for text correction."""
     return f"""{CORRECTION_TASK_BRIEF}
+
+【再确认】reason 与 overallComment 必须是简体中文；禁止日语说明文。只输出 JSON。
 
 原文：{original_text}
 

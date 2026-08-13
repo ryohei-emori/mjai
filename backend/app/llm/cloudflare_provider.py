@@ -5,12 +5,15 @@ Fallback provider when Groq is unavailable.
 
 from __future__ import annotations
 
+import json
 import os
 import httpx
 from typing import Any, Optional, Tuple, List, Dict
 
-CF_MODEL = "@cf/meta/llama-3.1-8b-instruct"
-CF_TIMEOUT = 15.0  # slightly higher timeout for fallback
+# Prefer a stronger instruct model when available on Workers AI; 8B often
+# returns Chinese prose without a JSON object on long bilingual prompts.
+CF_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+CF_TIMEOUT = 45.0  # higher timeout for larger fallback model
 
 
 class CloudflareError(Exception):
@@ -63,11 +66,24 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
         "Content-Type": "application/json",
     }
     
+    # Prepend a short JSON-only reminder; small CF models otherwise drift to
+    # Chinese prose without a suggestions array (live Chinese-enforcement smoke).
+    cf_messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "只输出一个完整 JSON 对象："
+                '{"suggestions":[{"id":"1","original":"...","reason":"简体中文","sourceExcerpt":""}],'
+                '"overallComment":"简体中文"}。禁止其他文字或 Markdown。'
+            ),
+        },
+        *messages,
+    ]
     payload: dict[str, Any] = {
-        "messages": messages,
+        "messages": cf_messages,
         # Match Groq headroom for multi-suggestion JSON on long TARGET TEXT.
-        "max_tokens": 2048,
-        "temperature": 0.2,
+        "max_tokens": 4096,
+        "temperature": 0.15,
     }
     
     try:
@@ -101,16 +117,41 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
 
 
 def _extract_cloudflare_text(result: Any) -> Optional[str]:
-    """Normalize Workers AI `result` payloads to a single assistant string."""
+    """Normalize Workers AI `result` payloads to a single assistant string.
+
+    Observed shapes include:
+    - bare string
+    - {"response": "..."}
+    - {"response": {...}} (some models nest the JSON object)
+    - OpenAI-like {"message": {"content": "..."}} / {"choices":[...]}
+    - list of content parts
+    Returning a serialized JSON string when the model nests a dict under
+    `response` avoids TypeError in callers that expect str and lets the
+    shared parser extract suggestions.
+    """
     if isinstance(result, str):
         return result
     if isinstance(result, dict):
-        # Common shapes: {"response": "..."} or nested content/text fields.
+        # OpenAI-compatible wrappers some Workers AI models return.
+        choices = result.get("choices")
+        if isinstance(choices, list) and choices:
+            nested = _extract_cloudflare_text(choices[0])
+            if nested:
+                return nested
+        message = result.get("message")
+        if isinstance(message, dict):
+            nested = _extract_cloudflare_text(message)
+            if nested:
+                return nested
+
         for key in ("response", "content", "text", "output", "generated_text"):
             value = result.get(key)
             if isinstance(value, str) and value:
                 return value
             if isinstance(value, dict):
+                # Nested JSON object that *is* the answer — serialize for parser.
+                if "suggestions" in value or "指摘" in value or "overallComment" in value:
+                    return json.dumps(value, ensure_ascii=False)
                 nested = _extract_cloudflare_text(value)
                 if nested:
                     return nested
@@ -118,6 +159,9 @@ def _extract_cloudflare_text(result: Any) -> Optional[str]:
                 nested = _extract_cloudflare_text(value)
                 if nested:
                     return nested
+        # Dict that itself looks like our schema.
+        if "suggestions" in result or "指摘" in result or "overallComment" in result:
+            return json.dumps(result, ensure_ascii=False)
         # Last resort: any non-empty string leaf under this object.
         for value in result.values():
             if isinstance(value, str) and value.strip():

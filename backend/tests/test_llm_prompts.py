@@ -29,15 +29,20 @@ class TestCorrectionTaskBrief:
 
 class TestLanguageRulesInPrompt:
     def test_system_prompt_requires_simplified_chinese_for_explanations(self):
-        assert "簡体字中国語" in SYSTEM_PROMPT
-        assert '"reason"' in SYSTEM_PROMPT
-        assert '"overallComment"' in SYSTEM_PROMPT
-        assert "ひらがな" in SYSTEM_PROMPT or "カタカナ" in SYSTEM_PROMPT
+        assert "简体中文" in SYSTEM_PROMPT or "簡体字中国語" in SYSTEM_PROMPT
+        assert "reason" in SYSTEM_PROMPT
+        assert "overallComment" in SYSTEM_PROMPT
+        assert (
+            "ひらがな" in SYSTEM_PROMPT
+            or "カタカナ" in SYSTEM_PROMPT
+            or "假名" in SYSTEM_PROMPT
+        )
 
     def test_system_prompt_keeps_original_and_source_excerpt_japanese(self):
-        assert '"original"' in SYSTEM_PROMPT
-        assert '"sourceExcerpt"' in SYSTEM_PROMPT
-        assert "日本語" in SYSTEM_PROMPT
+        assert "original" in SYSTEM_PROMPT
+        assert "sourceExcerpt" in SYSTEM_PROMPT
+        # original must stay TARGET-language (Japanese); prompt may say 日语/日本語
+        assert "日语" in SYSTEM_PROMPT or "日本語" in SYSTEM_PROMPT
 
     def test_few_shot_uses_chinese_reasons(self):
         assert "应该使用过去式" in FEW_SHOT_EXAMPLE or "过去" in FEW_SHOT_EXAMPLE

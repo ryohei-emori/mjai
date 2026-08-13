@@ -36,20 +36,26 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 #   quality, out of scope for this rotation pool.
 #
 # NOTE: This is a static, manually-reviewed allow-list — there is no runtime
-# catalog-refresh mechanism. If Groq announces further deprecations affecting
-# any of these 3 models (qwen/qwen3.6-27b is Preview-tier and may be pulled
-# at short notice), this list must be updated manually as a follow-up change.
+# catalog-refresh mechanism. If Groq announces further deprecations, update
+# this list manually as a follow-up change.
+#
+# qwen/qwen3.6-27b was removed from the default rotation pool after live
+# Chinese-enforcement smoke on bilingual CN-source / JP-target corpora:
+# even with reasoning_effort=none it frequently wrote Japanese
+# reason/overallComment (or empty bodies), dragging Chinese-OK rates near
+# zero. It remains pin-able via GROQ_MODEL for debugging.
 ALLOWED_GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "qwen/qwen3.6-27b",
 ]
 
 # Kept for backward compatibility / as the implicit single-model fallback
 # target referenced by get_groq_model() when GROQ_MODEL is unset. Not used
 # directly for rotation (see ALLOWED_GROQ_MODELS above).
 DEFAULT_GROQ_MODEL = ALLOWED_GROQ_MODELS[0]
-GROQ_TIMEOUT = 10.0  # seconds
+# Epic-length bilingual corpora + ≥5 suggestions regularly need >10s;
+# keep bounded but avoid premature timeout→CF prose fallback.
+GROQ_TIMEOUT = 25.0  # seconds
 
 # Models whose default behavior on Groq is to emit a <think>...</think>
 # reasoning block INSIDE the message content before the final answer.
@@ -87,6 +93,16 @@ class GroqServerError(GroqError):
 
 class GroqTimeoutError(GroqError):
     """Groq API timeout error."""
+    pass
+
+
+class GroqJsonValidateError(GroqError):
+    """Groq rejected the completion under response_format=json_object.
+
+    Treated as retriable across a different model in the rotation pool —
+    live smoke showed occasional empty `failed_generation` 400s that a
+    second model (or Cloudflare) can salvage.
+    """
     pass
 
 
@@ -159,9 +175,12 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         "model": resolved_model,
         "messages": messages,
         # Long TARGET TEXT (e.g. multi-paragraph epic corpus) with ≥5
-        # suggestions needs headroom; 1024 truncated mid-JSON in live smoke.
-        "max_tokens": 2048,
-        "temperature": 0.2,
+        # suggestions needs headroom; 1024/2048 truncated mid-JSON in live smoke.
+        "max_tokens": 4096,
+        "temperature": 0.15,
+        # Force a JSON object body — prompts already require JSON-only output;
+        # this prevents prose-only replies that burn the parse-retry budget.
+        "response_format": {"type": "json_object"},
     }
     if resolved_model in QWEN_REASONING_MODELS:
         # See QWEN_REASONING_MODELS comment: without this, thinking tokens
@@ -181,6 +200,12 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
     
     if response.status_code >= 500:
         raise GroqServerError(f"Groq server error: {response.status_code}", status_code=response.status_code)
+
+    if response.status_code == 400 and "json_validate_failed" in response.text:
+        raise GroqJsonValidateError(
+            f"Groq JSON validation failed: {response.text}",
+            status_code=400,
+        )
     
     if response.status_code != 200:
         raise GroqError(f"Groq API error: {response.status_code} - {response.text}", status_code=response.status_code)
@@ -217,7 +242,7 @@ async def call_groq_with_rotation(messages: list[dict[str, str]]) -> str:
 
     try:
         return await call_groq(messages, model=first_model)
-    except (GroqRateLimitError, GroqServerError, GroqTimeoutError):
+    except (GroqRateLimitError, GroqServerError, GroqTimeoutError, GroqJsonValidateError):
         if len(models) < 2:
             raise
         second_model = models[1]
