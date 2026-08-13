@@ -12,9 +12,12 @@ Manual verify (UI /api/suggestions — Groq/CF, not Gemini provider):
   1. Paste EPIC_SOURCE_TEXT into 原文, EPIC_TARGET_TEXT into 添削対象.
   2. overallComment: opens with what already works (concepts conveyed),
      then remaining issue categories.
-  3. Reasons prefer `現状 → 推奨` (JP forms in 「」, Chinese meta in “”),
-     plus accessible why (规范译词 / 语域 / 中式日语 / 活用 etc.).
-  4. Dense real-issue coverage across paragraphs; no invented false 缺少.
+  3. Reasons use natural Chinese prose covering problem → recommended JP
+     form (「」) → accessible why — NOT mandatory spoken labels
+     `现状：` / `推荐：` / `現状：` / `推奨：`. Optional `旧形 → 「新形」`
+     contrast inside prose is fine.
+  4. Dense real-issue coverage across paragraphs (≥~5 when real issues
+     exist); no invented false 缺少; do not stop after only 1–2 items.
 """
 
 from .epic_shi_source_target import EPIC_SOURCE_TEXT, EPIC_TARGET_TEXT
@@ -33,11 +36,11 @@ QUALITY_BAR_SHORT_TARGET = (
     "でも、実際には、史詩はまず声である。"
 )
 
-# Compliant Gemini-shaped reason: 現状 → 推奨 + accessible why.
-# Chinese meta uses “”; Japanese forms use 「」.
+# Compliant Gemini-shaped reason: natural Chinese problem→fix→why.
+# Chinese meta uses “”; Japanese forms use 「」. No 现状：/推荐： labels.
 QUALITY_BAR_COMPLIANT_REASON = (
-    "史詩 → 「叙事詩」（じょじし）：在日语社科/文学翻译中，“史诗”的标准规范"
-    "学术译词是「叙事詩」，继续写「史詩」会显得像未消化的中文词形"
+    "「史詩」像未消化的中文词形，宜改为「叙事詩」（じょじし）：在日语社科/"
+    "文学翻译中，“史诗”的标准规范学术译词是「叙事詩」"
 )
 
 # Compliant overallComment skeleton: strengths then gaps.

@@ -95,9 +95,19 @@ class TestSemanticReasonQualityInPrompt:
         assert "优点" in SYSTEM_PROMPT
         assert "先" in SYSTEM_PROMPT
 
-    def test_system_prompt_reason_shape_status_to_recommendation(self):
-        assert "→" in SYSTEM_PROMPT or "现状" in SYSTEM_PROMPT
-        assert "推荐" in SYSTEM_PROMPT or "修正" in SYSTEM_PROMPT
+    def test_system_prompt_reason_shape_problem_fix_why_natural_prose(self):
+        # Natural Chinese problem→fix→why; forbid spoken 现状：/推荐： labels.
+        assert "为什么必须" in SYSTEM_PROMPT or "为什么必须改" in SYSTEM_PROMPT
+        assert "推荐" in SYSTEM_PROMPT or "改法" in SYSTEM_PROMPT
+        assert "自然" in SYSTEM_PROMPT
+        assert "现状：" in SYSTEM_PROMPT or "現状：" in SYSTEM_PROMPT
+        assert "禁止" in SYSTEM_PROMPT
+        assert "冒号" in SYSTEM_PROMPT or "标签" in SYSTEM_PROMPT
+
+    def test_system_prompt_coverage_density_not_stop_early(self):
+        assert "至少 5" in SYSTEM_PROMPT or "至少5" in SYSTEM_PROMPT
+        assert "逐段" in SYSTEM_PROMPT or "多段" in SYSTEM_PROMPT
+        assert "1–2" in SYSTEM_PROMPT or "1-2" in SYSTEM_PROMPT or "一两" in SYSTEM_PROMPT
 
     def test_system_prompt_cn_jp_literary_academic_domain(self):
         assert "中译日" in SYSTEM_PROMPT or "文学" in SYSTEM_PROMPT
@@ -113,7 +123,12 @@ class TestSemanticReasonQualityInPrompt:
 
     def test_few_shot_reasons_include_necessity_cues(self):
         assert "规范" in FEW_SHOT_EXAMPLE or "语域" in FEW_SHOT_EXAMPLE
-        assert "→" in FEW_SHOT_EXAMPLE
+        assert "宜改为" in FEW_SHOT_EXAMPLE or "→" in FEW_SHOT_EXAMPLE
+        # Reasons themselves must not use spoken label prefixes (intro may
+        # mention the forbidden labels as anti-patterns).
+        assert '"reason":"现状：' not in FEW_SHOT_EXAMPLE
+        assert '"reason":"推荐：' not in FEW_SHOT_EXAMPLE
+        assert '"reason":"現状：' not in FEW_SHOT_EXAMPLE
 
     def test_few_shot_gemini_shaped_quotes_and_overall(self):
         assert "“史诗”" in FEW_SHOT_EXAMPLE or "“" in FEW_SHOT_EXAMPLE

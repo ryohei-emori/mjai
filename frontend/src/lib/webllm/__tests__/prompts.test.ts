@@ -42,8 +42,15 @@ describe("prompts exports", () => {
 
   it("encodes Gemini quality-bar structure and domain", () => {
     expect(SYSTEM_PROMPT).toMatch(/优点|先写优点/);
-    expect(SYSTEM_PROMPT).toMatch(/现状|→/);
+    expect(SYSTEM_PROMPT).toMatch(/为什么必须改|推荐日语形|宜改为|→/);
     expect(SYSTEM_PROMPT).toMatch(/中译日|文学|规范译词|语域/);
+  });
+
+  it("forbids spoken 现状：/推荐： labels and early stop after 1–2", () => {
+    expect(SYSTEM_PROMPT).toMatch(/现状：|現状：/);
+    expect(SYSTEM_PROMPT).toContain("禁止");
+    expect(SYSTEM_PROMPT).toMatch(/1–2|1-2|一两/);
+    expect(SYSTEM_PROMPT).toMatch(/至少5|至少 5/);
   });
 
   it("encodes teaching-quality bar (essential gaps, anti-patterns, contrast)", () => {
@@ -63,7 +70,9 @@ describe("prompts exports", () => {
     expect(FEW_SHOT_EXAMPLES).toContain("「叙事詩」");
     expect(FEW_SHOT_EXAMPLES).toMatch(/“史诗”|“/);
     expect(FEW_SHOT_EXAMPLES).toMatch(/已传达|优点|语域/);
-    expect(FEW_SHOT_EXAMPLES).toContain("→");
+    expect(FEW_SHOT_EXAMPLES).toMatch(/宜改为|→/);
+    expect(FEW_SHOT_EXAMPLES).not.toContain("现状：");
+    expect(FEW_SHOT_EXAMPLES).not.toContain("推荐：");
     // Teaching bar: contrastive nuance; do not model anti-patterns as good.
     expect(FEW_SHOT_EXAMPLES).toMatch(/偏口语|偏书面|口语/);
     expect(FEW_SHOT_EXAMPLES).not.toContain("可以省略");

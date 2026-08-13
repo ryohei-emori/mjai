@@ -125,7 +125,10 @@ def _messages_to_gemini_payload(
         "contents": contents,
         "generationConfig": {
             "temperature": 0.15,
-            "maxOutputTokens": 4096,
+            # Homework-length multi-suggestion JSON with pedagogical reasons
+            # needs headroom; 4096 truncated mid-array in live Gemini smoke
+            # (parser then kept ~2 complete items).
+            "maxOutputTokens": 8192,
             "responseMimeType": "application/json",
         },
     }
@@ -144,10 +147,19 @@ def _extract_text_from_response(data: dict[str, Any]) -> str:
         feedback = data.get("promptFeedback") or data.get("error")
         raise GeminiError(f"Unexpected Gemini response (no candidates): {feedback or data}")
 
-    parts = (
-        ((candidates[0] or {}).get("content") or {}).get("parts")
-        or []
-    )
+    candidate0 = candidates[0] or {}
+    finish_reason = candidate0.get("finishReason") or candidate0.get("finish_reason")
+    if finish_reason:
+        # Surface truncation vs STOP so ops can tell short critiques from
+        # mid-JSON cutoff (no secrets / no full prompt bodies).
+        level = (
+            logging.WARNING
+            if str(finish_reason).upper() in ("MAX_TOKENS", "LENGTH")
+            else logging.INFO
+        )
+        logger.log(level, "Gemini finishReason=%s", finish_reason)
+
+    parts = (candidate0.get("content") or {}).get("parts") or []
     texts: List[str] = []
     for part in parts:
         if not isinstance(part, dict):

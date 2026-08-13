@@ -368,6 +368,8 @@ All providers return the same JSON structure:
 
 `sourceExcerpt` (added 2026-08, `highlight-suggestion-text-spans` change) is optional: an excerpt from SOURCE TEXT (原文) corresponding to the flagged TARGET TEXT snippet in `original`, used by the frontend to highlight the matching span in the SOURCE TEXT textarea. Omitted/empty when the model finds no clear correspondence — never fabricated. Not persisted through `POST /proposals`.
 
+`reason` / `overallComment` are Simplified Chinese. Each `reason` should convey problem → recommended JP form (when clear) → accessible why in **natural prose** — do not force spoken machine labels `现状：` / `推荐：` / `現状：` / `推奨：`. Multi-paragraph TARGET should get systematic real-issue coverage (target ≥~5 when that many exist; no padding). Gemini `maxOutputTokens` is 8192 so dense multi-suggestion JSON is less likely to truncate mid-array.
+
 ### How to Get API Keys
 
 **Gemini (primary, free tier available):**

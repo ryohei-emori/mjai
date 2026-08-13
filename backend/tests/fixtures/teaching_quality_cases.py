@@ -5,7 +5,7 @@ Documents anti-patterns to reject and compliant teaching-oriented reasons.
 CI MUST NOT call a live LLM — regression / manual-verify references only.
 
 See also gemini_quality_bar_cases.py for structural Gemini-bar shapes
-(strengths→gaps, 現状→推奨, quote policy).
+(strengths→gaps, natural problem→fix→why prose, quote policy).
 
 Manual verify (UI /api/suggestions — Groq/CF; not Gemini provider; not WebLLM
 unless オフラインモード is ON):

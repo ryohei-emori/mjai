@@ -96,8 +96,11 @@ MAX_PARSE_RETRY_ATTEMPTS = 4
 LANGUAGE_RETRY_NUDGE = (
     "上次输出不合格。请只用简体中文重写全部 reason 与 overallComment。"
     "禁止日语说明文、禁止です/ます。中文引用用英文或中文双引号；日语词形可用「」，"
-    "禁止用「」包裹中文说明词。overallComment 先优点再问题；reason 含现状→推荐与为什么。"
-    "即使原文是中文也必须用中文说明。只输出完整 JSON，不要其他文字。"
+    "禁止用「」包裹中文说明词。overallComment 先优点再问题；"
+    "reason 用自然中文写清问题、推荐改法（如有）与为什么，"
+    "禁止强制「现状：」「推荐：」「現状：」「推奨：」冒号标签。"
+    "多段时勿只写 1–2 条就停。即使原文是中文也必须用中文说明。"
+    "只输出完整 JSON，不要其他文字。"
 )
 
 # Appended when the previous pass failed JSON extraction (prose / truncated).

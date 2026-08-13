@@ -15,6 +15,7 @@ from app.llm.gemini_provider import (
     get_gemini_model,
     is_rotation_enabled,
     select_gemini_models,
+    _extract_text_from_response,
     _messages_to_gemini_payload,
 )
 from app.llm.key_pool import reset_key_pool_state
@@ -65,6 +66,23 @@ class TestMessageMapping:
         assert payload["system_instruction"]["parts"][0]["text"] == "sys"
         assert payload["contents"][0]["role"] == "user"
         assert payload["generationConfig"]["responseMimeType"] == "application/json"
+        assert payload["generationConfig"]["maxOutputTokens"] >= 8192
+
+    def test_extract_logs_max_tokens_finish_reason(self, caplog):
+        import logging
+
+        payload = {
+            "candidates": [
+                {
+                    "finishReason": "MAX_TOKENS",
+                    "content": {"parts": [{"text": '{"suggestions":[]}'}]},
+                }
+            ]
+        }
+        with caplog.at_level(logging.WARNING, logger="app.llm.gemini_provider"):
+            text = _extract_text_from_response(payload)
+        assert "suggestions" in text
+        assert any("MAX_TOKENS" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
