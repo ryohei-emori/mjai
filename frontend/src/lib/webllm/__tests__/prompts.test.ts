@@ -46,6 +46,14 @@ describe("prompts exports", () => {
     expect(SYSTEM_PROMPT).toMatch(/中译日|文学|规范译词|语域/);
   });
 
+  it("encodes teaching-quality bar (essential gaps, anti-patterns, contrast)", () => {
+    expect(SYSTEM_PROMPT).toMatch(/实质问题|意义偏移|情态/);
+    expect(SYSTEM_PROMPT).toMatch(/表面|省略|简化/);
+    expect(SYSTEM_PROMPT).toMatch(/跟原文对词|原文用了/);
+    expect(SYSTEM_PROMPT).toMatch(/对比/);
+    expect(SYSTEM_PROMPT).toMatch(/今后/);
+  });
+
   it("exports FEW_SHOT_EXAMPLES with Gemini-shaped structure", () => {
     expect(FEW_SHOT_EXAMPLES).toBeDefined();
     expect(typeof FEW_SHOT_EXAMPLES).toBe("string");
@@ -56,6 +64,10 @@ describe("prompts exports", () => {
     expect(FEW_SHOT_EXAMPLES).toMatch(/“史诗”|“/);
     expect(FEW_SHOT_EXAMPLES).toMatch(/已传达|优点|语域/);
     expect(FEW_SHOT_EXAMPLES).toContain("→");
+    // Teaching bar: contrastive nuance; do not model anti-patterns as good.
+    expect(FEW_SHOT_EXAMPLES).toMatch(/偏口语|偏书面|口语/);
+    expect(FEW_SHOT_EXAMPLES).not.toContain("可以省略");
+    expect(FEW_SHOT_EXAMPLES).not.toContain("更能体现");
   });
 
   it("exports all section templates", () => {

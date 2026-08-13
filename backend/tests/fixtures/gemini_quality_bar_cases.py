@@ -51,5 +51,7 @@ QUALITY_BAR_CN_PROSE_CORNER_MISUSE = "存在「时态」与「语法」问题，
 
 QUALITY_BAR_NOTES = (
     "Quality bar is prompt-shaped (Groq/CF/WebLLM). Do not require live LLM "
-    "in CI. 「」 only for JP TARGET cites; “” for Chinese meta."
+    "in CI. 「」 only for JP TARGET cites; “” for Chinese meta. "
+    "For teaching anti-patterns / contrastive competence cues, see "
+    "teaching_quality_cases.py (improve-suggestion-teaching-quality)."
 )

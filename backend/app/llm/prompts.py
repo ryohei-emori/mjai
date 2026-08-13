@@ -54,6 +54,10 @@ As of `raise-suggestion-quality-to-gemini-bar` (2026-08): Gemini-like quality ba
 (prompt+schema only — no Gemini provider). overallComment = strengths then gaps;
 each reason prefers `現状 → 推奨` + why; CN→JP literary/academic domain; 「」
 allowed only when citing Japanese TARGET forms; Chinese meta uses "" / “”.
+
+As of `improve-suggestion-teaching-quality` (2026-08): critiques MUST teach future
+translator competence — essential gaps + contrastive nuance — not cosmetic
+surface edits or bare SOURCE-token swaps. See teaching-quality rules below.
 """
 
 # Primary correction brief — core task framing (also repeated in the user message).
@@ -77,6 +81,11 @@ SYSTEM_PROMPT = f"""{CORRECTION_TASK_BRIEF}
 指摘质量硬性规则（违反即不合格）：
 - overallComment MUST 先肯定译文已传达清楚的概念/优点，再概括仍存问题类别（先扬后抑的总评骨架）。
 - 每个 reason MUST 用通俗简体中文写清：(1) 问题/现状；(2) 有明确改法时给出 现状 → 推荐修正（日语形可用「」，读音可写在括注）；(3) 为什么必须这样改（对理解或表达有何影响）。说明须让不懂日中翻译技巧、也不一定能读日语的人也能明白；禁止只说“语境不好/不自然”而不解释为什么。仅写 缺少"X"在… 或只标位置、不写为什么，一律不合格。推荐修正写在 reason 内（无单独 suggested 字段）。
+- 添削目的：帮助译者提高今后的翻译能力（补能力缺口），不是做表面润色。优先实质问题：意义偏移、系统性语法（如反复用错活用→指出活用能力问题）、暴露词汇基础不足的拼写错误、语域/领域译词误用并说明为何、情态/感官错位（如「聞き漏らす」与「見落とす」）等。
+- 禁止把“可省略的表面简化”当作主指摘（反例：把「紙に印刷された文字」改成「印刷された文字」只说“可省紙に/更合日语习惯”——这不是本质问题；应挖意义/语法/语域等实质错误）。
+- 禁止无教学的“跟原文对词”：不可只因原文用了某词就改成对应词形（反例：決まり文句→套语，理由仅“原文写了套语”——那不是添削）。准确引用原文说明意义不一致可以，但必须讲清能力/意义问题。
+- 词汇升级（非硬性语法错）时：MUST 先对比现状词与推荐词各自语感/语义，再说明为何在此语境推荐后者。禁止只写“更能体现…/更自然”而无对比。
+- 说明“为什么”时，尽量点明这类错误为何会影响今后翻译（例：指出拼写错误是因为暴露了对该词的基本理解不足，会继续带进后续译文）。
 - 优先真实的意义不一致、语法、流畅度、拼写问题。日语已经可接受时，禁止臆造“缺少”助词或其他虚构缺失；禁止发明会改变原意或并无必要的助词/修正。
 - 指出与原文意义不一致时：仔细对照原文，禁止臆造或误引原文；须准确引用并用中文说明哪里不一致、为什么必须改。批评生硬或不妥的日语表达时，须准确说明意义问题，禁止偏离原文意思的改写建议。
 - 添削対象有多段时：尽量在各段中找出真实问题（系统性覆盖各段），禁止为凑覆盖而编造问题；质量优先于条数。reason/overallComment 宜简明完整，勿空话灌水，也勿因过短而省略“为什么”或推荐改法。
@@ -88,18 +97,18 @@ SYSTEM_PROMPT = f"""{CORRECTION_TASK_BRIEF}
 
 suggestions 目标至少 5 条；优先检查意义不一致、语法、流畅度、拼写，并兼顾用词/敬语/标点/结构。禁止编造或重复凑数；确实不足 5 条时只返回真实找到的条数。"""
 
-FEW_SHOT_EXAMPLE = """例（中译日文学/学术）：
+FEW_SHOT_EXAMPLE = """例（中译日文学/学术；教学型指摘，非表面润色）：
 原文：现代人阅读史诗的经验，大概是把它们当作一种印在纸上的文字来读。可实际上，史诗首先是一种声音。
 添削対象：現代人が史詩を読む経験は、史詩を紙に印する文字として読む。でも、実際には、史詩はまず声である。
 
-输出：{"suggestions":[{"id":"1","original":"史詩","reason":"史詩 → 「叙事詩」（じょじし）：在日语社科/文学翻译中，“史诗”的标准规范学术译词是「叙事詩」，继续写「史詩」会显得像未消化的中文词形","sourceExcerpt":"史诗"},{"id":"2","original":"でも、","reason":"でも → 「しかし」：开篇论述应用书面转折，口语词“でも”会降低学术随笔的语域","sourceExcerpt":"可实际上"},{"id":"3","original":"紙に印する文字","reason":"紙に印する文字 → 「紙に印刷された文字」：原文“印在纸上的文字”指印成的文字成品；“印する”不自然，读者不易立刻懂是印刷文本","sourceExcerpt":"印在纸上的文字"}],"overallComment":"已能传达“史诗首先是声音、而非只是纸面文字”这一核心对比。主要问题是规范译词与语域：专名宜用「叙事詩」，论述转折宜用书面语。"}"""
+输出：{"suggestions":[{"id":"1","original":"史詩","reason":"史詩 → 「叙事詩」（じょじし）：「史詩」像未消化的中文词形；日语社科/文学里“史诗”的规范译词是「叙事詩」。混用会暴露领域译词基础不足，后续译文也容易继续写错专名","sourceExcerpt":"史诗"},{"id":"2","original":"でも、","reason":"でも → 「しかし」：「でも」偏日常口语转折，读起来像会话；「しかし」是书面论述转折。本文是学术随笔开篇，应用后者，否则语域掉到口语，影响今后同类论述译的语体判断","sourceExcerpt":"可实际上"},{"id":"3","original":"紙に印する文字","reason":"紙に印する文字 → 「紙に印刷された文字」：原文“印在纸上的文字”指印成的文字成品；「印する」不是自然日语对应，读者难立刻懂是印刷文本——这是词汇/搭配理解问题。不要主推删掉「紙に」之类表面省略","sourceExcerpt":"印在纸上的文字"}],"overallComment":"已能传达“史诗首先是声音、而非只是纸面文字”这一核心对比。主要问题是规范译词、语域与词汇搭配：专名宜用「叙事詩」，论述转折宜用书面语，印刷义宜用自然搭配。"}"""
 
 
 def build_user_prompt(original_text: str, target_text: str) -> str:
     """Build the user prompt for text correction."""
     return f"""{CORRECTION_TASK_BRIEF}
 
-【再确认】reason 与 overallComment 必须是简体中文；禁止日语说明文。中文引用用 "" / “”；日语词形可用「」，禁止用「」包中文说明词。overallComment 先写优点再写问题。每个 reason MUST 含 现状→推荐（如有）+ 通俗中文为什么必须改。禁止只写位置的 缺少"X"在…。不要臆造不必要的“缺少”助词。对照原文时禁止误引/编造原文；多段时尽量覆盖各段真实问题。只输出 JSON。
+【再确认】reason 与 overallComment 必须是简体中文；禁止日语说明文。中文引用用 "" / “”；日语词形可用「」，禁止用「」包中文说明词。overallComment 先写优点再写问题。每个 reason MUST 含 现状→推荐（如有）+ 通俗中文为什么必须改（尽量点明对今后翻译能力的影响）。优先实质问题，禁止表面省略当主指摘；禁止无教学的“跟原文对词”；词汇升级须先对比两词语感再推荐。禁止只写位置的 缺少"X"在…。不要臆造不必要的“缺少”助词。对照原文时禁止误引/编造原文；多段时尽量覆盖各段真实问题。只输出 JSON。
 
 原文：{original_text}
 

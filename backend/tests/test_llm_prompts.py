@@ -119,3 +119,56 @@ class TestSemanticReasonQualityInPrompt:
         assert "“史诗”" in FEW_SHOT_EXAMPLE or "“" in FEW_SHOT_EXAMPLE
         assert "「叙事詩」" in FEW_SHOT_EXAMPLE
         assert "已能传达" in FEW_SHOT_EXAMPLE or "优点" in FEW_SHOT_EXAMPLE
+
+
+class TestTeachingQualityInPrompt:
+    """improve-suggestion-teaching-quality — competence teaching bar."""
+
+    def test_system_prompt_prioritizes_essential_competence_gaps(self):
+        assert "实质问题" in SYSTEM_PROMPT or "能力" in SYSTEM_PROMPT
+        assert "意义偏移" in SYSTEM_PROMPT or "情态" in SYSTEM_PROMPT
+
+    def test_system_prompt_forbids_trivial_surface_as_main_critique(self):
+        assert "表面" in SYSTEM_PROMPT
+        assert "省略" in SYSTEM_PROMPT or "简化" in SYSTEM_PROMPT
+
+    def test_system_prompt_forbids_bare_source_token_swap(self):
+        assert "跟原文对词" in SYSTEM_PROMPT or "原文用了" in SYSTEM_PROMPT
+        assert "添削" in SYSTEM_PROMPT
+
+    def test_system_prompt_requires_contrastive_nuance_for_lexical_upgrades(self):
+        assert "对比" in SYSTEM_PROMPT
+        assert "语感" in SYSTEM_PROMPT or "语义" in SYSTEM_PROMPT
+
+    def test_system_prompt_class_of_error_for_future_translations(self):
+        assert "今后" in SYSTEM_PROMPT
+        assert "翻译" in SYSTEM_PROMPT or "译文" in SYSTEM_PROMPT
+
+    def test_user_prompt_reinforces_teaching_bar(self):
+        prompt = build_user_prompt("原文", "対象")
+        assert "表面" in prompt or "对词" in prompt
+        assert "对比" in prompt
+        assert "今后" in prompt
+
+    def test_few_shot_shows_contrastive_nuance_not_anti_patterns(self):
+        assert "偏" in FEW_SHOT_EXAMPLE  # contrastive 偏口语 / 偏书面
+        assert "「しかし」" in FEW_SHOT_EXAMPLE
+        # Must not model the three anti-patterns as good output.
+        assert "可以省略" not in FEW_SHOT_EXAMPLE
+        assert "套语" not in FEW_SHOT_EXAMPLE
+        assert "更能体现" not in FEW_SHOT_EXAMPLE
+
+    def test_teaching_quality_fixtures_document_bad_and_good(self):
+        from tests.fixtures.teaching_quality_cases import (
+            TEACHING_BAD_PREFERENCE_NO_CONTRAST,
+            TEACHING_BAD_SOURCE_TOKEN_SWAP,
+            TEACHING_BAD_TRIVIAL_SURFACE,
+            TEACHING_GOOD_CONTRASTIVE_REASON,
+            TEACHING_GOOD_CLASS_OF_ERROR_REASON,
+        )
+
+        assert "省略" in TEACHING_BAD_TRIVIAL_SURFACE or "紙に" in TEACHING_BAD_TRIVIAL_SURFACE
+        assert "原文" in TEACHING_BAD_SOURCE_TOKEN_SWAP
+        assert "更能体现" in TEACHING_BAD_PREFERENCE_NO_CONTRAST
+        assert "偏" in TEACHING_GOOD_CONTRASTIVE_REASON
+        assert "今后" in TEACHING_GOOD_CLASS_OF_ERROR_REASON or "后续" in TEACHING_GOOD_CLASS_OF_ERROR_REASON
