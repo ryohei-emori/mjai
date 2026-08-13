@@ -13,6 +13,15 @@ from app.llm.parser import (
     extract_json,
     safe_json_parse,
     has_non_chinese_reason,
+    has_weak_critique_reason,
+)
+from tests.fixtures.semantic_reason_cases import (
+    CASE_A_BAD_REASON,
+    CASE_A_NOTES,
+    CASE_A_TARGET_TEXT,
+    CASE_B_COMPLIANT_REASON,
+    CASE_B_TARGET_TEXT,
+    CASE_B_WEAK_REASON,
 )
 
 
@@ -570,3 +579,71 @@ class TestHasNonChineseReason:
             "overallComment": "中文总评",
         }
         assert has_non_chinese_reason(result) is True
+
+
+class TestHasWeakCritiqueReason:
+    """Regression aid for Spec MUST why-in-reason (not wired into retry)."""
+
+    def test_case_b_weak_location_only_fails(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": CASE_B_TARGET_TEXT[:20],
+                    "reason": CASE_B_WEAK_REASON,
+                    "sourceExcerpt": "",
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_weak_critique_reason(result) is True
+
+    def test_case_b_compliant_reason_with_why_passes(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "誰でも",
+                    "reason": CASE_B_COMPLIANT_REASON,
+                    "sourceExcerpt": "",
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_weak_critique_reason(result) is False
+
+    def test_case_a_bad_reason_pattern_is_documented_false_positive(self):
+        """Case A documents invented 「缺少「が」」; heuristic flags location-only shape."""
+        assert "ができなかったが" in CASE_A_TARGET_TEXT
+        assert CASE_A_BAD_REASON.startswith("缺少")
+        assert "false" in CASE_A_NOTES.lower() or "invent" in CASE_A_NOTES.lower()
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "できなかったが",
+                    "reason": CASE_A_BAD_REASON,
+                    "sourceExcerpt": "",
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        # Location-only 缺少 without 为什么 → weak (quality non-compliant).
+        assert has_weak_critique_reason(result) is True
+
+    def test_few_shot_style_reason_with_why_is_not_weak(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": "「昨日」表示过去发生的事，因此必须用过去式「行きました」",
+                    "sourceExcerpt": "行きました",
+                }
+            ],
+            "overallComment": "整体清楚",
+        }
+        assert has_weak_critique_reason(result) is False
+
+    def test_empty_suggestions_not_weak(self):
+        assert has_weak_critique_reason({"suggestions": [], "overallComment": ""}) is False

@@ -54,3 +54,30 @@ class TestLanguageRulesInPrompt:
         assert CORRECTION_TASK_BRIEF in messages[0]["content"]
         assert messages[-1]["role"] == "user"
         assert CORRECTION_TASK_BRIEF in messages[-1]["content"]
+
+
+class TestSemanticReasonQualityInPrompt:
+    """harden-semantic-suggestion-reasons: MUST why-in-reason + anti-false-缺少."""
+
+    def test_system_prompt_requires_why_in_every_reason(self):
+        assert "为什么必须" in SYSTEM_PROMPT or "为什么必须改" in SYSTEM_PROMPT
+        assert "MUST" in SYSTEM_PROMPT or "必须" in SYSTEM_PROMPT
+        assert "指摘" in SYSTEM_PROMPT or "reason" in SYSTEM_PROMPT
+
+    def test_system_prompt_forbids_location_only_que_shao(self):
+        assert "缺少" in SYSTEM_PROMPT
+        assert "不合格" in SYSTEM_PROMPT
+
+    def test_system_prompt_forbids_inventing_false_particles(self):
+        assert "臆造" in SYSTEM_PROMPT or "编造" in SYSTEM_PROMPT
+        assert "助词" in SYSTEM_PROMPT
+
+    def test_user_prompt_reinforces_why_and_anti_false_que_shao(self):
+        prompt = build_user_prompt("原文", "対象")
+        assert "为什么必须改" in prompt
+        assert "缺少" in prompt
+
+    def test_few_shot_reasons_include_necessity_cues(self):
+        # Compliant few-shot should not be location-only 缺少 patterns.
+        assert "因此" in FEW_SHOT_EXAMPLE or "必须" in FEW_SHOT_EXAMPLE
+        assert "才能" in FEW_SHOT_EXAMPLE or "需要" in FEW_SHOT_EXAMPLE

@@ -64,11 +64,15 @@ SYSTEM_PROMPT = f"""{CORRECTION_TASK_BRIEF}
 - original：必须是添削対象中的日语片段原文，不要译成中文。
 - sourceExcerpt：从原文摘录与 original 对应的片段（原文语言原样保留）；无明确对应则省略或 ""，禁止编造。
 
+指摘质量硬性规则（违反即不合格）：
+- 每个 reason（指摘コメント）MUST 同时写清：(1) 哪里/什么有问题；(2) 为什么必须这样改（交际或语法上的必要性）。仅写「缺少「X」在…」或只标位置、不写为什么，一律不合格。此规则适用于全部指摘类型，不限于助词。
+- 优先真实的意义不一致、语法、流畅度、拼写问题。日语已经可接受时，禁止臆造「缺少」助词或其他虚构缺失；禁止发明会改变原意或并无必要的助词/修正。
+
 只输出 JSON。禁止任何前言/后记/Markdown 代码块（```）。JSON 内禁止尾随逗号。
-每个 reason 用 1～2 句简体中文，overallComment 用 1～2 句简体中文（控制长度，避免截断）。
+每个 reason 用 1～2 句简体中文（须含为什么），overallComment 用 1～2 句简体中文（控制长度，避免截断）。
 
 格式：
-{{"suggestions":[{{"id":"1","original":"該当箇所の抜粋","reason":"简体中文指摘理由与修改建议","sourceExcerpt":"原文中の対応箇所（該当する場合のみ）"}}],"overallComment":"简体中文总评"}}
+{{"suggestions":[{{"id":"1","original":"該当箇所の抜粋","reason":"简体中文：问题所在 + 为什么必须改","sourceExcerpt":"原文中の対応箇所（該当する場合のみ）"}}],"overallComment":"简体中文总评"}}
 
 suggestions 目标至少 5 条；优先检查意义不一致、语法、流畅度、拼写，并兼顾用词/敬语/标点/结构。禁止编造或重复凑数；确实不足 5 条时只返回真实找到的条数。"""
 
@@ -76,14 +80,14 @@ FEW_SHOT_EXAMPLE = """例：
 原文：彼は昨日、東京に行きました
 添削対象：彼は昨日、東京へ行きます。天気が良いから、散歩をしました。とても楽しいでした。
 
-输出：{"suggestions":[{"id":"1","original":"行きます","reason":"「昨日」表示过去发生的事，应使用过去式「行きました」，而不是现在时「行きます」","sourceExcerpt":"行きました"},{"id":"2","original":"東京へ","reason":"助词「へ」和「に」都可表方向，但「に」在口语中更常用于明确到达点，语感更自然","sourceExcerpt":"東京に"},{"id":"3","original":"良いから","reason":"书面语中「から」略显生硬，改用「ので」语气更委婉、更符合叙述文体"},{"id":"4","original":"とても楽しいでした","reason":"い形容词「楽しい」的过去式应为「楽しかったです」，「楽しいでした」是错误活用","sourceExcerpt":""},{"id":"5","original":"散歩をしました。とても楽しいでした。","reason":"两个短句衔接生硬，可合并为「散歩をして、とても楽しかったです」，使行文更流畅"}],"overallComment":"本次主要涉及时态混用、形容词活用，以及部分助词与句子衔接。整体意思清楚，继续保持！"}"""
+输出：{"suggestions":[{"id":"1","original":"行きます","reason":"「昨日」表示过去发生的事，因此必须用过去式「行きました」，现在时「行きます」与时间状语矛盾","sourceExcerpt":"行きました"},{"id":"2","original":"東京へ","reason":"助词「へ」虽可表方向，但这里需要明确到达点，改用「に」在口语中更自然","sourceExcerpt":"東京に"},{"id":"3","original":"良いから","reason":"书面叙述中「から」略生硬，改用「ので」才能使因果语气更委婉、更符合文体"},{"id":"4","original":"とても楽しいでした","reason":"い形容词「楽しい」的过去式必须是「楽しかったです」；「楽しいでした」是错误活用，读者会感到语法不通","sourceExcerpt":""},{"id":"5","original":"散歩をしました。とても楽しいでした。","reason":"两个短句衔接生硬，合并为「散歩をして、とても楽しかったです」才能使行文更流畅"}],"overallComment":"本次主要涉及时态混用、形容词活用，以及部分助词与句子衔接。整体意思清楚，继续保持！"}"""
 
 
 def build_user_prompt(original_text: str, target_text: str) -> str:
     """Build the user prompt for text correction."""
     return f"""{CORRECTION_TASK_BRIEF}
 
-【再确认】reason 与 overallComment 必须是简体中文；禁止日语说明文。只输出 JSON。
+【再确认】reason 与 overallComment 必须是简体中文；禁止日语说明文。每个 reason MUST 含「为什么必须改」，禁止只写位置的「缺少「X」在…」。不要臆造不必要的「缺少」助词。只输出 JSON。
 
 原文：{original_text}
 

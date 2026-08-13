@@ -21,6 +21,13 @@ describe("prompts exports", () => {
     expect(SYSTEM_PROMPT).toContain("overallComment");
   });
 
+  it("requires why-in-reason and forbids false 缺少 inventing", () => {
+    // harden-semantic-suggestion-reasons — Spec MUST in critique comments
+    expect(SYSTEM_PROMPT).toContain("为什么必须改");
+    expect(SYSTEM_PROMPT).toContain("缺少");
+    expect(SYSTEM_PROMPT).toMatch(/臆造|禁止/);
+  });
+
   it("exports FEW_SHOT_EXAMPLES with expected structure", () => {
     expect(FEW_SHOT_EXAMPLES).toBeDefined();
     expect(typeof FEW_SHOT_EXAMPLES).toBe("string");
@@ -28,6 +35,7 @@ describe("prompts exports", () => {
     expect(FEW_SHOT_EXAMPLES).toContain("例");
     expect(FEW_SHOT_EXAMPLES).toContain("suggestions");
     expect(FEW_SHOT_EXAMPLES).toContain("overallComment");
+    expect(FEW_SHOT_EXAMPLES).toMatch(/因此必须|需要明确/);
   });
 
   it("exports all section templates", () => {

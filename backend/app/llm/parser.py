@@ -33,6 +33,14 @@ corresponding to the flagged TARGET TEXT snippet, extracted with the same
 multi-key-fallback approach as `original`/`reason` and defaulting to `""`
 when absent. Like `original`, it is expected to stay in SOURCE TEXT's
 language (Japanese) and is intentionally exempt from `has_non_chinese_reason()`.
+
+As of `harden-semantic-suggestion-reasons` (2026-08), Spec MUST requires every
+`reason`（指摘コメント）to include why the correction is needed (all critique
+types). That MUST is primarily enforced via prompts. This module also exposes
+`has_weak_critique_reason()` — a narrow regression heuristic for location-only
+「缺少「X」在…」 reasons that omit necessity cues. It is intentionally NOT
+wired into `generate_suggestions()` retry (too noisy for production); use it
+in tests/fixtures.
 """
 
 from __future__ import annotations
@@ -408,5 +416,46 @@ def has_non_chinese_reason(result: ParsedResponse) -> bool:
         return True
     return any(
         _text_looks_japanese(suggestion["reason"])
+        for suggestion in result["suggestions"]
+    )
+
+
+# Narrow "location-only missing form" shape: 缺少「X」在… (or 缺少『X』在…).
+_WEAK_QUE_SHAO_LOCATION = re.compile(
+    r"缺少[「『][^」』]+[」』]在"
+)
+
+# Necessity / why cues — if any appear, treat as explaining 为什么.
+_WHY_NECESSITY_MARKERS = re.compile(
+    r"(因为|因此|由于|必须|需要|用于|表示|才能|否则|为了|"
+    r"语感|对比|强调|主题|应[该当]?|建议|改用|不自然|错误|"
+    r"不通|无法|矛盾|限定|焦点|更自然|更委婉|更流畅|语法不通)"
+)
+
+
+def _reason_is_weak_location_only(reason: str) -> bool:
+    """True if reason looks like location-only 「缺少「X」在…」 without 为什么."""
+    text = (reason or "").strip()
+    if not text:
+        return False
+    if not _WEAK_QUE_SHAO_LOCATION.search(text):
+        return False
+    return _WHY_NECESSITY_MARKERS.search(text) is None
+
+
+def has_weak_critique_reason(result: ParsedResponse) -> bool:
+    """
+    True if any suggestion's `reason` matches a weak location-only
+    「缺少「X」在…」 pattern without necessity/why markers.
+
+    Spec MUST (`harden-semantic-suggestion-reasons`): every critique `reason`
+    must include why the correction is needed. That MUST is primarily
+    prompt-enforced. This heuristic is a CI/regression aid for Case B–style
+    weak reasons and is NOT used by `generate_suggestions()` retry (design:
+    too noisy for production). Does not inspect `overallComment`, `original`,
+    or `sourceExcerpt`.
+    """
+    return any(
+        _reason_is_weak_location_only(suggestion["reason"])
         for suggestion in result["suggestions"]
     )
