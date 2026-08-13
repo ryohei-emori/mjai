@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { HighlightedTextarea, type TextHighlight } from "@/components/ui/highlighted-textarea"
+import { JobQueueCarousel } from "@/components/ui/job-queue-carousel"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -35,6 +36,10 @@ import {
   getDiagnosticsTracker,
 } from "@/lib/webllm/diagnostics"
 import { isEngineReady } from "@/lib/webllm/engineReady"
+import {
+  sortCompletedJobsNewestFirst,
+  sortJobsByRelevance,
+} from "@/lib/jobQueue/ordering"
 import type { EngineStatus } from "@/lib/webllm/types"
 
 /** Lazy-load WebLLM engine only for offline mode or intentional API fallback. */
@@ -1931,19 +1936,12 @@ export default function TextCorrectionApp() {
 
   // Job Queue panel: in-flight work
   const activeJobCount = jobQueue.filter(j => j.status === 'processing' || j.status === 'queued').length
-  // TopAppBar bell: completed jobs awaiting HITL confirm/save
-  const completedJobs = useMemo(
-    () =>
-      jobQueue
-        .filter((j) => j.status === 'completed')
-        .slice()
-        .sort((a, b) => {
-          const aTime = (a.completedAt ?? a.queuedAt).getTime()
-          const bTime = (b.completedAt ?? b.queuedAt).getTime()
-          return bTime - aTime
-        }),
-    [jobQueue],
-  )
+  // Job Queue横スライドの並び順。実行中 → 待機中 → 完了 → 失敗、各グループ内は
+  // 新しい順（slide-job-queue-carousel change、design.md Decision 2参照）。
+  const orderedJobQueue = useMemo(() => sortJobsByRelevance(jobQueue), [jobQueue])
+  // TopAppBar bell: completed jobs awaiting HITL confirm/save.
+  // Job Queueと同じヘルパーを使い「最新」の定義が2箇所でズレないようにする。
+  const completedJobs = useMemo(() => sortCompletedJobsNewestFirst(jobQueue), [jobQueue])
   const completedJobCount = completedJobs.length
 
   // 生成タイマー表示用の派生値（add-suggestion-generation-timer改訂、design.md
@@ -2588,13 +2586,18 @@ export default function TextCorrectionApp() {
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <div className="space-y-2">
-                        {jobQueue.map((job) => {
+                      {/* 縦積みではなく横スライド。ジョブが何件積まれてもパネルの
+                          高さは一定で、下のAI Suggestions/Historyを押し下げない
+                          （slide-job-queue-carousel change参照）。 */}
+                      <JobQueueCarousel
+                        items={orderedJobQueue}
+                        getKey={(job) => job.id}
+                        ariaLabel="ジョブキュー一覧（横スライド）"
+                        renderItem={(job) => {
                           const isClickable = job.status === 'completed' && job.suggestions
                           return (
-                            <div 
-                              key={job.id} 
-                              className={`border rounded-lg p-3 transition-colors ${
+                            <div
+                              className={`h-full flex flex-col border rounded-lg p-3 transition-colors ${
                                 job.status === 'processing' 
                                   ? 'bg-primary-container border-md3-primary' 
                                   : job.status === 'completed'
@@ -2613,72 +2616,68 @@ export default function TextCorrectionApp() {
                               role={isClickable ? 'button' : undefined}
                               tabIndex={isClickable ? 0 : undefined}
                             >
-                              <div className="flex justify-between items-start">
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    {job.status === 'processing' && (
-                                      <span className="material-symbols-outlined md-18 animate-spin text-md3-primary">progress_activity</span>
-                                    )}
-                                    {job.status === 'completed' && (
-                                      <span className="material-symbols-outlined md-18 text-session-complete">check_circle</span>
-                                    )}
-                                    {job.status === 'failed' && (
-                                      <span className="material-symbols-outlined md-18 text-error">error</span>
-                                    )}
-                                    {job.status === 'queued' && (
-                                      <span className="material-symbols-outlined md-18 text-on-surface-variant">schedule</span>
-                                    )}
-                                    <Badge variant={
-                                      job.status === 'processing' ? 'default' :
-                                      job.status === 'completed' ? 'outline' :
-                                      job.status === 'failed' ? 'destructive' : 'secondary'
-                                    } className="text-xs">
-                                      {job.status === 'processing' ? '処理中' :
-                                       job.status === 'completed' ? '完了' :
-                                       job.status === 'failed' ? '失敗' : '待機中'}
-                                    </Badge>
-                                    {job.source && (
-                                      <Badge variant="outline" className="text-xs">
-                                        {job.source === 'api' ? 'API' : 'WebLLM'}
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  <p className="text-metadata text-on-surface-variant mt-1 truncate">
-                                    {job.targetText.slice(0, 40)}{job.targetText.length > 40 ? '...' : ''}
-                                  </p>
-                                  <p className="text-metadata text-on-surface-variant">
-                                    {job.queuedAt.toLocaleTimeString()}
-                                    {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
-                                  </p>
-                                  {job.error && (
-                                    <p className="text-metadata text-error mt-1">{job.error}</p>
-                                  )}
-                                </div>
-                                {isClickable && (
-                                  <div className="flex items-center text-body-sm text-session-complete font-medium">
-                                    <span className="material-symbols-outlined md-18 mr-1">check_circle</span>
-                                    確認
-                                  </div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {job.status === 'processing' && (
+                                  <span className="material-symbols-outlined md-18 animate-spin text-md3-primary">progress_activity</span>
+                                )}
+                                {job.status === 'completed' && (
+                                  <span className="material-symbols-outlined md-18 text-session-complete">check_circle</span>
                                 )}
                                 {job.status === 'failed' && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8 px-2 border-error text-error hover:bg-red-100 flex-shrink-0"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      retryJob(job)
-                                    }}
-                                  >
-                                    <span className="material-symbols-outlined md-18 mr-1">refresh</span>
-                                    再試行
-                                  </Button>
+                                  <span className="material-symbols-outlined md-18 text-error">error</span>
+                                )}
+                                {job.status === 'queued' && (
+                                  <span className="material-symbols-outlined md-18 text-on-surface-variant">schedule</span>
+                                )}
+                                <Badge variant={
+                                  job.status === 'processing' ? 'default' :
+                                  job.status === 'completed' ? 'outline' :
+                                  job.status === 'failed' ? 'destructive' : 'secondary'
+                                } className="text-xs">
+                                  {job.status === 'processing' ? '処理中' :
+                                   job.status === 'completed' ? '完了' :
+                                   job.status === 'failed' ? '失敗' : '待機中'}
+                                </Badge>
+                                {job.source && (
+                                  <Badge variant="outline" className="text-xs">
+                                    {job.source === 'api' ? 'API' : 'WebLLM'}
+                                  </Badge>
                                 )}
                               </div>
+                              <p className="text-metadata text-on-surface-variant mt-1 truncate">
+                                {job.targetText.slice(0, 40)}{job.targetText.length > 40 ? '...' : ''}
+                              </p>
+                              <p className="text-metadata text-on-surface-variant">
+                                {job.queuedAt.toLocaleTimeString()}
+                                {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
+                              </p>
+                              {job.error && (
+                                <p className="text-metadata text-error mt-1 line-clamp-2">{job.error}</p>
+                              )}
+                              {isClickable && (
+                                <div className="mt-2 flex items-center text-body-sm text-session-complete font-medium">
+                                  <span className="material-symbols-outlined md-18 mr-1">check_circle</span>
+                                  確認
+                                </div>
+                              )}
+                              {job.status === 'failed' && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="mt-2 h-8 px-2 border-error text-error hover:bg-red-100 self-start"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    retryJob(job)
+                                  }}
+                                >
+                                  <span className="material-symbols-outlined md-18 mr-1">refresh</span>
+                                  再試行
+                                </Button>
+                              )}
                             </div>
                           )
-                        })}
-                      </div>
+                        }}
+                      />
                     </CardContent>
                   </Card>
                 )}

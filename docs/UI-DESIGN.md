@@ -5,7 +5,7 @@
 | **Title** | MJAI visual identity (MD3-inspired design tokens) |
 | **Authors** | MJAI maintainers |
 | **Status** | Living document — extracted from codebase |
-| **Last updated** | 2026-08-11 |
+| **Last updated** | 2026-08-14 |
 | **Audience** | UI/frontend contributors |
 
 > **What this document is (and is not)**
@@ -261,6 +261,49 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 - Active: `bg-primary-container border-md3-primary`
 - Inactive: `border-outline-variant hover:bg-surface-container`
 - Status pill: `bg-session-complete` (saved) / `bg-session-empty` (draft)
+
+### Job Queue Carousel (horizontal slide)
+
+The Job Queue panel in the right pane presents jobs as a **horizontally sliding track**, not a vertical stack. With up to 30 concurrent API jobs a vertical list grew without bound and pushed AI Suggestions / History off-screen; the carousel keeps the panel at a constant height regardless of job count (OpenSpec change `slide-job-queue-carousel`).
+
+```
+┌──────────────────────────────────────────────┐
+│ JOB QUEUE                        [3 Active]  │
+│ APIモード: 並列処理（最大30件同時）…            │
+│ 横スライドで他のジョブを表示           ‹  ›   │
+│ ┌────────────┬────────────┬──┐              │
+│ │ ⟳ 処理中   │ ✓ 完了     │▒▒│ ← peek + fade │
+│ │ 翻訳文…    │ 翻訳文…    │  │              │
+│ │ 09:12      │ 09:10→09:11│  │              │
+│ │            │ ✓ 確認     │  │              │
+│ └────────────┴────────────┴──┘              │
+│ ▬ ○ ○                        ← page dots    │
+└──────────────────────────────────────────────┘
+```
+
+**Ordering** (shared helper `frontend/src/lib/jobQueue/ordering.ts`, so the TopAppBar bell list cannot drift from the queue): `processing` → `queued` → `completed` → `failed`, and newest-first within each group using `completedAt ?? queuedAt`. The leftmost card is therefore always the job the user most likely needs — running work first, then the freshly completed job awaiting HITL confirm.
+
+**Affordance stack** — four redundant cues, all suppressed when the track does not overflow (a 1-job queue looks exactly as it did before):
+
+| Cue | Implementation |
+|---|---|
+| Arrow buttons | `chevron_left` / `chevron_right` at `md-20`, `rounded-full` with `hover:bg-surface-container` (same icon-button pattern as the TopAppBar), `disabled` + `opacity-50` at each end |
+| Hint text | `text-metadata text-on-surface-variant` — 「横スライドで他のジョブを表示」 |
+| Page indicator | `h-1.5 rounded-full` dots, active `w-4 bg-md3-primary` / inactive `w-1.5 bg-outline-variant`; switches to `N / M` `text-metadata` past 6 pages |
+| Edge fade + peek | `w-6` `bg-gradient-to-r/l from-surface to-transparent`, `pointer-events-none`, rendered only on the side that has more content; card widths reserve 28px so the next card peeks in |
+
+The track keeps a **visible thin native scrollbar** (`.job-carousel-track` in `globals.css`, styled with `--outline-variant` / `--outline`) — deliberately not `.no-scrollbar`, since a scrollbar is the most universally understood "this scrolls" signal. Movement uses CSS `scroll-snap-type: x mandatory` with `scroll-snap-align: start` per card, so wheel/trackpad/touch swipe all settle card-aligned. `overscroll-behavior-x: contain` keeps a trackpad swipe from triggering browser back-navigation.
+
+**Responsive cards-per-view.** The right pane is user-resizable (280–600px), which media queries cannot observe, so the count is measured with a `ResizeObserver` on the track: `clamp(floor(trackWidth / 230), 1, 3)`. It falls back to 1 card where `ResizeObserver` is unavailable (older Safari, SSR, jsdom). Panel and card padding take roughly 84px out of the pane width before the track sees it.
+
+| Right pane width | Track width | Cards per view |
+|---|---|---|
+| 280px (minimum) | ~196px | 1 |
+| 448px (default) | ~364px | 1 |
+| ~544–600px (maximum) | ~460–516px | 2 (~240px each) |
+| Full-width mobile / very wide | ≥ ~720px | 3 (capped) |
+
+**Accessibility.** The track is `role="group"` with `aria-label="ジョブキュー一覧（横スライド）"` and `tabIndex={0}`; `ArrowLeft`/`ArrowRight` slide it while focus is inside, except when the event came from an `input`/`textarea`/contenteditable (the page's textareas must keep their caret keys). Arrows carry `aria-label="前のジョブへ"` / `"次のジョブへ"`. Interactive elements use `focus-visible:ring-2 focus-visible:ring-md3-primary`. Completed job cards keep their existing `role="button"` / `tabIndex={0}` / Enter-Space HITL confirm behaviour, and the browser scrolls a Tab-focused off-screen card into view.
 
 ### AI Suggestion Card
 
