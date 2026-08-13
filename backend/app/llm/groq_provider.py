@@ -158,9 +158,9 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
     payload: dict[str, Any] = {
         "model": resolved_model,
         "messages": messages,
-        # 512 was too tight and could truncate JSON mid-string for responses
-        # with multiple suggestions over Japanese text, causing parse failures.
-        "max_tokens": 1024,
+        # Long TARGET TEXT (e.g. multi-paragraph epic corpus) with ≥5
+        # suggestions needs headroom; 1024 truncated mid-JSON in live smoke.
+        "max_tokens": 2048,
         "temperature": 0.2,
     }
     if resolved_model in QWEN_REASONING_MODELS:

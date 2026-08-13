@@ -260,11 +260,19 @@ export function parseModelOutput(text: string): ParsedResponse {
 const JAPANESE_KANA_PATTERN = /[\u3040-\u30FF\uFF66-\uFF9D]/;
 const JAPANESE_FUNCTION_PATTERN =
   /(?:です|ます|でした|ました|ません|である|だった|ではない|ではありません|してください|しています|していない|ことができる|ことになる|べきだ|べきで|という|について|に対して|として|のです|なので|ですが|ますが)/;
+/** Strip 「…」/『…』 cites so quoted Japanese forms do not false-positive. */
+const QUOTED_JP_SPAN_PATTERN = /[「『][\s\S]*?[」』]/g;
+
+function stripQuotedJapaneseSpans(text: string): string {
+  return text.replace(QUOTED_JP_SPAN_PATTERN, "");
+}
 
 function textLooksJapanese(text: string): boolean {
   if (!text) return false;
-  if (JAPANESE_KANA_PATTERN.test(text)) return true;
-  return JAPANESE_FUNCTION_PATTERN.test(text);
+  const prose = stripQuotedJapaneseSpans(text);
+  if (!prose.trim()) return true;
+  if (JAPANESE_KANA_PATTERN.test(prose)) return true;
+  return JAPANESE_FUNCTION_PATTERN.test(prose);
 }
 
 /**

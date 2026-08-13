@@ -499,5 +499,22 @@ Hope this helps!`;
         })
       ).toBe(false);
     });
+
+    it("allows Japanese forms quoted inside 「」 in Chinese reasons", () => {
+      expect(
+        hasNonChineseReason({
+          suggestions: [
+            {
+              id: "1",
+              original: "行きます",
+              reason:
+                "「昨日」表示的是过去发生的事情，所以应该使用过去式「行きました」",
+              sourceExcerpt: "",
+            },
+          ],
+          overallComment: "整体表达清楚",
+        })
+      ).toBe(false);
+    });
   });
 });

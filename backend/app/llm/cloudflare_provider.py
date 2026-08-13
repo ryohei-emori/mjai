@@ -65,9 +65,8 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
     
     payload: dict[str, Any] = {
         "messages": messages,
-        # 512 was too tight and could truncate JSON mid-string for responses
-        # with multiple suggestions over Japanese text, causing parse failures.
-        "max_tokens": 1024,
+        # Match Groq headroom for multi-suggestion JSON on long TARGET TEXT.
+        "max_tokens": 2048,
         "temperature": 0.2,
     }
     
@@ -89,6 +88,54 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
         raise CloudflareError(f"Cloudflare API returned error: {errors}")
     
     try:
-        return data["result"]["response"]
+        result = data["result"]
     except (KeyError, TypeError) as e:
         raise CloudflareError(f"Unexpected Cloudflare response format: {data}") from e
+
+    content = _extract_cloudflare_text(result)
+    if content is not None:
+        return content
+    raise CloudflareError(
+        f"Unexpected Cloudflare response content: {type(result).__name__}"
+    )
+
+
+def _extract_cloudflare_text(result: Any) -> Optional[str]:
+    """Normalize Workers AI `result` payloads to a single assistant string."""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        # Common shapes: {"response": "..."} or nested content/text fields.
+        for key in ("response", "content", "text", "output", "generated_text"):
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, dict):
+                nested = _extract_cloudflare_text(value)
+                if nested:
+                    return nested
+            if isinstance(value, list):
+                nested = _extract_cloudflare_text(value)
+                if nested:
+                    return nested
+        # Last resort: any non-empty string leaf under this object.
+        for value in result.values():
+            if isinstance(value, str) and value.strip():
+                return value
+            if isinstance(value, (dict, list)):
+                nested = _extract_cloudflare_text(value)
+                if nested:
+                    return nested
+        return None
+    if isinstance(result, list):
+        parts: List[str] = []
+        for item in result:
+            if isinstance(item, str):
+                parts.append(item)
+            else:
+                nested = _extract_cloudflare_text(item)
+                if nested:
+                    parts.append(nested)
+        joined = "".join(parts)
+        return joined or None
+    return None

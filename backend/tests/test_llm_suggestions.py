@@ -117,10 +117,27 @@ class TestGenerateSuggestionsGroqFailCFSuccess:
                 with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
                     mock_groq.side_effect = GroqTimeoutError("Timeout")
                     mock_cf.return_value = VALID_LLM_RESPONSE
-                    
+
                     result = await generate_suggestions("原文", "訳文")
-                    
+
                     assert len(result["suggestions"]) == 1
+
+    async def test_groq_empty_content_falls_back_to_cloudflare(self):
+        """HTTP-OK but empty Groq body -> Cloudflare succeeds (no parse burn)."""
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok'
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    mock_groq.return_value = "   "
+                    mock_cf.return_value = VALID_LLM_RESPONSE
+
+                    result = await generate_suggestions("原文", "訳文")
+
+                    assert len(result["suggestions"]) == 1
+                    mock_cf.assert_called_once()
 
     async def test_groq_rotation_retries_both_models_before_cloudflare_fallback(self):
         """End-to-end: real call_groq_with_rotation (not mocked) exhausts
@@ -360,7 +377,11 @@ JAPANESE_PAYLOAD = {
 
 
 class TestChineseEnforcementFifteenIterations:
-    """「毎回テストを１５回行い」— verify Chinese enforcement 15 times."""
+    """「毎回テストを１５回行い」— verify Chinese enforcement 15 times.
+
+    Mock-only: patches Groq. For live Groq×15 on the epic corpus, see
+    `test_live_groq_chinese_explanations_fifteen_iterations_optional`.
+    """
 
     def test_detector_chinese_passes_and_japanese_fails_fifteen_times(self):
         from app.llm.parser import has_non_chinese_reason
@@ -380,10 +401,16 @@ class TestChineseEnforcementFifteenIterations:
 
         Sync wrapper via asyncio.run so this harness executes even when
         pytest-asyncio is not installed in the test environment.
+        Uses the real epic SOURCE/TARGET fixture as prompt inputs (provider
+        response is still mocked).
         """
         import asyncio
 
         from app.llm.parser import has_non_chinese_reason
+        from tests.fixtures.epic_shi_source_target import (
+            EPIC_SOURCE_TEXT,
+            EPIC_TARGET_TEXT,
+        )
 
         async def _once(iteration: int) -> None:
             with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
@@ -396,7 +423,9 @@ class TestChineseEnforcementFifteenIterations:
                         VALID_LLM_RESPONSE,
                     ]
 
-                    result = await generate_suggestions("原文", "訳文")
+                    result = await generate_suggestions(
+                        EPIC_SOURCE_TEXT, EPIC_TARGET_TEXT
+                    )
 
                     assert has_non_chinese_reason(result) is False, (
                         f"iteration {iteration + 1}/{CHINESE_ENFORCEMENT_ITERATIONS}: "
@@ -418,13 +447,35 @@ class TestChineseEnforcementFifteenIterations:
     reason="GROQ_API_KEY not set; live Chinese-enforcement smoke skipped",
 )
 @pytest.mark.asyncio
-async def test_live_groq_chinese_explanations_smoke_optional():
-    """Optional live smoke — not required for CI; skipped without API key."""
-    from app.llm.parser import has_non_chinese_reason
-
-    result = await generate_suggestions(
-        "彼は昨日、東京に行きました",
-        "彼は昨日、東京へ行きます。",
+async def test_live_groq_chinese_explanations_fifteen_iterations_optional():
+    """Optional live smoke ×15 on epic fixture — skipped without API key (CI-safe)."""
+    from app.llm.parser import has_non_chinese_reason, is_json_extraction_failure
+    from tests.fixtures.epic_shi_source_target import (
+        EPIC_SOURCE_TEXT,
+        EPIC_TARGET_TEXT,
     )
-    assert has_non_chinese_reason(result) is False
-    assert len(result["suggestions"]) >= 1
+
+    failures: list[str] = []
+    for i in range(CHINESE_ENFORCEMENT_ITERATIONS):
+        result = await generate_suggestions(EPIC_SOURCE_TEXT, EPIC_TARGET_TEXT)
+        if is_json_extraction_failure(result):
+            failures.append(f"iter {i + 1}: JSON extraction failure")
+            continue
+        if has_non_chinese_reason(result):
+            oc = (result.get("overallComment") or "")[:60]
+            jp_reasons = [
+                (s.get("reason") or "")[:60]
+                for s in result.get("suggestions") or []
+                if s.get("reason")
+            ][:2]
+            failures.append(
+                f"iter {i + 1}: non-Chinese fields; overall={oc!r}; "
+                f"reason_samples={jp_reasons!r}"
+            )
+            continue
+        assert len(result["suggestions"]) >= 1
+
+    assert not failures, (
+        f"{len(failures)}/{CHINESE_ENFORCEMENT_ITERATIONS} live iterations failed "
+        f"Chinese enforcement:\n" + "\n".join(failures)
+    )

@@ -542,3 +542,31 @@ class TestHasNonChineseReason:
             "overallComment": "整体意思清楚，继续保持！",
         }
         assert has_non_chinese_reason(result) is False
+
+    def test_chinese_reason_with_quoted_japanese_forms_passes(self):
+        """「…」 cites of Japanese forms must not false-positive."""
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": "「昨日」表示的是过去发生的事情，所以应该使用过去式「行きました」，而不是现在时「行きます」",
+                }
+            ],
+            "overallComment": "整体表达清楚，继续保持！",
+        }
+        assert has_non_chinese_reason(result) is False
+
+    def test_japanese_prose_outside_quotes_still_fails(self):
+        """Kana outside 「」 still fails even when some spans are quoted."""
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": "「行きます」という表現は不自然です",
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_non_chinese_reason(result) is True

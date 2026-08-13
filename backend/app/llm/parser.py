@@ -347,11 +347,16 @@ def is_json_extraction_failure(result: ParsedResponse) -> bool:
 # be Simplified Chinese. See `enforce-chinese-suggestion-comments` design.md.
 #
 # 1) Hiragana (U+3040-U+309F), Katakana (U+30A0-U+30FF), halfwidth Katakana
-#    (U+FF66-U+FF9D): never appear in Chinese text.
+#    (U+FF66-U+FF9D): never appear in Chinese *prose*.
 # 2) Common Japanese particle / function-word patterns (all contain kana, so
 #    they overlap with (1) for dense Japanese, but make the intent explicit
 #    and catch mixed strings in tests/docs). Do NOT use Han-only compounds
 #    that also appear in Simplified Chinese — that would false-positive.
+#
+# Quoted Japanese forms inside 「…」/『…』 are stripped before the check so
+# legitimate Chinese explanations that cite TARGET TEXT (as the few-shot
+# demonstrates) are not false-positive retries. Kana / function words
+# *outside* those quotes still fail.
 _JAPANESE_KANA_PATTERN = re.compile(r'[\u3040-\u30FF\uFF66-\uFF9D]')
 _JAPANESE_FUNCTION_PATTERN = re.compile(
     r'(?:です|ます|でした|ました|ません|である|だった|ではない|ではありません|'
@@ -359,27 +364,40 @@ _JAPANESE_FUNCTION_PATTERN = re.compile(
     r'べきだ|べきで|という|について|に対して|として|'
     r'のです|なので|ですが|ますが)'
 )
+# Corner-bracket quotes used when Chinese reasons cite Japanese forms.
+_QUOTED_JP_SPAN_PATTERN = re.compile(r'[「『].*?[」』]', re.DOTALL)
+
+
+def _strip_quoted_japanese_spans(text: str) -> str:
+    """Remove 「…」/『…』 spans so cited Japanese forms do not trip the check."""
+    return _QUOTED_JP_SPAN_PATTERN.sub("", text)
 
 
 def _text_looks_japanese(text: str) -> bool:
-    """True if `text` contains Japanese kana or Japanese function patterns."""
+    """True if explanatory prose (outside 「」/『』 cites) looks Japanese."""
     if not text:
         return False
-    if _JAPANESE_KANA_PATTERN.search(text):
+    prose = _strip_quoted_japanese_spans(text)
+    if not prose.strip():
+        # Entirely quoted — no Chinese explanation left; treat as non-Chinese.
         return True
-    return bool(_JAPANESE_FUNCTION_PATTERN.search(text))
+    if _JAPANESE_KANA_PATTERN.search(prose):
+        return True
+    return bool(_JAPANESE_FUNCTION_PATTERN.search(prose))
 
 
 def has_non_chinese_reason(result: ParsedResponse) -> bool:
     """
     True if any suggestion's `reason` or the top-level `overallComment`
-    looks Japanese (kana / halfwidth kana / Japanese function words),
-    indicating that field was written in Japanese rather than the required
-    Simplified Chinese.
+    looks Japanese (kana / halfwidth kana / Japanese function words outside
+    「」/『』 citation spans), indicating that field was written in Japanese
+    rather than the required Simplified Chinese.
 
     Pure Simplified Chinese that shares Han characters with Japanese kanji
-    MUST pass (returns False). The `original` and `sourceExcerpt` fields are
-    intentionally NOT checked — both are required to stay in Japanese.
+    MUST pass (returns False). Chinese explanations that quote Japanese
+    forms inside 「…」/『…』 MUST also pass. The `original` and
+    `sourceExcerpt` fields are intentionally NOT checked — both are
+    required to stay in Japanese.
 
     Used by backend/app/llm/suggestions.py to decide whether a generate+parse
     attempt should be retried, composing with (not replacing)

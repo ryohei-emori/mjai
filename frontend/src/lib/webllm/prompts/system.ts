@@ -28,6 +28,6 @@ export const SYSTEM_PROMPT = `意味の不一致、文法、流暢さ、スペ�
 
 格式：{"suggestions":[{"id":"1","original":"日语原文片段","reason":"简体中文建议","sourceExcerpt":"原文中对应片段（如有）"}],"overallComment":"简体中文总评"}
 original/sourceExcerpt保留日语，禁止译成中文。
-reason和overallComment必须是简体中文：禁止日语、禁止假名、禁止日语助词/说明。违反即不合格。
+reason和overallComment的说明文必须是简体中文：禁止日语说明/假名/助词（「」内可短引日语词形）。违反即不合格。
 sourceExcerpt可选：从原文摘录与original对应的日语片段；无明确对应则省略或""，禁止编造。
 至少5条suggestions，优先检查意义不一致、语法、流畅度、拼写，并兼顾用词/语气/标点/结构；确实不足5条才可更少，禁止编造凑数。`;

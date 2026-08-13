@@ -80,6 +80,15 @@ logger = logging.getLogger(__name__)
 # network-level retry.
 MAX_PARSE_RETRY_ATTEMPTS = 3
 
+# Appended on language-check retries only (not JSON-parse failures) so the
+# next pass gets an explicit correction signal without changing the base
+# prompt for the first attempt.
+LANGUAGE_RETRY_NUDGE = (
+    '前回の出力は不合格です。"reason"と"overallComment"の説明文は簡体字中国語のみで書いてください。'
+    "日本語の説明文・です/ます調は禁止。日本語の語形は「」内の短い引用のみ可。"
+    "引用の外にひらがな・カタカナを書かないこと。JSONのみ再出力してください。"
+)
+
 
 class SuggestionsError(Exception):
     """Error generating suggestions from all providers."""
@@ -126,11 +135,23 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
         try:
             logger.info("Attempting Groq inference...")
             raw_output = await call_groq_with_rotation(messages)
-            logger.info(f"Groq inference successful, raw output length: {len(raw_output)}")
-            logger.debug(f"Groq raw output: {raw_output[:500]}...")
-            result = parse_model_output(raw_output)
-            logger.info(f"Parsed result: {len(result['suggestions'])} suggestions")
-            return result
+            # Empty/whitespace content is a successful HTTP response but unusable;
+            # fall through to Cloudflare instead of burning parse-retry budget.
+            if not (raw_output or "").strip():
+                logger.warning(
+                    "Groq returned empty content, falling back to Cloudflare"
+                )
+                groq_error = "Groq returned empty content"
+            else:
+                logger.info(
+                    f"Groq inference successful, raw output length: {len(raw_output)}"
+                )
+                logger.debug(f"Groq raw output: {raw_output[:500]}...")
+                result = parse_model_output(raw_output)
+                logger.info(
+                    f"Parsed result: {len(result['suggestions'])} suggestions"
+                )
+                return result
         except (GroqRateLimitError, GroqServerError, GroqTimeoutError) as e:
             logger.warning(f"Groq failed with retriable error, falling back to Cloudflare: {e}")
             groq_error = str(e)
@@ -199,15 +220,22 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
             "No LLM providers configured. Set GROQ_API_KEY or CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN."
         )
 
-    messages = build_messages(original_text, target_text)
+    base_messages = build_messages(original_text, target_text)
 
     last_result: Optional[ParsedResponse] = None
+    language_failed_last = False
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
+        messages = list(base_messages)
+        if language_failed_last:
+            messages.append({"role": "user", "content": LANGUAGE_RETRY_NUDGE})
+
         result = await _generate_suggestions_once(messages)
         if not is_json_extraction_failure(result) and not has_non_chinese_reason(result):
             return result
+        parse_failed = is_json_extraction_failure(result)
+        language_failed_last = (not parse_failed) and has_non_chinese_reason(result)
         reason = (
-            "JSON parse failure" if is_json_extraction_failure(result) else "non-Chinese reason/overallComment"
+            "JSON parse failure" if parse_failed else "non-Chinese reason/overallComment"
         )
         logger.warning(
             f"{reason} on attempt {attempt}/{MAX_PARSE_RETRY_ATTEMPTS}; "
