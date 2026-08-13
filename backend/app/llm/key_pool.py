@@ -9,6 +9,7 @@ Env convention (plural wins when non-empty after parse):
   GROQ_API_KEYS=key1,key2          else GROQ_API_KEY
   CLOUDFLARE_ACCOUNT_IDS=id1,id2   + CLOUDFLARE_API_TOKENS=tok1,tok2
                                    else CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN
+  GEMINI_API_KEYS=key1,key2        else GEMINI_API_KEY
 """
 
 from __future__ import annotations
@@ -92,6 +93,19 @@ class CloudflareCredential:
         return f"{redact_secret(self.account_id, 4, 4)}/{redact_secret(self.api_token)}"
 
 
+@dataclass(frozen=True)
+class GeminiCredential:
+    api_key: str
+
+    @property
+    def id(self) -> str:
+        return f"gemini:{self.api_key}"
+
+    @property
+    def label(self) -> str:
+        return redact_secret(self.api_key)
+
+
 def load_groq_credentials() -> List[GroqCredential]:
     """Load Groq keys: GROQ_API_KEYS if non-empty, else GROQ_API_KEY.
 
@@ -129,6 +143,21 @@ def load_cloudflare_credentials() -> List[CloudflareCredential]:
     api_token = (os.environ.get("CLOUDFLARE_API_TOKEN") or "").strip()
     if account_id and api_token:
         return [CloudflareCredential(account_id=account_id, api_token=api_token)]
+    return []
+
+
+def load_gemini_credentials() -> List[GeminiCredential]:
+    """Load Gemini keys: GEMINI_API_KEYS if non-empty, else GEMINI_API_KEY.
+
+    Plural wins when non-empty (singular is not merged). Duplicate keys
+    in the plural list are collapsed to one entry.
+    """
+    plural = _split_csv(os.environ.get("GEMINI_API_KEYS"))
+    if plural:
+        return _dedupe_by_id([GeminiCredential(api_key=k) for k in plural])
+    single = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if single:
+        return [GeminiCredential(api_key=single)]
     return []
 
 
@@ -235,12 +264,30 @@ def acquire_cloudflare(
     return _acquire("cloudflare", load_cloudflare_credentials(), exclude_ids)
 
 
+def acquire_gemini(
+    exclude_ids: Optional[Sequence[str]] = None,
+    *,
+    cooldown_scope: Optional[str] = None,
+) -> Optional[GeminiCredential]:
+    """Select a Gemini key. ``cooldown_scope`` should be the model id in use."""
+    return _acquire(
+        "gemini",
+        load_gemini_credentials(),
+        exclude_ids,
+        cooldown_scope,
+    )
+
+
 def is_groq_configured() -> bool:
     return bool(load_groq_credentials())
 
 
 def is_cloudflare_configured() -> bool:
     return bool(load_cloudflare_credentials())
+
+
+def is_gemini_configured() -> bool:
+    return bool(load_gemini_credentials())
 
 
 def cooldown_status_codes() -> Tuple[int, ...]:

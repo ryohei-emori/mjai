@@ -366,8 +366,8 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
             client_message = (
                 "Cloud providers are rate-limited or quota-exhausted. "
                 "The API key pool spreads load across accounts but does not raise "
-                "per-account RPD/quota limits — check the Groq/Cloudflare dashboards. "
-                "Retry later, or enable WebLLM offline mode."
+                "per-account RPD/quota limits — check the Groq/Cloudflare/Gemini "
+                "dashboards. Retry later, or enable WebLLM offline mode."
             )
         else:
             client_message = (
@@ -379,10 +379,12 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "error": str(e),
                 "groq_error": e.groq_error,
                 "cf_error": e.cf_error,
+                "gemini_error": getattr(e, "gemini_error", None),
                 "fallback_available": True,
                 "rate_limited": bool(getattr(e, "rate_limited", False)),
                 "groq_pool_size": int(getattr(e, "groq_pool_size", 0) or 0),
                 "cf_pool_size": int(getattr(e, "cf_pool_size", 0) or 0),
+                "gemini_pool_size": int(getattr(e, "gemini_pool_size", 0) or 0),
                 "message": client_message,
             }
         )

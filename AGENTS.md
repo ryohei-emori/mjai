@@ -4,7 +4,7 @@ Agent-facing environment/operational constraints for MJAI (Japanese text-correct
 
 ## ⚠️ Reality check: docs vs. repo state
 
-`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). Ngrok tunnel vars/`NGROK_*` are **not** part of the active env templates (`conf/.env.example`); do not reintroduce them. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq primary, Cloudflare failover); WebLLM only when オフラインモード is ON** — do **not** configure `GEMINI_*`.
+`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). Ngrok tunnel vars/`NGROK_*` are **not** part of the active env templates (`conf/.env.example`); do not reintroduce them. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq → Cloudflare → Gemini); WebLLM only when オフラインモード is ON**. Configure backend `GEMINI_API_KEYS` (or singular `GEMINI_API_KEY`) for the tertiary Gemini pool — never as `NEXT_PUBLIC_*`.
 
 ## Multi-Environment Architecture: Shared DB, Environment-Aware Auth
 
@@ -76,14 +76,17 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Optional parallel comma-separated lists (same length) for multi-account Cloudflare Workers AI. When either plural var is set, both must match in length or the CF pool is empty. Overrides singular pair when non-empty. |
 | `CLOUDFLARE_ACCOUNT_ID` | Singular back-compat. Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
 | `CLOUDFLARE_API_TOKEN` | Singular back-compat. Cloudflare API token with Workers AI access |
+| `GEMINI_API_KEYS` | Optional comma-separated Gemini API keys for the tertiary provider pool. When non-empty after parse, overrides `GEMINI_API_KEY`. Get from [Google AI Studio](https://aistudio.google.com/apikey) |
+| `GEMINI_API_KEY` | Singular back-compat. Used when `GEMINI_API_KEYS` is unset/empty |
+| `GEMINI_MODEL` | Optional. If set, disables Gemini Flash rotation and pins every request to this exact model id (see `ALLOWED_GEMINI_MODELS` in `backend/app/llm/gemini_provider.py`) |
 
-**Key pool behavior:** each outbound Groq/Cloudflare call selects a credential via round-robin among non-cooled-down entries; on HTTP 401/403/429 the failing credential is cooled down (~60s) and the next key/pair is tried before the provider fails over. **Groq cooldown is model-scoped** (a 429 on `gpt-oss-120b` does not block the same key for `gpt-oss-20b` during in-provider rotation); Cloudflare cooldown remains credential-wide. Single-key Vercel setups need no change. Plural vars override singular (they are not merged — no double-counting). Duplicate identical keys in a plural list collapse to one entry. Cooldown is process-local (best-effort on Vercel warm instances; not shared across concurrent serverless isolates).
+**Key pool behavior:** each outbound Groq/Cloudflare/Gemini call selects a credential via round-robin among non-cooled-down entries; on HTTP 401/403/429 the failing credential is cooled down (~60s) and the next key/pair is tried before the provider fails over. **Groq and Gemini cooldown is model-scoped** (a 429 on one model does not block the same key for a sibling rotation model); Cloudflare cooldown remains credential-wide. Single-key Vercel setups need no change. Plural vars override singular (they are not merged — no double-counting). Duplicate identical keys in a plural list collapse to one entry. Cooldown is process-local (best-effort on Vercel warm instances; not shared across concurrent serverless isolates).
 
-**Quota vs pool:** the pool spreads load and fails over across accounts; it does **not** raise each account’s hard RPD/TPM/quota. “Quota exceeded” with `pool_size≥2` usually means **every loaded account** hit provider limits (or CF failover also failed) — not that the pool skipped a healthy key. `POST /suggestions` 503 JSON includes `groq_pool_size` / `cf_pool_size` (counts only, no secrets); logs emit the same. Check Groq/Cloudflare dashboards **per key/account** when limits trip.
+**Quota vs pool:** the pool spreads load and fails over across accounts/keys; it does **not** raise each account’s hard RPD/TPM/quota. Gemini free-tier limits are often **per Google Cloud project** (not per API key), so two keys from the same project may share one quota. “Quota exceeded” with `pool_size≥2` usually means **every loaded credential** hit provider limits (or later failover also failed) — not that the pool skipped a healthy key. `POST /suggestions` 503 JSON includes `groq_pool_size` / `cf_pool_size` / `gemini_pool_size` (counts only, no secrets); logs emit the same. Check Groq/Cloudflare/Gemini dashboards **per key/account/project** when limits trip.
 
 WebLLM (client-side) requires no backend configuration — it runs in the browser using WebGPU.
 
-Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commented placeholder in `.env.example`) — not referenced by current backend/frontend code. Google OAuth client secrets belong in the Supabase Auth provider (local `conf/client_secret*.json` is gitignored; never commit). `GEMINI_API_KEY` / `GEMINI_MODEL` are obsolete and must not be set.
+Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commented placeholder in `.env.example`) — not referenced by current backend/frontend code. Google OAuth client secrets belong in the Supabase Auth provider (local `conf/client_secret*.json` is gitignored; never commit).
 
 `backend/.env` and `frontend/.env` both exist as empty (0-byte) files and are git-ignored — they are placeholders, not active config sources.
 
@@ -154,8 +157,8 @@ GitHub repoには3つのEnvironmentが存在:
 
 **不要（削除可能）:**
 - `RENDER_API_KEY`, `RENDER_OWNER_ID` — Render廃止済み
-- `GEMINI_API_KEY`, `GEMINI_MODEL` — AI生成はクライアントサイドWebLLMに移行済み
 - `TF_API_TOKEN` — Terraform削除済み（`terraform/`ディレクトリは削除されました）
+- Note: `GEMINI_API_KEY(S)` / `GEMINI_MODEL` are **active again** as the tertiary cloud provider (Vercel env / `conf/.env`); do **not** put them in GitHub Secrets unless a workflow reads them.
 
 これらの古いシークレットはGitHub Settings → Secrets and variablesから手動で削除可能。
 
@@ -197,7 +200,7 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 - `ENVIRONMENT` — `production` or `development`
 - `NEXT_PUBLIC_API_URL` — empty or `/api` for same-origin monorepo deployment
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase browser client config
-- AI keys — see **AI provider keys on Vercel** below (`GROQ_API_KEYS`, CF plural pairs, singular back-compat)
+- AI keys — see **AI provider keys on Vercel** below (`GROQ_API_KEYS`, CF plural pairs, `GEMINI_API_KEYS`, singular back-compat)
 
 **Render and Terraform infrastructure has been removed**: The Render Web Service and `terraform/` directory have been deleted. All deployment is now via Vercel git integration.
 
@@ -213,6 +216,9 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 | `GROQ_API_KEY` | Singular back-compat (used when plural unset/empty) |
 | `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Preferred. Same-length comma-separated lists, paired by index |
 | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | Singular back-compat |
+| `GEMINI_API_KEYS` | Preferred. Comma-separated Gemini API keys (tertiary failover) |
+| `GEMINI_API_KEY` | Singular back-compat (used when plural unset/empty) |
+| `GEMINI_MODEL` | Optional pin (disables Flash rotation) |
 
 **How to set (CLI or Dashboard):**
 
@@ -221,8 +227,10 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 printf '%s' "$GROQ_API_KEYS" | vercel env add GROQ_API_KEYS production --sensitive -y
 printf '%s' "$CLOUDFLARE_ACCOUNT_IDS" | vercel env add CLOUDFLARE_ACCOUNT_IDS production --sensitive -y
 printf '%s' "$CLOUDFLARE_API_TOKENS" | vercel env add CLOUDFLARE_API_TOKENS production --sensitive -y
+printf '%s' "$GEMINI_API_KEYS" | vercel env add GEMINI_API_KEYS production --sensitive -y
 # Mirror to preview when AI keys are already used on Preview deployments:
 printf '%s' "$GROQ_API_KEYS" | vercel env add GROQ_API_KEYS preview --sensitive -y
+printf '%s' "$GEMINI_API_KEYS" | vercel env add GEMINI_API_KEYS preview --sensitive -y
 # …
 ```
 
@@ -253,16 +261,19 @@ AI correction suggestions use a **hybrid architecture**: cloud APIs by default, 
 User Request → POST /api/suggestions (authenticated)
  ↓
  Groq API (primary, ~1-3s)
- ↓ 429/5xx/timeout
- Cloudflare Workers AI (fallback)
- ↓ both fail
+ ↓ 429/5xx/timeout / unusable content
+ Cloudflare Workers AI (secondary)
+ ↓ fail / unusable content
+ Gemini API (tertiary, free-tier Flash pool)
+ ↓ all fail
  Frontend shows error (toast + failed job) — does NOT auto-start WebLLM
 ```
 
 | Path | Provider | Latency | When Used |
 |------|----------|---------|-----------|
 | **Default** | Groq, model rotation pool (see below), overridable/pinnable via `GROQ_MODEL` | ~1-3s | API keys configured, Groq available |
-| **Failover** | Cloudflare Workers AI | ~2-5s | Both attempted Groq models rate-limited/error/timeout |
+| **Secondary** | Cloudflare Workers AI | ~2-5s | Groq rate-limited/error/timeout or unusable content |
+| **Tertiary** | Gemini (`gemini-3.7-flash` / `gemini-3.6-flash` rotation; pin via `GEMINI_MODEL`) | ~2-8s | Groq and Cloudflare failed or returned unusable content |
 | **Offline** | WebLLM (Mistral 7B) | ~10-30s | **Only** when user enables オフラインモード |
 
 **Groq model rotation (added 2026-08 ahead of `llama-3.3-70b-versatile`'s 2026-08-16 deprecation):** rather than pinning to a single hardcoded model, `backend/app/llm/groq_provider.py` selects a model per request from a curated allow-list (`ALLOWED_GROQ_MODELS`):
@@ -276,7 +287,9 @@ User Request → POST /api/suggestions (authenticated)
 - **In-provider retry**: on a retriable Groq failure (429/5xx/timeout), the provider retries once against a second, different model from the pool (`call_groq_with_rotation()`) before the `suggestions.py` failover chain falls over to Cloudflare — bounding the Groq phase to at most 2 attempts to keep total request latency predictable.
 - **`GROQ_MODEL` override**: if set to a non-empty value, rotation is fully disabled and every request pins to that exact model id, with no in-provider retry — unchanged from prior behavior, useful for debugging or pinning to a specific model.
 - **JSON mode**: Groq requests send `response_format: {"type": "json_object"}` plus `max_tokens: 4096` so long epic corpora do not truncate mid-JSON or drift into prose.
-- **Content salvage**: if Groq returns HTTP-OK but unparseable or non-Chinese `reason`/`overallComment`, `suggestions.py` still tries Cloudflare in the same pass before the outer language/parse retry loop.
+- **Content salvage**: if Groq returns HTTP-OK but unparseable or non-Chinese `reason`/`overallComment`, `suggestions.py` still tries Cloudflare, then Gemini, in the same pass before the outer language/parse retry loop.
+
+**Gemini model rotation (tertiary, free-tier Flash):** `backend/app/llm/gemini_provider.py` uses `ALLOWED_GEMINI_MODELS` (`gemini-3.7-flash`, `gemini-3.6-flash`) selected via `random.sample` with one in-provider retry on retriable failure — same pattern as Groq. Live probes (2026-08) confirmed these IDs on free-tier keys; `gemini-2.5-flash`/`gemini-2.5-pro` 404'd on the same keys. Prefer stable IDs over floating `gemini-flash-latest` (still pin-able via `GEMINI_MODEL`). Calls use Generative Language `generateContent` (v1beta) with `responseMimeType: application/json`.
 - **Excluded from the pool** (and why): `qwen/qwen3.6-27b` (live Chinese-enforcement smoke on CN-source/JP-target corpora frequently returned Japanese explanations or empty bodies despite `reasoning_effort: "none"`; still pin-able via `GROQ_MODEL`), `llama-3.3-70b-versatile` / `llama-3.1-8b-instant` (Groq shutdown date 2026-08-16), `qwen/qwen3-32b` (already deprecated/404s), `openai/gpt-oss-safeguard-20b` (safety/policy-classification tuned), `groq/compound`/`compound-mini` (agentic/tool-use, low RPD), `meta-llama/llama-prompt-guard-2-*` (classifier models), `allam-2-7b` (Arabic-focused, not evaluated for Japanese quality).
 - **Maintenance note**: `ALLOWED_GROQ_MODELS` is a static, manually-reviewed constant — there is no runtime catalog-refresh mechanism. If Groq announces further deprecations, update this list (and this table) as a small follow-up change; do not wait for production errors to surface it.
 
@@ -286,10 +299,11 @@ User Request → POST /api/suggestions (authenticated)
 |--------|---------|
 | `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
 | `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
-| `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare (env-driven) |
+| `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare + Gemini (env-driven) |
 | `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + key-pool retry + in-provider model retry |
 | `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 45s timeout) with response-shape normalize + key-pool retry |
-| `suggestions.py` | Failover chain logic |
+| `gemini_provider.py` | Gemini `generateContent` (v1beta), 45s timeout, JSON mime type, Flash rotation pool (`ALLOWED_GEMINI_MODELS`) + key-pool retry + in-provider model retry |
+| `suggestions.py` | Failover chain logic (Groq → Cloudflare → Gemini) |
 
 ### Environment Variables (Vercel Production)
 
@@ -297,9 +311,11 @@ User Request → POST /api/suggestions (authenticated)
 |----------|----------|---------|
 | `GROQ_API_KEY` or `GROQ_API_KEYS` | Recommended | Primary provider (singular or comma-separated pool). Get from [console.groq.com](https://console.groq.com) → API Keys |
 | `GROQ_MODEL` | Optional | Pins Groq to a single model id, disabling rotation across `ALLOWED_GROQ_MODELS`, without a code change |
-| `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` or parallel `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Optional | Fallback provider (singular pair or equal-length parallel lists). Account ID from Cloudflare dashboard → Overview |
+| `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` or parallel `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Optional | Secondary provider (singular pair or equal-length parallel lists). Account ID from Cloudflare dashboard → Overview |
+| `GEMINI_API_KEY` or `GEMINI_API_KEYS` | Optional | Tertiary provider (singular or comma-separated pool). Get from [Google AI Studio](https://aistudio.google.com/apikey) |
+| `GEMINI_MODEL` | Optional | Pins Gemini to a single model id, disabling rotation across `ALLOWED_GEMINI_MODELS` |
 
-If neither is configured, `/api/suggestions` returns 503 and frontend auto-falls back to WebLLM.
+If none of Groq / Cloudflare / Gemini is configured, `/api/suggestions` returns 503. Frontend does **not** auto-start WebLLM — enable オフラインモード explicitly.
 
 ### Frontend UX
 

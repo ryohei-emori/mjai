@@ -10,10 +10,13 @@ import pytest
 from app.llm.key_pool import (
     DEFAULT_COOLDOWN_SECONDS,
     acquire_cloudflare,
+    acquire_gemini,
     acquire_groq,
     is_cloudflare_configured,
+    is_gemini_configured,
     is_groq_configured,
     load_cloudflare_credentials,
+    load_gemini_credentials,
     load_groq_credentials,
     mark_cooldown,
     redact_secret,
@@ -25,6 +28,7 @@ from app.llm.groq_provider import (
     GroqRateLimitError,
 )
 from app.llm.cloudflare_provider import call_cloudflare, CloudflareRateLimitError
+from app.llm.gemini_provider import call_gemini, GeminiRateLimitError
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +105,36 @@ class TestLoadCloudflare:
         monkeypatch.setenv("CLOUDFLARE_API_TOKENS", "t1")
         assert load_cloudflare_credentials() == []
         assert not is_cloudflare_configured()
+
+
+class TestLoadGemini:
+    def test_singular_back_compat(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEYS", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "gem_only")
+        creds = load_gemini_credentials()
+        assert len(creds) == 1
+        assert creds[0].api_key == "gem_only"
+        assert is_gemini_configured()
+
+    def test_plural_wins_over_singular(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "gem-a,gem-b")
+        monkeypatch.setenv("GEMINI_API_KEY", "gem-ignored")
+        creds = load_gemini_credentials()
+        assert [c.api_key for c in creds] == ["gem-a", "gem-b"]
+
+    def test_ignores_empty_csv_entries(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "gem-a,,gem-b,")
+        assert [c.api_key for c in load_gemini_credentials()] == ["gem-a", "gem-b"]
+
+    def test_dedupes_identical_keys(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "gem-a,gem-a,gem-b")
+        assert [c.api_key for c in load_gemini_credentials()] == ["gem-a", "gem-b"]
+
+    def test_empty_pool(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEYS", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        assert load_gemini_credentials() == []
+        assert not is_gemini_configured()
 
 
 class TestAcquireAndCooldown:
@@ -338,3 +372,67 @@ class TestCloudflareAcquire:
         assert acquire_cloudflare().account_id == "a1"
         assert acquire_cloudflare().account_id == "a2"
         assert acquire_cloudflare().account_id == "a1"
+
+
+class TestGeminiAcquire:
+    def test_acquire_gemini_round_robin(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "g1,g2")
+        assert acquire_gemini().api_key == "g1"
+        assert acquire_gemini().api_key == "g2"
+        assert acquire_gemini().api_key == "g1"
+
+    def test_gemini_cooldown_skips_key(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "g1,g2")
+        first = acquire_gemini(cooldown_scope="gemini-3.7-flash")
+        mark_cooldown(first.id, scope="gemini-3.7-flash")
+        second = acquire_gemini(cooldown_scope="gemini-3.7-flash")
+        assert second.api_key == "g2"
+
+
+@pytest.mark.asyncio
+class TestGeminiProviderKeyFallback:
+    async def test_gemini_retries_next_key_on_429(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-a,key-b")
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
+
+        ok_payload = {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"suggestions":[],"overallComment":"ok"}'}]}}
+            ]
+        }
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = [
+            _FakeResponse(status_code=429, text="rate"),
+            _FakeResponse(status_code=200, payload=ok_payload),
+        ]
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+
+        with patch("app.llm.gemini_provider.httpx.AsyncClient", return_value=mock_client):
+            result = await call_gemini([{"role": "user", "content": "hi"}])
+
+        assert "overallComment" in result
+        assert mock_client.post.call_count == 2
+        keys = [
+            c.kwargs["headers"]["x-goog-api-key"]
+            for c in mock_client.post.call_args_list
+        ]
+        assert keys == ["key-a", "key-b"]
+
+    async def test_gemini_exhausts_pool_raises(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-a,key-b")
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = _FakeResponse(status_code=429, text="rate")
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+
+        with patch("app.llm.gemini_provider.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(GeminiRateLimitError) as exc_info:
+                await call_gemini([{"role": "user", "content": "hi"}])
+
+        assert mock_client.post.call_count == 2
+        assert "pool_size=2" in str(exc_info.value)

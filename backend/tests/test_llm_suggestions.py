@@ -3,10 +3,10 @@ Tests for backend/app/llm/suggestions.py with mock providers.
 
 Note: suggestions.py calls call_groq_with_rotation() (not call_groq()
 directly) so that in-provider model rotation/retry across the Groq pool
-happens before falling back to Cloudflare. Tests here mock
-call_groq_with_rotation to exercise the Groq-vs-Cloudflare failover chain
-without needing to also mock the rotation internals (those are covered by
-backend/tests/test_groq_provider.py).
+happens before falling back to Cloudflare, then Gemini. Tests here mock
+call_groq_with_rotation / call_cloudflare / call_gemini_with_rotation to
+exercise the failover chain without needing to also mock the rotation
+internals (those are covered by provider unit tests).
 """
 
 import pytest
@@ -19,6 +19,7 @@ from app.llm.suggestions import (
 )
 from app.llm.groq_provider import GroqError, GroqRateLimitError, GroqServerError, GroqTimeoutError
 from app.llm.cloudflare_provider import CloudflareError
+from app.llm.gemini_provider import GeminiError, GeminiRateLimitError
 
 
 # overallComment/reason ("コメント"/"全体講評") are intentionally pure
@@ -27,6 +28,8 @@ from app.llm.cloudflare_provider import CloudflareError
 # and doesn't spuriously trigger the language-check retry axis in tests
 # that don't care about it. "箇所" (-> original) legitimately stays Japanese.
 VALID_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "修正建议内容"}], "全体講評": "整体质量良好"}'''
+UNPARSEABLE_LLM_RESPONSE = "I'm sorry, I cannot help with that request."
+NON_CHINESE_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "これは日本語のコメントです"}], "全体講評": "全体的に良いです"}'''
 
 
 class TestAreProvidersConfigured:
@@ -49,6 +52,10 @@ class TestAreProvidersConfigured:
     def test_none_configured(self):
         with patch.dict('os.environ', {}, clear=True):
             assert are_providers_configured() is False
+
+    def test_gemini_only(self):
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'gem-key'}, clear=True):
+            assert are_providers_configured() is True
 
 
 @pytest.mark.asyncio
@@ -168,7 +175,7 @@ class TestGenerateSuggestionsGroqFailCFSuccess:
 @pytest.mark.asyncio
 class TestGenerateSuggestionsBothFail:
     async def test_both_fail_raises_suggestions_error(self):
-        """Both Groq and Cloudflare fail -> SuggestionsError."""
+        """Groq and Cloudflare fail, Gemini unconfigured -> SuggestionsError."""
         with patch.dict('os.environ', {
             'GROQ_API_KEY': 'test-key',
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
@@ -184,6 +191,7 @@ class TestGenerateSuggestionsBothFail:
                     
                     assert exc_info.value.groq_error is not None
                     assert exc_info.value.cf_error is not None
+                    assert exc_info.value.gemini_pool_size == 0
     
     async def test_groq_only_fails_raises_suggestions_error(self):
         """Only Groq configured and fails -> SuggestionsError."""
@@ -193,6 +201,30 @@ class TestGenerateSuggestionsBothFail:
                 
                 with pytest.raises(SuggestionsError):
                     await generate_suggestions("原文", "訳文")
+
+    async def test_all_three_fail_includes_gemini_pool_size(self):
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok',
+            'GEMINI_API_KEYS': 'gem-a,gem-b',
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    with patch(
+                        'app.llm.suggestions.call_gemini_with_rotation',
+                        new_callable=AsyncMock,
+                    ) as mock_gem:
+                        mock_groq.side_effect = GroqRateLimitError("Rate limit", status_code=429)
+                        mock_cf.side_effect = CloudflareError("CF error")
+                        mock_gem.side_effect = GeminiRateLimitError("Gemini 429", status_code=429)
+
+                        with pytest.raises(SuggestionsError) as exc_info:
+                            await generate_suggestions("原文", "訳文")
+
+                        assert exc_info.value.gemini_error is not None
+                        assert exc_info.value.gemini_pool_size == 2
+                        assert exc_info.value.rate_limited is True
 
 
 @pytest.mark.asyncio
@@ -221,8 +253,62 @@ class TestGenerateSuggestionsCloudflareOnly:
                 mock_cf.assert_called_once()
 
 
-UNPARSEABLE_LLM_RESPONSE = "I'm sorry, I cannot help with that request."
-NON_CHINESE_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "これは日本語のコメントです"}], "全体講評": "全体的に良いです"}'''
+@pytest.mark.asyncio
+class TestGenerateSuggestionsGeminiFailover:
+    async def test_groq_and_cf_fail_gemini_succeeds(self):
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok',
+            'GEMINI_API_KEY': 'gem-key',
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    with patch(
+                        'app.llm.suggestions.call_gemini_with_rotation',
+                        new_callable=AsyncMock,
+                    ) as mock_gem:
+                        mock_groq.side_effect = GroqRateLimitError("Rate limit", status_code=429)
+                        mock_cf.side_effect = CloudflareError("CF error")
+                        mock_gem.return_value = VALID_LLM_RESPONSE
+
+                        result = await generate_suggestions("原文", "訳文")
+
+                        assert len(result["suggestions"]) == 1
+                        mock_gem.assert_called_once()
+
+    async def test_gemini_only_success(self):
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'gem-key'}, clear=True):
+            with patch(
+                'app.llm.suggestions.call_gemini_with_rotation',
+                new_callable=AsyncMock,
+            ) as mock_gem:
+                mock_gem.return_value = VALID_LLM_RESPONSE
+                result = await generate_suggestions("原文", "訳文")
+                assert len(result["suggestions"]) == 1
+                mock_gem.assert_called_once()
+
+    async def test_unusable_groq_and_cf_salvaged_by_gemini(self):
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok',
+            'GEMINI_API_KEY': 'gem-key',
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    with patch(
+                        'app.llm.suggestions.call_gemini_with_rotation',
+                        new_callable=AsyncMock,
+                    ) as mock_gem:
+                        mock_groq.return_value = NON_CHINESE_LLM_RESPONSE
+                        mock_cf.return_value = UNPARSEABLE_LLM_RESPONSE
+                        mock_gem.return_value = VALID_LLM_RESPONSE
+
+                        result = await generate_suggestions("原文", "訳文")
+
+                        assert result["suggestions"][0]["reason"] == "修正建议内容"
+                        mock_gem.assert_called_once()
 
 
 @pytest.mark.asyncio

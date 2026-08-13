@@ -1,6 +1,6 @@
 """
 AI suggestions generation with provider failover.
-Groq (primary) -> Cloudflare Workers AI (fallback).
+Groq (primary) -> Cloudflare Workers AI (secondary) -> Gemini (tertiary).
 
 Two independent, composable retry axes exist across this module and its
 providers:
@@ -8,8 +8,9 @@ providers:
 1. Network-level retry (existing, unaffected by this module's own retry
    loop): `groq_provider.call_groq_with_rotation()` retries once against a
    second Groq model on a retriable HTTP failure (429/5xx/timeout) before
-   this module falls over to Cloudflare. This axis handles *transport*
-   failures — the provider never returned usable content.
+   this module falls over to Cloudflare, then Gemini. Gemini has its own
+   in-provider model rotation. This axis handles *transport* failures —
+   the provider never returned usable content.
 
 2. Content-quality-level retry (`MAX_PARSE_RETRY_ATTEMPTS` below): a
    provider call can succeed at the network level yet return content that
@@ -22,22 +23,20 @@ providers:
      or misused Japanese corner brackets 「」 wrapping Chinese prose
      (`parser.has_japanese_corner_quotes_in_critique`; JP TARGET cites OK).
    Within a single pass, if Groq returns either failure mode, this module
-   still tries Cloudflare once before returning (same-pass salvage), so a
-   usable CF response can rescue a Japanese/unparseable Groq body without
-   burning the outer retry budget. When both providers in a pass still fail
-   the content checks, `generate_suggestions()` retries the *entire*
-   Groq-then-Cloudflare pass up to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing
+   still tries Cloudflare, then Gemini, before returning (same-pass salvage),
+   so a usable later response can rescue a Japanese/unparseable earlier body
+   without burning the outer retry budget. When all providers in a pass still
+   fail the content checks, `generate_suggestions()` retries the *entire*
+   Groq→Cloudflare→Gemini pass up to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing
    one attempt budget across both conditions, before giving up and returning
    the last result as-is. A genuine network-level failure (`SuggestionsError`,
-   raised when both providers fail at the HTTP layer even after their own
+   raised when all providers fail at the HTTP layer even after their own
    retries) is NOT retried by this axis and propagates immediately.
 
 Worst case total LLM calls for axis 2, per `generate_suggestions()` call:
-`MAX_PARSE_RETRY_ATTEMPTS` passes * (up to 2 Groq attempts via rotation,
-plus 1 Cloudflare attempt) = up to 12 calls when every pass needs CF.
-In practice most passes succeed on the first provider, so this bound is a
-deliberate trade-off favoring eventual Chinese/JSON success over a strict
-latency guarantee for the rare failure case.
+`MAX_PARSE_RETRY_ATTEMPTS` passes * (up to 2 Groq + 1 Cloudflare + up to 2
+Gemini attempts) — a deliberate trade-off favoring eventual Chinese/JSON
+success over a strict latency guarantee for the rare failure case.
 """
 
 from __future__ import annotations
@@ -53,7 +52,11 @@ from .parser import (
     has_japanese_corner_quotes_in_critique,
     ParsedResponse,
 )
-from .key_pool import load_cloudflare_credentials, load_groq_credentials
+from .key_pool import (
+    load_cloudflare_credentials,
+    load_gemini_credentials,
+    load_groq_credentials,
+)
 from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
@@ -67,6 +70,14 @@ from .cloudflare_provider import (
     call_cloudflare,
     get_cloudflare_credentials,
     CloudflareError,
+)
+from .gemini_provider import (
+    call_gemini_with_rotation,
+    get_gemini_api_key,
+    GeminiError,
+    GeminiRateLimitError,
+    GeminiServerError,
+    GeminiTimeoutError,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,17 +115,21 @@ class SuggestionsError(Exception):
         message: str,
         groq_error: Optional[str] = None,
         cf_error: Optional[str] = None,
+        gemini_error: Optional[str] = None,
         *,
         rate_limited: bool = False,
         groq_pool_size: int = 0,
         cf_pool_size: int = 0,
+        gemini_pool_size: int = 0,
     ):
         super().__init__(message)
         self.groq_error = groq_error
         self.cf_error = cf_error
+        self.gemini_error = gemini_error
         self.rate_limited = rate_limited
         self.groq_pool_size = groq_pool_size
         self.cf_pool_size = cf_pool_size
+        self.gemini_pool_size = gemini_pool_size
 
 
 class NoProvidersConfiguredError(SuggestionsError):
@@ -142,7 +157,8 @@ def are_providers_configured() -> bool:
     """Check if at least one provider is configured."""
     groq_key = get_groq_api_key()
     cf_account, cf_token = get_cloudflare_credentials()
-    return bool(groq_key) or (bool(cf_account) and bool(cf_token))
+    gemini_key = get_gemini_api_key()
+    return bool(groq_key) or (bool(cf_account) and bool(cf_token)) or bool(gemini_key)
 
 
 def _content_usable(result: ParsedResponse) -> bool:
@@ -156,11 +172,22 @@ def _content_usable(result: ParsedResponse) -> bool:
     return True
 
 
+def _prefer_result(
+    primary: Optional[ParsedResponse],
+    secondary: ParsedResponse,
+) -> ParsedResponse:
+    """Prefer a non-parse-failure body when choosing among soft failures."""
+    if primary is None:
+        return secondary
+    if is_json_extraction_failure(secondary) and not is_json_extraction_failure(primary):
+        return primary
+    return secondary
+
+
 async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
     """
-    Single generate+parse pass: try Groq (with its own in-provider model
-    rotation/retry), fall back to Cloudflare on network failure *or* when
-    Groq's body is empty / unparseable / non-Chinese (same-pass salvage).
+    Single generate+parse pass: Groq → Cloudflare → Gemini on network
+    failure *or* unusable content (same-pass salvage).
 
     May return a ParsedResponse that is itself a parse failure or still
     non-Chinese — the outer retry loop in `generate_suggestions()` decides
@@ -172,13 +199,16 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
     """
     groq_error: Optional[str] = None
     cf_error: Optional[str] = None
-    groq_result: Optional[ParsedResponse] = None
+    gemini_error: Optional[str] = None
+    best_soft: Optional[ParsedResponse] = None
     groq_pool_size = len(load_groq_credentials())
     cf_pool_size = len(load_cloudflare_credentials())
+    gemini_pool_size = len(load_gemini_credentials())
     logger.info(
-        "LLM credential pools: groq_pool_size=%s cf_pool_size=%s",
+        "LLM credential pools: groq_pool_size=%s cf_pool_size=%s gemini_pool_size=%s",
         groq_pool_size,
         cf_pool_size,
+        gemini_pool_size,
     )
 
     groq_key = get_groq_api_key()
@@ -213,6 +243,7 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
                     f"Groq content unusable ({reason}); trying Cloudflare salvage"
                 )
                 groq_error = f"Groq content unusable: {reason}"
+                best_soft = groq_result
         except (
             GroqRateLimitError,
             GroqServerError,
@@ -227,7 +258,7 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
     else:
         logger.info("Groq not configured, trying Cloudflare directly")
         groq_error = "Groq API key not configured"
-    
+
     cf_account, cf_token = get_cloudflare_credentials()
     if cf_account and cf_token:
         try:
@@ -241,35 +272,67 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
                     f"Parsed result: {len(cf_result['suggestions'])} suggestions"
                 )
                 return cf_result
-            # Prefer CF body over Groq when Groq was also unusable but CF at
-            # least parsed — or keep whichever is less broken for the outer
-            # retry (prefer non-parse-failure over parse-failure).
-            if groq_result is not None:
-                if is_json_extraction_failure(cf_result) and not is_json_extraction_failure(
-                    groq_result
-                ):
-                    logger.warning(
-                        "Cloudflare also unusable; returning prior Groq parse result"
-                    )
-                    return groq_result
             logger.warning(
-                "Cloudflare content unusable; returning CF result for outer retry"
+                "Cloudflare content unusable; trying Gemini salvage"
             )
-            return cf_result
+            cf_error = "Cloudflare content unusable"
+            best_soft = _prefer_result(best_soft, cf_result)
         except CloudflareError as e:
-            logger.error(f"Cloudflare also failed: {e}")
+            logger.error(f"Cloudflare failed: {e}")
             cf_error = str(e)
-            if groq_result is not None:
-                # Network CF failure after a soft-failed Groq body: surface
-                # Groq's parse/language result so the outer retry can nudge.
-                return groq_result
     else:
         cf_error = "Cloudflare credentials not configured"
-        if groq_result is not None:
-            return groq_result
-    
-    rate_limited = _error_looks_rate_limited(groq_error) or _error_looks_rate_limited(
-        cf_error
+
+    gemini_key = get_gemini_api_key()
+    if gemini_key:
+        try:
+            logger.info("Attempting Gemini inference...")
+            raw_output = await call_gemini_with_rotation(messages)
+            if not (raw_output or "").strip():
+                logger.warning("Gemini returned empty content")
+                gemini_error = "Gemini returned empty content"
+            else:
+                logger.info(
+                    f"Gemini inference successful, raw output length: {len(raw_output)}"
+                )
+                logger.debug(f"Gemini raw output: {raw_output[:500]}...")
+                gemini_result = parse_model_output(raw_output)
+                if _content_usable(gemini_result):
+                    logger.info(
+                        f"Parsed result: {len(gemini_result['suggestions'])} suggestions"
+                    )
+                    return gemini_result
+                reason = (
+                    "JSON parse failure"
+                    if is_json_extraction_failure(gemini_result)
+                    else "non-Chinese reason/overallComment"
+                )
+                logger.warning(
+                    f"Gemini content unusable ({reason}); returning best soft result"
+                )
+                gemini_error = f"Gemini content unusable: {reason}"
+                return _prefer_result(best_soft, gemini_result)
+        except (
+            GeminiRateLimitError,
+            GeminiServerError,
+            GeminiTimeoutError,
+        ) as e:
+            logger.warning(f"Gemini failed with retriable error: {e}")
+            gemini_error = str(e)
+        except GeminiError as e:
+            logger.error(f"Gemini failed with non-retriable error: {e}")
+            gemini_error = str(e)
+    else:
+        gemini_error = "Gemini API key not configured"
+
+    if best_soft is not None:
+        # Soft bodies from earlier providers: let outer retry nudge language/JSON.
+        return best_soft
+
+    rate_limited = (
+        _error_looks_rate_limited(groq_error)
+        or _error_looks_rate_limited(cf_error)
+        or _error_looks_rate_limited(gemini_error)
     )
     message = (
         "All LLM providers rate-limited or quota exhausted"
@@ -280,26 +343,27 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
         message,
         groq_error=groq_error,
         cf_error=cf_error,
+        gemini_error=gemini_error,
         rate_limited=rate_limited,
         groq_pool_size=groq_pool_size,
         cf_pool_size=cf_pool_size,
+        gemini_pool_size=gemini_pool_size,
     )
 
 
 async def generate_suggestions(original_text: str, target_text: str) -> ParsedResponse:
     """
     Generate AI correction suggestions for the given text.
-    
-    Tries Groq first (with in-provider model rotation and one retry across
-    a different Groq model on a retriable failure), falls back to
-    Cloudflare on failure or unusable Groq content. If a pass still fails
+
+    Tries Groq first (with in-provider model rotation), then Cloudflare,
+    then Gemini on failure or unusable content. If a pass still fails
     JSON parse or the Chinese-language content check, the whole pass is
     retried up to `MAX_PARSE_RETRY_ATTEMPTS` times before giving up.
-    
+
     Args:
         original_text: The original Japanese text.
         target_text: The target/translated text to correct.
-        
+
     Returns:
         ParsedResponse with suggestions and overall comment. May be the
         parse-failure placeholder response if every attempt failed to
@@ -307,15 +371,16 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
         last-attempted result even if it still fails the Chinese-language
         check (see `parser.has_non_chinese_reason`) — either way this
         degrades gracefully rather than raising.
-        
+
     Raises:
         NoProvidersConfiguredError: If no providers are configured.
         SuggestionsError: If all providers fail at the network level.
     """
     if not are_providers_configured():
         raise NoProvidersConfiguredError(
-            "No LLM providers configured. Set GROQ_API_KEY(S) or "
-            "CLOUDFLARE_ACCOUNT_ID(S) + CLOUDFLARE_API_TOKEN(S)."
+            "No LLM providers configured. Set GROQ_API_KEY(S), "
+            "CLOUDFLARE_ACCOUNT_ID(S) + CLOUDFLARE_API_TOKEN(S), "
+            "or GEMINI_API_KEY(S)."
         )
 
     base_messages = build_messages(original_text, target_text)
