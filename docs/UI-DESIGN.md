@@ -206,13 +206,14 @@ Fixed header with navigation tabs and user controls.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ MJAI  │ Sessions │ Dashboard │ Archive │  [+ New]  🔔 ⚙ 👤 🚪 │
+│ ☰ MJAI │ Sessions │ Dashboard │ Archive │ [+ New]  🔔 ⚙ 👤 🚪 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - Height: 64px (`h-16`)
 - Background: `bg-surface`
 - Border: `border-b border-outline-variant`
+- Leftmost: session pane trigger (`☰`) — see "Session pane: docked ⇄ floating"
 - Logo: "MJAI" text wordmark only (no icon)
 - Nav tabs: `Sessions` (active), `Dashboard`, `Archive` (Coming Soon)
 - Right side: New Session button, notification bell, settings (disabled), avatar, logout
@@ -221,7 +222,7 @@ Fixed header with navigation tabs and user controls.
 
 ### Three-Pane Layout
 
-Desktop layout below TopAppBar. Right pane is user-resizable.
+Desktop layout below TopAppBar. Right pane is user-resizable; the left pane can be docked or floated.
 
 ```
 ┌───────────────┬─────────────────────────┼─────────────────┐
@@ -245,10 +246,35 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 └───────────────┴─────────────────────────┴─────────────────┘
 ```
 
-- Left pane: `w-72` (288px) fixed width, session list with search
+- Left pane: `w-72` (288px) fixed width, session list with search — **docked or floating**, see below
 - Center pane: `flex-1`, SOURCE TEXT + EXEMPLAR TEXT + TARGET TEXT cards (English-primary bilingual headers)
 - Right pane: Default `448px`, resizable (drag handle between center and right panes, persisted to localStorage)
 - Section headers: `text-label-caps` uppercase style, English primary with Japanese in parentheses
+
+#### Session pane: docked ⇄ floating
+
+The session list is either **docked** (the `w-72` column above) or **floating** (an overlay `Sheet`, with the column removed from the layout so the center pane absorbs its full 288px). This exists so the two panes where work actually happens are not permanently squeezed by chrome the user only touches when switching sessions (OpenSpec change `floating-session-pane-and-collapsible-panels`).
+
+```
+docked (lg+)                          floating (any width)
+┌──────┬─────────┬────────┐           ┌────────────────┬────────┐
+│ ☰ …  │         │        │           │ ☰ …            │        │
+├──────┼─────────┼────────┤    ☰ →    ├────────────────┼────────┤
+│ Sess │ Editor  │ Queue  │    ← ⊐    │ Editor (wider) │ Queue  │
+│ list │         │ + AI   │           │                │ + AI   │
+└──────┴─────────┴────────┘           └────────────────┴────────┘
+```
+
+| Control | Placement | Behavior |
+|---|---|---|
+| Session pane trigger | **Leftmost item in the TopAppBar**, before the `MJAI` wordmark. Same icon-button pattern as the bell / logout (`p-2 rounded-full hover:bg-surface-container`, `md-24 text-on-surface-variant`), plus `focus-visible:ring-2 focus-visible:ring-md3-primary` | `menu` / `menu_open` glyph. Docked → floats the pane (widening the work area). Floating → opens/closes the overlay. State-specific `aria-label`; `aria-expanded` is true whenever the list is visible |
+| Dock button | Inside the floating panel header, left of the Sheet's close `X` (`lg`+ only) | `dock_to_left` at `md-20`. Returns the list to the docked column and closes the overlay |
+
+- **Modality**: the floating panel is the existing `Sheet` (Radix Dialog), so backdrop click, `Escape`, focus trapping, and focus restore to the trigger come for free. Selecting a session closes it.
+- **`docked` is clamped to `lg`+**: below `lg` the pane always renders floating, without overwriting a stored `docked` preference — widening the window restores docking.
+- **Persistence**: `mjai-session-pane-mode` (`"docked"` / `"floating"`) in `localStorage`, same flat `mjai-…` naming as `mjai-right-pane-width`. First visit defaults by viewport (docked at `lg`+, floating below). Unreadable or malformed values fall back to that default. Read in a mount effect, never during render, so SSR and first client render agree.
+- The docked column and the floating panel render from **one shared list renderer** in `page.tsx` — previously the same markup was duplicated in both places.
+- The former `fixed bottom-4 left-4` mobile-only menu FAB is gone; the TopAppBar trigger replaces it at every width.
 
 ### Exemplar Text Card (optional)
 
@@ -258,7 +284,24 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 - Header carries an inline `任意` marker in `text-metadata` at `text-on-surface-variant/70`, so "optional" reads from the header rather than from a tooltip.
 - Plain `Textarea` at `min-h-[140px]` (shorter than SOURCE's 180px and TARGET's 200px, since it is supplementary). Deliberately **not** `HighlightedTextarea`: suggestion spans only ever point at SOURCE and TARGET excerpts.
 - Never gates the generate button — that stays governed by non-blank SOURCE + TARGET.
-- Lives in its own component file because it is slated to become collapsible; a collapse wrapper goes around the component rather than into `page.tsx`.
+
+**Collapsible, collapsed by default.** The exemplar is fixed per exercise and rarely needs re-reading, so a permanently expanded textarea only pushed TARGET TEXT and the generate button down the center pane.
+
+```
+collapsed                                        expanded
+┌──────────────────────────────────────────┐     ┌──────────────────────────┐
+│ ⌄ EXEMPLAR TEXT (模範回答訳文) 任意        │     │ ⌃ EXEMPLAR TEXT … 任意 📋│
+│   [入力あり] 15文字                    📋 │     │ ┌──────────────────────┐ │
+└──────────────────────────────────────────┘     │ │ (textarea)           │ │
+                                                 │ └──────────────────────┘ │
+                                                 └──────────────────────────┘
+```
+
+- **Disclosure control**: the header row is a `button` with `aria-expanded` and `aria-controls`, carrying an `expand_more` glyph at `md-18` that flips via the existing `transition-transform` + `rotate-180`. The copy button stays **outside** that button so it remains independently clickable while collapsed.
+- **No height animation**: the textarea is conditionally rendered, not CSS-hidden — matching every other disclosure in this codebase (`showCustomForm`, the bell panel) and keeping the field out of the tab order while collapsed. There is no collapse-transition token in this document to draw on.
+- **Content indicator**: when collapsed and non-blank, the header shows a `入力あり` `Badge` in the existing `bg-session-complete text-white` pair plus a character count in `text-metadata text-on-surface-variant`, so entered text is never silently hidden. Both disappear when expanded, where the text speaks for itself.
+- **Padding**: `CardHeader` keeps its `pb-3` override only while expanded; collapsed it falls back to the default symmetric `p-6`.
+- **Persistence**: `mjai-exemplar-card-open` (`"1"` / `"0"`) in `localStorage`. Anything else, including unreadable storage, reads as collapsed. Collapsing never touches the value, its per-session draft persistence, or its inclusion in generation.
 
 ### Session Card
 
@@ -368,7 +411,8 @@ CSS animation triggered when a job **completes** (transitions to `completed` / b
 At breakpoints below `lg` (1024px):
 
 - TopAppBar remains visible
-- Left pane (session list) becomes a slide-out Sheet (triggered by menu button)
+- Left pane (session list) is always the floating slide-out Sheet — the docked column is `lg`+ only. The Sheet itself is **not** mobile-only any more; it is the floating presentation at every width (see "Session pane: docked ⇄ floating")
+- The Sheet's dock button is hidden below `lg`, since there is nothing to dock to
 - Center and right panes stack vertically
 - New Session button becomes icon-only
 

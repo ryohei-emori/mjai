@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -41,6 +41,18 @@ import {
   sortCompletedJobsNewestFirst,
   sortJobsByRelevance,
 } from "@/lib/jobQueue/ordering"
+import {
+  dockSessionPaneState,
+  isPaneDocked,
+  LG_BREAKPOINT_PX,
+  loadExemplarCardOpen,
+  loadSessionPaneMode,
+  saveExemplarCardOpen,
+  saveSessionPaneMode,
+  toggleSessionPaneState,
+  type SessionPaneMode,
+  type SessionPaneState,
+} from "@/lib/uiPreferences"
 import type { EngineStatus } from "@/lib/webllm/types"
 
 /** Lazy-load WebLLM engine only for offline mode or intentional API fallback. */
@@ -397,6 +409,9 @@ export default function TextCorrectionApp() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  // SSR安全な初期値。実際の保存済み設定はマウント後のeffectで反映する。
+  const [sessionPaneMode, setSessionPaneMode] = useState<SessionPaneMode>('floating')
+  const [isExemplarCardOpen, setIsExemplarCardOpen] = useState(false)
   const [customCorrection, setCustomCorrection] = useState({ original: "", reason: "" })
   const [showCustomForm, setShowCustomForm] = useState(false)
   const [selectionCounter, setSelectionCounter] = useState(0)
@@ -462,13 +477,48 @@ export default function TextCorrectionApp() {
           setRightPaneWidth(width)
         }
       }
-      
+
+      setSessionPaneMode(loadSessionPaneMode())
+      setIsExemplarCardOpen(loadExemplarCardOpen())
+
       // Detect screen size
-      const checkScreenSize = () => setIsLgScreen(window.innerWidth >= 1024)
+      const checkScreenSize = () => setIsLgScreen(window.innerWidth >= LG_BREAKPOINT_PX)
       checkScreenSize()
       window.addEventListener('resize', checkScreenSize)
       return () => window.removeEventListener('resize', checkScreenSize)
     }
+  }, [])
+
+  // 実効的な提示形態。狭い画面へリサイズしても保存済みの `docked` 設定は
+  // 上書きせず、広げ直せばドッキング表示に戻る。
+  const isSessionPaneDocked = isPaneDocked(
+    { mode: sessionPaneMode, overlayOpen: sidebarOpen },
+    isLgScreen,
+  )
+
+  // 遷移そのものは uiPreferences 側の純粋関数が持つ（テスト可能にするため）。
+  // ここではその結果を state と localStorage へ反映するだけ。
+  const applySessionPaneState = useCallback((next: SessionPaneState) => {
+    setSessionPaneMode((prev) => {
+      if (prev !== next.mode) saveSessionPaneMode(next.mode)
+      return next.mode
+    })
+    setSidebarOpen(next.overlayOpen)
+  }, [])
+
+  const toggleSessionPane = useCallback(() => {
+    applySessionPaneState(
+      toggleSessionPaneState({ mode: sessionPaneMode, overlayOpen: sidebarOpen }, isLgScreen),
+    )
+  }, [applySessionPaneState, sessionPaneMode, sidebarOpen, isLgScreen])
+
+  const dockSessionPane = useCallback(() => {
+    applySessionPaneState(dockSessionPaneState())
+  }, [applySessionPaneState])
+
+  const handleExemplarCardOpenChange = useCallback((open: boolean) => {
+    setIsExemplarCardOpen(open)
+    saveExemplarCardOpen(open)
   }, [])
 
   // Right pane resize handlers
@@ -1960,6 +2010,78 @@ export default function TextCorrectionApp() {
     s.name.toLowerCase().includes(sessionSearch.toLowerCase())
   )
 
+  // ドッキング表示のカラムとフローティングのオーバーレイは同じ一覧を出す。
+  // 以前は同一のJSXが2箇所に複製されており、片方だけ変更されるドリフトの
+  // 原因になっていたため、1つの描画ヘルパーに統合している
+  // （floating-session-pane-and-collapsible-panels design.md Decision 2）。
+  // handleSessionSwitch 自身が sidebarOpen を閉じるので、選択時にオーバーレイは
+  // 自動的に閉じる。
+  const sessionListItems = (
+    <div className="space-y-2">
+      {filteredSessions.map((s) => (
+        <div
+          key={s.id}
+          className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
+            currentSessionId === s.id
+              ? "bg-primary-container border-md3-primary"
+              : "border-outline-variant hover:bg-surface-container"
+          }`}
+          onClick={() => handleSessionSwitch(s.id)}
+        >
+          <div className="flex items-start justify-between">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
+                <h3 className="font-semibold text-body-sm text-on-surface truncate">{s.name}</h3>
+              </div>
+              <div className="flex items-center gap-2 mt-1 ml-6">
+                <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
+                <span className="text-metadata text-on-surface-variant">{s.createdAt.toLocaleDateString()}</span>
+              </div>
+              <div className="mt-2 ml-6">
+                <Badge
+                  className={`text-xs font-medium ${
+                    s.correctionCount > 0
+                      ? 'bg-session-complete text-white'
+                      : 'bg-session-empty text-white'
+                  }`}
+                >
+                  {s.correctionCount > 0 ? `${s.correctionCount} Saved` : 'Draft'}
+                </Badge>
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation()
+                deleteSession(s.id)
+              }}
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
+            >
+              <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
+            </Button>
+          </div>
+        </div>
+      ))}
+      {filteredSessions.length === 0 && (
+        <div className="text-center py-8 text-on-surface-variant">
+          <span className="material-symbols-outlined md-36 mx-auto mb-2 opacity-50">description</span>
+          <p className="text-body-sm">セッションがありません</p>
+        </div>
+      )}
+    </div>
+  )
+
+  const sessionSearchInput = (
+    <Input
+      placeholder="セッションを検索..."
+      value={sessionSearch}
+      onChange={(e) => setSessionSearch(e.target.value)}
+      className="bg-surface-container border-outline-variant"
+    />
+  )
+
   // Job Queue panel: in-flight work
   const activeJobCount = jobQueue.filter(j => j.status === 'processing' || j.status === 'queued').length
   // Job Queue横スライドの並び順。実行中 → 待機中 → 完了 → 失敗、各グループ内は
@@ -2047,6 +2169,34 @@ export default function TextCorrectionApp() {
     <div className="h-screen flex flex-col bg-surface-container-low">
       {/* TopAppBar */}
       <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
+        {/* Session pane trigger — 全ブレークポイントで常に見えるので一覧が
+            迷子にならない。ドッキング中に押すとカラムをたたんで作業領域を
+            広げ、フローティング中はオーバーレイを開閉する。 */}
+        <button
+          type="button"
+          onClick={toggleSessionPane}
+          className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary"
+          title={
+            isSessionPaneDocked
+              ? 'セッション一覧をたたむ'
+              : sidebarOpen
+                ? 'セッション一覧を閉じる'
+                : 'セッション一覧を開く'
+          }
+          aria-label={
+            isSessionPaneDocked
+              ? 'セッション一覧をたたむ'
+              : sidebarOpen
+                ? 'セッション一覧を閉じる'
+                : 'セッション一覧を開く'
+          }
+          aria-expanded={isSessionPaneDocked || sidebarOpen}
+        >
+          <span className="material-symbols-outlined md-24 text-on-surface-variant">
+            {sidebarOpen ? 'menu_open' : 'menu'}
+          </span>
+        </button>
+
         {/* Logo/Title - Text wordmark only, no icon */}
         <h1 className="text-headline-lg text-on-surface">MJAI</h1>
 
@@ -2215,87 +2365,32 @@ export default function TextCorrectionApp() {
         </div>
       </header>
 
-      {/* Mobile Session Sheet */}
+      {/* Floating Session Panel — 全ブレークポイント共通。Radix Dialog由来の
+          Sheetがバックドロップ・Esc・フォーカストラップ・トリガーへの
+          フォーカス復帰を提供する（design.md Decision 2）。 */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            className="fixed bottom-4 left-4 z-50 lg:hidden bg-surface shadow-md border-outline-variant"
-          >
-            <span className="material-symbols-outlined md-18">menu</span>
-          </Button>
-        </SheetTrigger>
         <SheetContent side="left" className="w-80 p-0 bg-surface">
-          <SheetHeader className="p-4 border-b border-outline-variant">
-            <SheetTitle className="text-headline-md text-on-surface">セッション</SheetTitle>
+          <SheetHeader className="p-4 pr-12 border-b border-outline-variant">
+            <div className="flex items-center justify-between gap-2">
+              <SheetTitle className="text-headline-md text-on-surface">セッション</SheetTitle>
+              {isLgScreen && (
+                <button
+                  type="button"
+                  onClick={dockSessionPane}
+                  className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary"
+                  title="セッション一覧を左に固定する"
+                  aria-label="セッション一覧を左に固定する"
+                >
+                  <span className="material-symbols-outlined md-20 text-on-surface-variant">
+                    dock_to_left
+                  </span>
+                </button>
+              )}
+            </div>
           </SheetHeader>
           <div className="p-4">
-            <Input
-              placeholder="セッションを検索..."
-              value={sessionSearch}
-              onChange={(e) => setSessionSearch(e.target.value)}
-              className="mb-4 bg-surface-container border-outline-variant"
-            />
-            <ScrollArea className="h-[calc(100vh-12rem)]">
-              <div className="space-y-2">
-                {filteredSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
-                      currentSessionId === s.id
-                        ? "bg-primary-container border-md3-primary"
-                        : "border-outline-variant hover:bg-surface-container"
-                    }`}
-                    onClick={() => {
-                      handleSessionSwitch(s.id)
-                      setSidebarOpen(false)
-                    }}
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
-                          <h3 className="font-semibold text-body-sm text-on-surface truncate">{s.name}</h3>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 ml-6">
-                          <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
-                          <span className="text-metadata text-on-surface-variant">{s.createdAt.toLocaleDateString()}</span>
-                        </div>
-                        <div className="mt-2 ml-6">
-                          <Badge
-                            className={`text-xs font-medium ${
-                              s.correctionCount > 0
-                                ? 'bg-session-complete text-white'
-                                : 'bg-session-empty text-white'
-                            }`}
-                          >
-                            {s.correctionCount > 0 ? `${s.correctionCount} Saved` : 'Draft'}
-                          </Badge>
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          deleteSession(s.id)
-                        }}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
-                      >
-                        <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-                {filteredSessions.length === 0 && (
-                  <div className="text-center py-8 text-on-surface-variant">
-                    <span className="material-symbols-outlined md-36 mx-auto mb-2 opacity-50">description</span>
-                    <p className="text-body-sm">セッションがありません</p>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
+            <div className="mb-4">{sessionSearchInput}</div>
+            <ScrollArea className="h-[calc(100vh-12rem)]">{sessionListItems}</ScrollArea>
           </div>
         </SheetContent>
       </Sheet>
@@ -2305,73 +2400,18 @@ export default function TextCorrectionApp() {
       {activeNav === 'archive' && <ComingSoonPlaceholder title="Archive" />}
       {activeNav === 'sessions' && (
         <div className="flex flex-1 min-h-0">
-          {/* Left Pane - Session List (Desktop only) */}
-          <aside className="hidden lg:flex lg:flex-col w-72 bg-surface border-r border-outline-variant flex-shrink-0">
-            <div className="p-4 border-b border-outline-variant">
-              <Input
-                placeholder="セッションを検索..."
-                value={sessionSearch}
-                onChange={(e) => setSessionSearch(e.target.value)}
-                className="bg-surface-container border-outline-variant"
-              />
-            </div>
-            <ScrollArea className="flex-1 p-4">
-              <div className="space-y-2">
-                {filteredSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
-                      currentSessionId === s.id
-                        ? "bg-primary-container border-md3-primary"
-                        : "border-outline-variant hover:bg-surface-container"
-                    }`}
-                    onClick={() => handleSessionSwitch(s.id)}
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="material-symbols-outlined md-18 text-on-surface-variant">description</span>
-                          <h3 className="font-semibold text-body-sm text-on-surface truncate">{s.name}</h3>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 ml-6">
-                          <span className="material-symbols-outlined md-18 text-on-surface-variant">calendar_today</span>
-                          <span className="text-metadata text-on-surface-variant">{s.createdAt.toLocaleDateString()}</span>
-                        </div>
-                        <div className="mt-2 ml-6">
-                          <Badge
-                            className={`text-xs font-medium ${
-                              s.correctionCount > 0
-                                ? 'bg-session-complete text-white'
-                                : 'bg-session-empty text-white'
-                            }`}
-                          >
-                            {s.correctionCount > 0 ? `${s.correctionCount} Saved` : 'Draft'}
-                          </Badge>
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          deleteSession(s.id)
-                        }}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
-                      >
-                        <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-                {filteredSessions.length === 0 && (
-                  <div className="text-center py-8 text-on-surface-variant">
-                    <span className="material-symbols-outlined md-36 mx-auto mb-2 opacity-50">description</span>
-                    <p className="text-body-sm">セッションがありません</p>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </aside>
+          {/* Left Pane - Session List。ドッキング時のみレイアウト内に w-72 の
+              カラムとして存在する。フローティング時はDOMから外れ、その幅は
+              そのままセンター/右ペーンの作業領域になる。 */}
+          {isSessionPaneDocked && (
+            <aside
+              className="hidden lg:flex lg:flex-col w-72 bg-surface border-r border-outline-variant flex-shrink-0"
+              aria-label="セッション一覧"
+            >
+              <div className="p-4 border-b border-outline-variant">{sessionSearchInput}</div>
+              <ScrollArea className="flex-1 p-4">{sessionListItems}</ScrollArea>
+            </aside>
+          )}
 
           {/* Center + Right Pane Container */}
           <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
@@ -2476,6 +2516,8 @@ export default function TextCorrectionApp() {
                       onCopy={(value) =>
                         copyToClipboard(value, "模範回答訳文がクリップボードにコピーされました")
                       }
+                      open={isExemplarCardOpen}
+                      onOpenChange={handleExemplarCardOpenChange}
                     />
 
                     {/* Target Text Card */}
