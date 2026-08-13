@@ -16,10 +16,11 @@ from app.llm.suggestions import (
     SuggestionsError,
     NoProvidersConfiguredError,
     are_providers_configured,
+    SUGGESTIONS_WALL_CLOCK_S,
 )
 from app.llm.groq_provider import GroqError, GroqRateLimitError, GroqServerError, GroqTimeoutError
 from app.llm.cloudflare_provider import CloudflareError
-from app.llm.gemini_provider import GeminiError, GeminiRateLimitError
+from app.llm.gemini_provider import GeminiError, GeminiRateLimitError, GEMINI_TIMEOUT
 
 
 # overallComment/reason ("コメント"/"全体講評") are intentionally pure
@@ -496,6 +497,64 @@ class TestGenerateSuggestionsChineseLanguageRetry:
                 assert len(result["suggestions"]) == 1
                 assert result["suggestions"][0]["original"] == "テスト箇所"
                 assert mock_groq.call_count == 3
+
+
+class TestVercelTimeoutBudget:
+    def test_gemini_http_timeout_fits_platform_budget(self):
+        assert GEMINI_TIMEOUT <= 25.0
+        assert SUGGESTIONS_WALL_CLOCK_S < 60.0
+        assert GEMINI_TIMEOUT < SUGGESTIONS_WALL_CLOCK_S
+
+
+@pytest.mark.asyncio
+class TestEmptyGeminiSkipsAndWallClock:
+    async def test_empty_gemini_pool_skips_without_gemini_http(self):
+        """No Gemini env -> Groq succeeds; Gemini call never made."""
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_gemini_with_rotation",
+                new_callable=AsyncMock,
+            ) as mock_gem:
+                with patch(
+                    "app.llm.suggestions.call_groq_with_rotation",
+                    new_callable=AsyncMock,
+                ) as mock_groq:
+                    mock_groq.return_value = VALID_LLM_RESPONSE
+                    result = await generate_suggestions("原文", "訳文")
+                    assert len(result["suggestions"]) == 1
+                    mock_gem.assert_not_called()
+                    mock_groq.assert_called_once()
+
+    async def test_wall_clock_budget_raises_before_next_provider(self):
+        """Exhausted deadline before Groq -> SuggestionsError (app 503 path)."""
+        with patch.dict(
+            "os.environ",
+            {
+                "GEMINI_API_KEY": "gem-key",
+                "GROQ_API_KEY": "test-key",
+            },
+            clear=True,
+        ):
+            with patch(
+                "app.llm.suggestions.call_gemini_with_rotation",
+                new_callable=AsyncMock,
+            ) as mock_gem:
+                with patch(
+                    "app.llm.suggestions.call_groq_with_rotation",
+                    new_callable=AsyncMock,
+                ) as mock_groq:
+                    with patch(
+                        "app.llm.suggestions.time.monotonic",
+                        side_effect=[0.0, 0.0, 0.0, 100.0],
+                    ):
+                        mock_gem.side_effect = GeminiRateLimitError(
+                            "Gemini 429", status_code=429
+                        )
+                        with pytest.raises(SuggestionsError) as exc_info:
+                            await generate_suggestions("原文", "訳文")
+                        assert "wall-clock" in str(exc_info.value).lower()
+                        mock_gem.assert_called_once()
+                        mock_groq.assert_not_called()
 
 
 # 15-iteration enforcement harness (enforce-chinese-suggestion-comments).

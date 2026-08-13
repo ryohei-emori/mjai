@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # Prefer a stronger instruct model when available on Workers AI; 8B often
 # returns Chinese prose without a JSON object on long bilingual prompts.
 CF_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-CF_TIMEOUT = 45.0  # higher timeout for larger fallback model
+# Tertiary path: keep short so Gemini→Groq→CF still fits Vercel maxDuration.
+CF_TIMEOUT = 20.0  # seconds
 
 
 class CloudflareError(Exception):

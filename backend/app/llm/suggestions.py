@@ -35,13 +35,15 @@ providers:
 
 Worst case total LLM calls for axis 2, per `generate_suggestions()` call:
 `MAX_PARSE_RETRY_ATTEMPTS` passes * (up to 2 Gemini + up to 2 Groq + 1
-Cloudflare attempts) — a deliberate trade-off favoring eventual Chinese/JSON
-success over a strict latency guarantee for the rare failure case.
+Cloudflare attempts) — preferred for Chinese/JSON success, but truncated
+in practice by `SUGGESTIONS_WALL_CLOCK_S` so Vercel does not emit
+FUNCTION_INVOCATION_TIMEOUT (504) before we can return an app-level 503.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from .prompts import build_messages
@@ -89,6 +91,10 @@ logger = logging.getLogger(__name__)
 # conditions share this one attempt budget. See module docstring for how
 # this composes with each provider's own network-level retry.
 MAX_PARSE_RETRY_ATTEMPTS = 4
+
+# Soft stop before Vercel `api/index.py` maxDuration (60s) so we return
+# app-level 503 with pool diagnostics instead of opaque FUNCTION_INVOCATION_TIMEOUT.
+SUGGESTIONS_WALL_CLOCK_S = 55.0
 
 # Appended on language-check retries only (not JSON-parse failures) so the
 # next pass gets an explicit correction signal without changing the base
@@ -187,7 +193,51 @@ def _prefer_result(
     return secondary
 
 
-async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
+def _pool_sizes() -> tuple[int, int, int]:
+    return (
+        len(load_gemini_credentials()),
+        len(load_groq_credentials()),
+        len(load_cloudflare_credentials()),
+    )
+
+
+def _raise_if_wall_clock_exceeded(
+    deadline_monotonic: float,
+    *,
+    gemini_error: Optional[str] = None,
+    groq_error: Optional[str] = None,
+    cf_error: Optional[str] = None,
+) -> None:
+    """Raise SuggestionsError when the soft wall-clock budget is exhausted."""
+    if time.monotonic() < deadline_monotonic:
+        return
+    gemini_pool_size, groq_pool_size, cf_pool_size = _pool_sizes()
+    logger.warning(
+        "Suggestions wall-clock budget exhausted (limit=%ss); "
+        "aborting before platform timeout. gemini_pool_size=%s "
+        "groq_pool_size=%s cf_pool_size=%s",
+        SUGGESTIONS_WALL_CLOCK_S,
+        gemini_pool_size,
+        groq_pool_size,
+        cf_pool_size,
+    )
+    raise SuggestionsError(
+        f"Suggestions generation exceeded wall-clock budget "
+        f"({SUGGESTIONS_WALL_CLOCK_S:.0f}s); aborting before platform timeout",
+        groq_error=groq_error,
+        cf_error=cf_error,
+        gemini_error=gemini_error,
+        groq_pool_size=groq_pool_size,
+        cf_pool_size=cf_pool_size,
+        gemini_pool_size=gemini_pool_size,
+    )
+
+
+async def _generate_suggestions_once(
+    messages: list[dict],
+    *,
+    deadline_monotonic: float,
+) -> ParsedResponse:
     """
     Single generate+parse pass: Gemini → Groq → Cloudflare on network
     failure *or* unusable content (same-pass salvage).
@@ -198,15 +248,14 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
 
     Raises:
         SuggestionsError: If all configured providers fail at the network
-            level (no usable HTTP body from any provider).
+            level (no usable HTTP body from any provider), or if the
+            wall-clock budget is exhausted.
     """
     groq_error: Optional[str] = None
     cf_error: Optional[str] = None
     gemini_error: Optional[str] = None
     best_soft: Optional[ParsedResponse] = None
-    groq_pool_size = len(load_groq_credentials())
-    cf_pool_size = len(load_cloudflare_credentials())
-    gemini_pool_size = len(load_gemini_credentials())
+    gemini_pool_size, groq_pool_size, cf_pool_size = _pool_sizes()
     logger.info(
         "LLM credential pools: gemini_pool_size=%s groq_pool_size=%s cf_pool_size=%s",
         gemini_pool_size,
@@ -216,6 +265,7 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
 
     gemini_key = get_gemini_api_key()
     if gemini_key:
+        _raise_if_wall_clock_exceeded(deadline_monotonic)
         try:
             logger.info("Attempting Gemini inference...")
             raw_output = await call_gemini_with_rotation(messages)
@@ -265,6 +315,10 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
 
     groq_key = get_groq_api_key()
     if groq_key:
+        _raise_if_wall_clock_exceeded(
+            deadline_monotonic,
+            gemini_error=gemini_error,
+        )
         try:
             logger.info("Attempting Groq inference...")
             raw_output = await call_groq_with_rotation(messages)
@@ -313,6 +367,11 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
 
     cf_account, cf_token = get_cloudflare_credentials()
     if cf_account and cf_token:
+        _raise_if_wall_clock_exceeded(
+            deadline_monotonic,
+            gemini_error=gemini_error,
+            groq_error=groq_error,
+        )
         try:
             logger.info("Attempting Cloudflare Workers AI inference...")
             raw_output = await call_cloudflare(messages)
@@ -386,7 +445,8 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
 
     Raises:
         NoProvidersConfiguredError: If no providers are configured.
-        SuggestionsError: If all providers fail at the network level.
+        SuggestionsError: If all providers fail at the network level, or
+            the wall-clock budget is exhausted.
     """
     if not are_providers_configured():
         raise NoProvidersConfiguredError(
@@ -400,14 +460,19 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     last_result: Optional[ParsedResponse] = None
     language_failed_last = False
     parse_failed_last = False
+    deadline_monotonic = time.monotonic() + SUGGESTIONS_WALL_CLOCK_S
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
+        _raise_if_wall_clock_exceeded(deadline_monotonic)
         messages = list(base_messages)
         if language_failed_last:
             messages.append({"role": "user", "content": LANGUAGE_RETRY_NUDGE})
         elif parse_failed_last:
             messages.append({"role": "user", "content": PARSE_RETRY_NUDGE})
 
-        result = await _generate_suggestions_once(messages)
+        result = await _generate_suggestions_once(
+            messages,
+            deadline_monotonic=deadline_monotonic,
+        )
         if _content_usable(result):
             return result
         parse_failed = is_json_extraction_failure(result)

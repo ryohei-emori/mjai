@@ -260,12 +260,12 @@ AI correction suggestions use a **hybrid architecture**: cloud APIs by default, 
 ```
 User Request → POST /api/suggestions (authenticated)
  ↓
- Gemini API (primary, free-tier Flash pool, ~2-8s typical; 45s timeout)
+ Gemini API (primary, free-tier Flash pool, ~2-8s typical; 22s HTTP timeout)
  ↓ 429/5xx/timeout / unusable content
  Groq API (secondary, ~1-3s; 25s timeout)
  ↓ fail / unusable content
- Cloudflare Workers AI (tertiary)
- ↓ all fail
+ Cloudflare Workers AI (tertiary; 20s timeout)
+ ↓ all fail / wall-clock budget (~55s) exhausted
  Frontend shows error (toast + failed job) — does NOT auto-start WebLLM
 ```
 
@@ -275,6 +275,8 @@ User Request → POST /api/suggestions (authenticated)
 | **Secondary** | Groq, model rotation pool (see below), overridable/pinnable via `GROQ_MODEL` | ~1-3s | Gemini rate-limited/error/timeout or unusable content |
 | **Tertiary** | Cloudflare Workers AI | ~2-5s | Gemini and Groq failed or returned unusable content |
 | **Offline** | WebLLM (Mistral 7B) | ~10-30s | **Only** when user enables オフラインモード |
+
+**Vercel timeout ops:** `vercel.json` sets `api/index.py` `maxDuration` to **60s**. Provider HTTP timeouts (Gemini ~22s, Groq 25s, CF 20s) plus `suggestions.py` wall-clock budget (`SUGGESTIONS_WALL_CLOCK_S` ≈ 55s) MUST stay under that limit so a slow/failing failover chain returns app **503** with `gemini_pool_size` / `groq_pool_size` / `cf_pool_size` instead of opaque platform **504 FUNCTION_INVOCATION_TIMEOUT**. Empty Gemini pool skips Gemini immediately (no hang). After changing `GEMINI_API_KEYS` on Vercel, **redeploy** so serverless snapshots pick up the env.
 
 **Groq model rotation (added 2026-08 ahead of `llama-3.3-70b-versatile`'s 2026-08-16 deprecation):** rather than pinning to a single hardcoded model, `backend/app/llm/groq_provider.py` selects a model per request from a curated allow-list (`ALLOWED_GROQ_MODELS`):
 
@@ -289,7 +291,7 @@ User Request → POST /api/suggestions (authenticated)
 - **JSON mode**: Groq requests send `response_format: {"type": "json_object"}` plus `max_tokens: 4096` so long epic corpora do not truncate mid-JSON or drift into prose.
 - **Content salvage**: if Gemini returns HTTP-OK but unparseable or non-Chinese `reason`/`overallComment`, `suggestions.py` still tries Groq, then Cloudflare, in the same pass before the outer language/parse retry loop.
 
-**Gemini model rotation (primary, free-tier Flash):** `backend/app/llm/gemini_provider.py` uses `ALLOWED_GEMINI_MODELS` (`gemini-3.7-flash`, `gemini-3.6-flash`) selected via `random.sample` with one in-provider retry on retriable failure — same pattern as Groq. Live probes (2026-08) confirmed these IDs on free-tier keys; `gemini-2.5-flash`/`gemini-2.5-pro` 404'd on the same keys. Prefer stable IDs over floating `gemini-flash-latest` (still pin-able via `GEMINI_MODEL`). Calls use Generative Language `generateContent` (v1beta) with `responseMimeType: application/json`. Happy-path latency may be higher than the former Groq-first order (Gemini timeout 45s vs Groq 25s).
+**Gemini model rotation (primary, free-tier Flash):** `backend/app/llm/gemini_provider.py` uses `ALLOWED_GEMINI_MODELS` (`gemini-3.7-flash`, `gemini-3.6-flash`) selected via `random.sample` with one in-provider retry on retriable failure — same pattern as Groq. Live probes (2026-08) confirmed these IDs on free-tier keys; `gemini-2.5-flash`/`gemini-2.5-pro` 404'd on the same keys. Prefer stable IDs over floating `gemini-flash-latest` (still pin-able via `GEMINI_MODEL`). Calls use Generative Language `generateContent` (v1beta) with `responseMimeType: application/json`. HTTP timeout is ~22s so primary + failover fit Vercel `maxDuration` (60s) with a soft wall-clock abort (~55s).
 - **Excluded from the pool** (and why): `qwen/qwen3.6-27b` (live Chinese-enforcement smoke on CN-source/JP-target corpora frequently returned Japanese explanations or empty bodies despite `reasoning_effort: "none"`; still pin-able via `GROQ_MODEL`), `llama-3.3-70b-versatile` / `llama-3.1-8b-instant` (Groq shutdown date 2026-08-16), `qwen/qwen3-32b` (already deprecated/404s), `openai/gpt-oss-safeguard-20b` (safety/policy-classification tuned), `groq/compound`/`compound-mini` (agentic/tool-use, low RPD), `meta-llama/llama-prompt-guard-2-*` (classifier models), `allam-2-7b` (Arabic-focused, not evaluated for Japanese quality).
 - **Maintenance note**: `ALLOWED_GROQ_MODELS` is a static, manually-reviewed constant — there is no runtime catalog-refresh mechanism. If Groq announces further deprecations, update this list (and this table) as a small follow-up change; do not wait for production errors to surface it.
 
@@ -301,9 +303,9 @@ User Request → POST /api/suggestions (authenticated)
 | `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
 | `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare + Gemini (env-driven) |
 | `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + key-pool retry + in-provider model retry |
-| `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 45s timeout) with response-shape normalize + key-pool retry |
-| `gemini_provider.py` | Gemini `generateContent` (v1beta), 45s timeout, JSON mime type, Flash rotation pool (`ALLOWED_GEMINI_MODELS`) + key-pool retry + in-provider model retry |
-| `suggestions.py` | Failover chain logic (Gemini → Groq → Cloudflare) |
+| `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 20s timeout) with response-shape normalize + key-pool retry |
+| `gemini_provider.py` | Gemini `generateContent` (v1beta), ~22s timeout, JSON mime type, Flash rotation pool (`ALLOWED_GEMINI_MODELS`) + key-pool retry + in-provider model retry |
+| `suggestions.py` | Failover chain logic (Gemini → Groq → Cloudflare) + wall-clock budget before platform 504 |
 
 ### Environment Variables (Vercel Production)
 

@@ -39,7 +39,9 @@ ALLOWED_GEMINI_MODELS = [
 ]
 
 DEFAULT_GEMINI_MODEL = ALLOWED_GEMINI_MODELS[0]
-GEMINI_TIMEOUT = 45.0  # seconds; tertiary path — allow more headroom than Groq
+# Keep under Vercel api/index.py maxDuration (60s) and suggestions wall-clock
+# budget so a hung primary call cannot alone cause FUNCTION_INVOCATION_TIMEOUT.
+GEMINI_TIMEOUT = 22.0  # seconds
 
 
 class GeminiError(Exception):
