@@ -4,7 +4,7 @@ Agent-facing environment/operational constraints for MJAI (Japanese text-correct
 
 ## ⚠️ Reality check: docs vs. repo state
 
-`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). There is still no ngrok tunnel-provisioning tooling in-repo; `*_NGROK_URL` vars remain optional CORS allow-list entries. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq primary, Cloudflare failover) with WebLLM as offline fallback** — do **not** configure `GEMINI_*`.
+`README.md`'s older "Quick Start (Docker & ngrok)" text may still mention `conf/docker-compose.yml`, `conf/ngrok.yml`, `conf/start.sh`, and `conf/update-env.sh` — those paths under `conf/` are **not** present. Local compose lives at the **repo-root** `docker-compose.yml` (backend `:8000`, frontend `:3000`). Ngrok tunnel vars/`NGROK_*` are **not** part of the active env templates (`conf/.env.example`); do not reintroduce them. **Production path: both backend and frontend on Vercel (monorepo deployment), app DB + Auth on Supabase.** AI suggestions use **cloud APIs (Groq primary, Cloudflare failover) with WebLLM as offline fallback** — do **not** configure `GEMINI_*`.
 
 ## Multi-Environment Architecture: Shared DB, Environment-Aware Auth
 
@@ -59,9 +59,7 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | `DATABASE_URL` | Supabase Postgres connection string (format: `postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres`). Supabase is used for both Auth and app data persistence. |
 | `USE_POSTGRESQL` | Keep `true` (Postgres/Supabase is the only app DB path; SQLite dual-path removed). |
 | `SOURCE_DATABASE_URL` / `TARGET_DATABASE_URL` | Migration-only vars (commented in `.env.example`); safe to omit after one-time data migration |
-| `NGROK_AUTHTOKEN` | Optional ngrok tunnel auth (see reality-check note above) |
-| `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_BACKEND_NGROK_URL`, `NEXT_PUBLIC_FRONTEND_NGROK_URL` | Frontend API base URLs — **build-time** vars (see below). Local docker examples: `NEXT_PUBLIC_API_URL=http://localhost:8000` |
-| `BACKEND_NGROK_URL`, `FRONTEND_NGROK_URL` | Optional; read by backend for CORS allow-list |
+| `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_API_URL` | Frontend API base URLs — **build-time** vars (see below). Local docker examples: `NEXT_PUBLIC_API_URL=http://localhost:8000` |
 | `FRONTEND_URL` | Backend CORS allow-list origin (local docker: `http://localhost:3000`; prod: Vercel URL) |
 | `ENVIRONMENT` | `development`/`production` switch, affects CORS logic in `backend/app/main.py` |
 | `PYTHONPATH`, `APP_ROOT`, `PROJECT_ROOT` | Path plumbing for local/container runs |
@@ -196,10 +194,39 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 - `ENVIRONMENT` — `production` or `development`
 - `NEXT_PUBLIC_API_URL` — empty or `/api` for same-origin monorepo deployment
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase browser client config
-- `GROQ_API_KEY` — Primary AI provider (recommended)
-- `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` — Fallback AI provider (optional)
+- AI keys — see **AI provider keys on Vercel** below (`GROQ_API_KEYS`, CF plural pairs, singular back-compat)
 
 **Render and Terraform infrastructure has been removed**: The Render Web Service and `terraform/` directory have been deleted. All deployment is now via Vercel git integration.
+
+### AI provider keys on Vercel (ops)
+
+**Local vs Production:** `conf/.env` is **local only** (gitignored). Production AI credentials live in **Vercel Environment Variables**. They do **not** auto-sync from `conf/.env` or from GitHub Secrets. Changing local `.env` never updates Production.
+
+**Key pool variable names** (`backend/app/llm/key_pool.py`; plural wins when non-empty after parse):
+
+| Variable | Role |
+|---|---|
+| `GROQ_API_KEYS` | Preferred. Comma-separated Groq keys |
+| `GROQ_API_KEY` | Singular back-compat (used when plural unset/empty) |
+| `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Preferred. Same-length comma-separated lists, paired by index |
+| `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | Singular back-compat |
+
+**How to set (CLI or Dashboard):**
+
+```bash
+# From repo root (after vercel login + vercel link). Values via stdin — never paste secrets into shell history casually.
+printf '%s' "$GROQ_API_KEYS" | vercel env add GROQ_API_KEYS production --sensitive -y
+printf '%s' "$CLOUDFLARE_ACCOUNT_IDS" | vercel env add CLOUDFLARE_ACCOUNT_IDS production --sensitive -y
+printf '%s' "$CLOUDFLARE_API_TOKENS" | vercel env add CLOUDFLARE_API_TOKENS production --sensitive -y
+# Mirror to preview when AI keys are already used on Preview deployments:
+printf '%s' "$GROQ_API_KEYS" | vercel env add GROQ_API_KEYS preview --sensitive -y
+# …
+```
+
+- Or: Vercel Dashboard → Project Settings → Environment Variables.
+- Keep/update singular vars if they already exist (back-compat / single-key fallback).
+- **Redeploy required** after env changes for serverless functions to pick up new values (`vercel --prod` or trigger a Production redeploy from the dashboard / empty commit on `main`). Runtime env on existing deployments is snapshotted at build/deploy time.
+- **Do not** put Groq/Cloudflare keys in GitHub Secrets unless a workflow actually reads them. `/api/suggestions` runs on Vercel, not GitHub Actions — GH Secrets are unused for AI inference today.
 
 ## Documentation habits
 
