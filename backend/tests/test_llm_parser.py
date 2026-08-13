@@ -14,14 +14,22 @@ from app.llm.parser import (
     safe_json_parse,
     has_non_chinese_reason,
     has_weak_critique_reason,
+    has_japanese_corner_quotes_in_critique,
 )
 from tests.fixtures.semantic_reason_cases import (
     CASE_A_BAD_REASON,
+    CASE_A_BAD_REASON_LEGACY_CORNER,
     CASE_A_NOTES,
     CASE_A_TARGET_TEXT,
     CASE_B_COMPLIANT_REASON,
     CASE_B_TARGET_TEXT,
     CASE_B_WEAK_REASON,
+    CASE_B_WEAK_REASON_LEGACY_CORNER,
+    CASE_C_BAD_REASON,
+    CASE_C_NOTES,
+    CASE_C_TARGET_TEXT,
+    CASE_CORNER_QUOTE_IN_CHINESE_REASON,
+    CASE_DOUBLE_QUOTE_COMPLIANT_REASON,
 )
 
 
@@ -552,14 +560,28 @@ class TestHasNonChineseReason:
         }
         assert has_non_chinese_reason(result) is False
 
-    def test_chinese_reason_with_quoted_japanese_forms_passes(self):
-        """「…」 cites of Japanese forms must not false-positive."""
+    def test_chinese_reason_with_double_quoted_japanese_forms_passes(self):
+        """"" / “” cites of Japanese forms must not false-positive."""
         result = {
             "suggestions": [
                 {
                     "id": "1",
                     "original": "行きます",
-                    "reason": "「昨日」表示的是过去发生的事情，所以应该使用过去式「行きました」，而不是现在时「行きます」",
+                    "reason": CASE_DOUBLE_QUOTE_COMPLIANT_REASON,
+                }
+            ],
+            "overallComment": "整体表达清楚，继续保持！",
+        }
+        assert has_non_chinese_reason(result) is False
+
+    def test_chinese_reason_with_legacy_corner_quoted_forms_still_passes_chinese_check(self):
+        """Legacy 「…」 cites still strip for Chinese detect (corner check is separate)."""
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": CASE_CORNER_QUOTE_IN_CHINESE_REASON,
                 }
             ],
             "overallComment": "整体表达清楚，继续保持！",
@@ -567,18 +589,61 @@ class TestHasNonChineseReason:
         assert has_non_chinese_reason(result) is False
 
     def test_japanese_prose_outside_quotes_still_fails(self):
-        """Kana outside 「」 still fails even when some spans are quoted."""
+        """Kana outside citation quotes still fails even when some spans are quoted."""
         result = {
             "suggestions": [
                 {
                     "id": "1",
                     "original": "行きます",
-                    "reason": "「行きます」という表現は不自然です",
+                    "reason": "“行きます”という表現は不自然です",
                 }
             ],
             "overallComment": "中文总评",
         }
         assert has_non_chinese_reason(result) is True
+
+
+class TestHasJapaneseCornerQuotesInCritique:
+    """Low-noise Spec MUST: Chinese critique fields must not use 「」."""
+
+    def test_corner_quotes_in_reason_detected(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": CASE_CORNER_QUOTE_IN_CHINESE_REASON,
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_japanese_corner_quotes_in_critique(result) is True
+
+    def test_double_quote_reason_passes(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": CASE_DOUBLE_QUOTE_COMPLIANT_REASON,
+                }
+            ],
+            "overallComment": "整体清楚",
+        }
+        assert has_japanese_corner_quotes_in_critique(result) is False
+
+    def test_corner_quotes_in_overall_comment_detected(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "行きます",
+                    "reason": CASE_DOUBLE_QUOTE_COMPLIANT_REASON,
+                }
+            ],
+            "overallComment": "存在「时态」问题",
+        }
+        assert has_japanese_corner_quotes_in_critique(result) is True
 
 
 class TestHasWeakCritiqueReason:
@@ -591,6 +656,20 @@ class TestHasWeakCritiqueReason:
                     "id": "1",
                     "original": CASE_B_TARGET_TEXT[:20],
                     "reason": CASE_B_WEAK_REASON,
+                    "sourceExcerpt": "",
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_weak_critique_reason(result) is True
+
+    def test_case_b_legacy_corner_weak_also_fails(self):
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "誰でも",
+                    "reason": CASE_B_WEAK_REASON_LEGACY_CORNER,
                     "sourceExcerpt": "",
                 }
             ],
@@ -613,7 +692,7 @@ class TestHasWeakCritiqueReason:
         assert has_weak_critique_reason(result) is False
 
     def test_case_a_bad_reason_pattern_is_documented_false_positive(self):
-        """Case A documents invented 「缺少「が」」; heuristic flags location-only shape."""
+        """Case A documents invented 缺少"が"; heuristic flags location-only shape."""
         assert "ができなかったが" in CASE_A_TARGET_TEXT
         assert CASE_A_BAD_REASON.startswith("缺少")
         assert "false" in CASE_A_NOTES.lower() or "invent" in CASE_A_NOTES.lower()
@@ -630,6 +709,37 @@ class TestHasWeakCritiqueReason:
         }
         # Location-only 缺少 without 为什么 → weak (quality non-compliant).
         assert has_weak_critique_reason(result) is True
+        assert has_weak_critique_reason(
+            {
+                "suggestions": [
+                    {
+                        "id": "1",
+                        "original": "できなかったが",
+                        "reason": CASE_A_BAD_REASON_LEGACY_CORNER,
+                    }
+                ],
+                "overallComment": "",
+            }
+        ) is True
+
+    def test_case_c_drift_reason_is_documented(self):
+        assert "シナリオを覚えない" in CASE_C_TARGET_TEXT
+        assert "落下剧情" in CASE_C_BAD_REASON
+        assert "drift" in CASE_C_NOTES.lower()
+        # Not a location-only 缺少 pattern — weak heuristic does not apply;
+        # quality expectation is prompt + fixture documentation.
+        result = {
+            "suggestions": [
+                {
+                    "id": "1",
+                    "original": "シナリオを覚えないのだ",
+                    "reason": CASE_C_BAD_REASON,
+                }
+            ],
+            "overallComment": "中文总评",
+        }
+        assert has_weak_critique_reason(result) is False
+        assert has_japanese_corner_quotes_in_critique(result) is False
 
     def test_few_shot_style_reason_with_why_is_not_weak(self):
         result = {
@@ -637,7 +747,7 @@ class TestHasWeakCritiqueReason:
                 {
                     "id": "1",
                     "original": "行きます",
-                    "reason": "「昨日」表示过去发生的事，因此必须用过去式「行きました」",
+                    "reason": CASE_DOUBLE_QUOTE_COMPLIANT_REASON,
                     "sourceExcerpt": "行きました",
                 }
             ],

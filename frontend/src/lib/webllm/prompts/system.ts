@@ -20,9 +20,9 @@
  *   TEXT corresponding to the flagged TARGET TEXT snippet, same language
  *   rule as "original" (stays Japanese), omitted/empty when no clear
  *   correspondence exists — never fabricated.
- * - Spec MUST why-in-reason + anti-false-「缺少」 (2026-08,
- *   `harden-semantic-suggestion-reasons`): every reason must state why the
- *   correction is needed; do not invent missing particles when Japanese is OK.
+ * - Spec MUST why-in-reason + anti-false-缺少 + accessibility + Chinese ""
+ *   quotes (never 「」) + accurate SOURCE citation + multi-paragraph coverage
+ *   (2026-08, `harden-semantic-suggestion-reasons`).
  * 
  * Works with Mistral 7B (current), SmolLM2, and other instruct models.
  */
@@ -31,7 +31,8 @@ export const SYSTEM_PROMPT = `意味の不一致、文法、流暢さ、スペ�
 
 格式：{"suggestions":[{"id":"1","original":"日语原文片段","reason":"简体中文：问题+为什么必须改","sourceExcerpt":"原文中对应片段（如有）"}],"overallComment":"简体中文总评"}
 original/sourceExcerpt保留日语，禁止译成中文。
-reason和overallComment的说明文必须是简体中文：禁止日语说明/假名/助词（「」内可短引日语词形）。违反即不合格。
-每个reason MUST含为什么必须改（不限助词）；禁止只写「缺少「X」在…」。日语已可接受时禁止臆造缺少助词。
+reason和overallComment必须是简体中文：禁止日语说明/假名（引号外）。引用日语用""或“”，禁止「」。违反即不合格。
+每个reason MUST用通俗中文写清(1)问题(2)为什么必须改，让不懂日中翻译、也不一定能读日语的人也能懂；禁止只说“不好/不自然”而不解释为什么；禁止只写缺少"X"在…。日语已可接受时禁止臆造缺少助词。
+对照原文时禁止误引或编造原文；批评生硬日语时勿偏离原文意思。多段时尽量覆盖各段真实问题，禁止编造凑数。
 sourceExcerpt可选：从原文摘录与original对应的日语片段；无明确对应则省略或""，禁止编造。
 至少5条suggestions，优先检查意义不一致、语法、流畅度、拼写，并兼顾用词/语气/标点/结构；确实不足5条才可更少，禁止编造凑数。`;

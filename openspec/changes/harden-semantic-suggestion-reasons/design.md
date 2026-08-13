@@ -1,59 +1,62 @@
 ## Context
 
-See proposal.md — Why. Existing stack already enforces Simplified Chinese for `reason`/`overallComment` via prompts + `has_non_chinese_reason()` retry (`enforce-chinese-suggestion-comments`). That path does **not** check semantic truthfulness or whether a critique explains **why**. User discovery: false 「缺少」 particle inventing (Case A) and location-only reasons without 为什么 (Case B). User clarification: **why in every 指摘コメント is a Spec MUST for all critique types**, not an optional particle-only polish.
+See proposal.md — Why. Existing stack already enforces Simplified Chinese for `reason`/`overallComment` via prompts + `has_non_chinese_reason()` retry (`enforce-chinese-suggestion-comments`), and prior work in this change added MUST why-in-reason + anti-false-缺少 + `has_weak_critique_reason()` (test-only). New user feedback adds: accessible plain-Chinese why, Chinese double quotes (never 「」), accurate SOURCE citation, multi-paragraph coverage, and another meaning/wording drift case.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Encode MUST: every `reason` includes what/where **and why the correction is necessary**.
-- Encode anti-false-「缺少」 / prefer real meaning·grammar·fluency·spelling issues in prompts (backend + WebLLM sync).
-- Deterministic fixtures + tests for Case A/B and prompt wording.
-- Optional low-noise heuristic for weak location-only 「缺少」 reasons for regression; document if retry wiring is skipped.
+- Encode MUST: every `reason` includes what/where **and why**, in plain Chinese accessible without JP↔CN craft knowledge.
+- Encode MUST: Chinese critique fields use `""` / `“”`, never 「」.
+- Encode prompt rules: accurate SOURCE citation; no inventing/misquote; no drift rewrites; multi-paragraph coverage guidance; keep anti-false-缺少.
+- Sync backend + WebLLM prompts; extend fixtures/tests (Case A/B + Case C meaning/wording + quote/accessibility assertions).
+- Optional low-noise 「」 heuristic; wire to retry only if clearly safe.
 
 **Non-Goals:**
 
-- Full NLP semantic validation of Japanese correctness (too brittle / noisy for production retry).
-- Changing API schema, DB, auth, Chinese-language detector, or unrelated changes (exemplar input, topbar bell, etc.).
-- AGENTS.md / SYSTEM-DESIGN updates (prompt/fixture-only; no architecture change).
+- Full NLP semantic validation of Japanese/SOURCE correctness (too brittle for production retry).
+- Changing API schema, DB, auth, or unrelated changes (`add-optional-exemplar-translation-input`, etc.).
+- AGENTS.md / SYSTEM-DESIGN updates (prompt/fixture-focused; no architecture change).
 
 ## Decisions
 
-### 1. Prompt-first enforcement of MUST why-in-reason
+### 1. Prompt-first for accessibility, SOURCE fidelity, coverage
 
-**Choice:** Put the MUST in system (+ brief user reinforce) prompts in Simplified Chinese, synced across `backend/app/llm/prompts.py` and `frontend/src/lib/webllm/prompts/`. Few-shot examples must already include 为什么 so the model sees compliant shape.
+**Choice:** Add short Simplified-Chinese MUST/guidance lines to system (+ brief user reinforce) in `backend/app/llm/prompts.py` and sync ultra-short equivalents in WebLLM `system.ts` / `fewShot.ts`. Few-shot citations switch from 「」 to `""`.
 
-**Rationale:** Generation quality is primarily prompt-driven; a hard semantic validator cannot reliably know whether 「は」 is truly needed.
+**Rationale:** Generation quality remains prompt-driven; semantic truthfulness cannot be hard-validated reliably.
 
-**Alternatives:** Rely only on post-hoc filtering — rejected; too late and too noisy for Case A false positives.
+### 2. Quote-mark style: `""` / `“”` only in Chinese fields
 
-### 2. Lightweight weak-reason heuristic — test/regression first; no retry by default
+**Choice:** Prompts forbid 「」 inside `reason`/`overallComment`. Update `_strip_quoted_japanese_spans` to also strip ASCII `"`…`"` and Unicode `“`…`”` so Chinese-language detection still allows JP form cites under the new style. Keep stripping 「」 for backward compatibility with older model outputs during transition.
 
-**Choice:** Add `has_weak_critique_reason(result)` (name flexible) in `parser.py` that flags Chinese reasons matching a narrow pattern: looks like 「缺少「…」在…」 (or close) **and** lacks any necessity cue (e.g. 因为 / 因此 / 必须 / 需要 / 用于 / 表示 / 才能 / 否则 / 才能 / 为了 / 语感 / 对比 / 强调 / 主题 / 才能听清 — keep a small allow-list of 为什么 markers). Use it in **unit tests + fixtures**; **do not** wire into `generate_suggestions()` retry loop in this change unless false-positive rate on existing good few-shot reasons is clearly zero.
+**Rationale:** User feedback: 「」 are not Chinese quotation marks. Few-shot must demonstrate `""`.
 
-**Rationale:** Spec MUST is about content quality; retrying on a brittle regex risks discarding good short Chinese reasons that use other wording. Prompt + fixtures carry the MUST; heuristic documents Case B for CI.
+### 3. 「」 in Chinese fields — low-noise retry OK
 
-**Trade-off documented:** Hard validator in the retry loop is **deferred** as too noisy. If live smoke later shows persistent location-only 「缺少」, revisit wiring under a follow-up.
+**Choice:** Add `has_japanese_corner_quotes_in_critique(result)` that returns True if any `reason` or `overallComment` contains 「 or 」. Wire into `generate_suggestions()` retry composition alongside `has_non_chinese_reason` (same attempt budget). Document that weak-缺少 heuristic stays test-only.
 
-### 3. Fixtures for Case A / Case B
+**Rationale:** Presence of corner brackets in Chinese critique fields is deterministic and low-noise after the prompt forbid — safe like the Chinese check. Weak location-only 缺少 remains too wording-dependent for retry.
 
-**Choice:** New module under `backend/tests/fixtures/` (e.g. `semantic_reason_cases.py`) holding:
+### 4. Weak-reason heuristic — keep test-only; accept `""` form
 
-- Case A: TARGET sentence `多くの芸人は文字を読むことができなかったが、長い詩を吟唱することができる` + documented bad reason `缺少「が」在「できなかった」后` (false inventing) + note that acceptable Japanese should not get that critique.
-- Case B: sentence `彼らの語りは、演じる場所によって誰でもはっきり聞こえるとは限らない` + weak reason `缺少「は」在「誰でも」前` (fails why-required) + example compliant reason that includes 为什么.
+**Choice:** Extend `_WEAK_QUE_SHAO_LOCATION` to match `缺少"X"在` and `缺少“X”在` as well as legacy `缺少「X」在`. Still **not** wired into retry.
 
-Optional SOURCE excerpts if useful; not required for heuristic tests.
+### 5. Fixtures
 
-### 4. Keep Chinese enforcement orthogonal
+**Choice:** Extend `semantic_reason_cases.py`:
 
-**Choice:** Do not weaken or broaden `has_non_chinese_reason()`. New heuristic is separate and only about weak critique shape.
+- Case A/B: update example strings to preferred `""` style (keep notes that legacy 「」 forms are also weak/bad).
+- Case C: TARGET-like epic wording issue (`歴史物語による常套語は…シナリオを覚えないのだ`) + documented weak/wrong reason that drifts toward 「听众一听就知道大概，不会落下剧情」 without accurate meaning why.
+- Case D (optional metadata): meaning-mismatch misquote pattern (invented SOURCE paraphrase) for documentation/manual verify.
 
 ## Risks / Trade-offs
 
-- **[Risk] Heuristic false positives on valid short Chinese reasons** → Mitigation: keep pattern narrow (缺少 + 在 + no necessity markers); tests for good reasons from existing few-shot; **no retry wiring** by default.
-- **[Risk] Models still invent false 「缺少」 despite prompts** → Mitigation: fixtures + manual verify sentences; live smoke remains optional/out of CI.
-- **[Risk] Prompt bloat for WebLLM token budget** → Mitigation: add 1–2 ultra-short Chinese rule lines, not long essays; mirror intent with backend.
+- **[Risk] Models still emit 「」 from habit** → Mitigation: few-shot uses `""`; retry on corner brackets; prompt MUST.
+- **[Risk] Stripping `"` too aggressively breaks Chinese detection** → Mitigation: only strip paired quote spans; keep kana/function checks on remaining prose.
+- **[Risk] Prompt bloat for WebLLM** → Mitigation: ultra-short Chinese rule lines; mirror intent with backend.
+- **[Risk] Coverage guidance causes spam critiques** → Mitigation: prompt says quality over spam / no inventing.
 
 ## Migration Plan
 
-- Deploy with normal frontend/backend release (prompt strings only + tests). No DB migration. Rollback = revert prompt/heuristic commits.
+- Deploy with normal frontend/backend release (prompts + parser heuristic + tests). No DB migration. Rollback = revert those commits.

@@ -57,12 +57,28 @@ class TestLanguageRulesInPrompt:
 
 
 class TestSemanticReasonQualityInPrompt:
-    """harden-semantic-suggestion-reasons: MUST why-in-reason + anti-false-缺少."""
+    """harden-semantic-suggestion-reasons: why + accessibility + quotes + SOURCE."""
 
     def test_system_prompt_requires_why_in_every_reason(self):
         assert "为什么必须" in SYSTEM_PROMPT or "为什么必须改" in SYSTEM_PROMPT
         assert "MUST" in SYSTEM_PROMPT or "必须" in SYSTEM_PROMPT
         assert "指摘" in SYSTEM_PROMPT or "reason" in SYSTEM_PROMPT
+
+    def test_system_prompt_requires_accessible_plain_chinese_why(self):
+        assert "通俗" in SYSTEM_PROMPT or "不懂日中翻译" in SYSTEM_PROMPT
+        assert "为什么" in SYSTEM_PROMPT
+
+    def test_system_prompt_forbids_japanese_corner_quotes_in_chinese_fields(self):
+        assert "禁止" in SYSTEM_PROMPT and "「」" in SYSTEM_PROMPT
+        assert '""' in SYSTEM_PROMPT or "双引号" in SYSTEM_PROMPT
+
+    def test_system_prompt_requires_accurate_source_citation(self):
+        assert "误引" in SYSTEM_PROMPT or "编造" in SYSTEM_PROMPT
+        assert "原文" in SYSTEM_PROMPT
+
+    def test_system_prompt_guides_multi_paragraph_coverage(self):
+        assert "多段" in SYSTEM_PROMPT
+        assert "覆盖" in SYSTEM_PROMPT
 
     def test_system_prompt_forbids_location_only_que_shao(self):
         assert "缺少" in SYSTEM_PROMPT
@@ -72,12 +88,21 @@ class TestSemanticReasonQualityInPrompt:
         assert "臆造" in SYSTEM_PROMPT or "编造" in SYSTEM_PROMPT
         assert "助词" in SYSTEM_PROMPT
 
-    def test_user_prompt_reinforces_why_and_anti_false_que_shao(self):
+    def test_user_prompt_reinforces_why_quotes_and_coverage(self):
         prompt = build_user_prompt("原文", "対象")
         assert "为什么必须改" in prompt
         assert "缺少" in prompt
+        assert "「」" in prompt  # forbid mention
+        assert "多段" in prompt or "覆盖" in prompt
 
     def test_few_shot_reasons_include_necessity_cues(self):
         # Compliant few-shot should not be location-only 缺少 patterns.
         assert "因此" in FEW_SHOT_EXAMPLE or "必须" in FEW_SHOT_EXAMPLE
         assert "才能" in FEW_SHOT_EXAMPLE or "需要" in FEW_SHOT_EXAMPLE
+
+    def test_few_shot_uses_chinese_double_quotes_not_corner_brackets(self):
+        assert "“" in FEW_SHOT_EXAMPLE or '"' in FEW_SHOT_EXAMPLE
+        # Reasons in the JSON output example must not teach 「」 cites.
+        # (Prompt meta text may still use 「原文」 labels — check reason bodies.)
+        assert '"reason":"“' in FEW_SHOT_EXAMPLE or '"reason":"' in FEW_SHOT_EXAMPLE
+        assert "「昨日」" not in FEW_SHOT_EXAMPLE

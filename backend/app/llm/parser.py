@@ -36,11 +36,15 @@ language (Japanese) and is intentionally exempt from `has_non_chinese_reason()`.
 
 As of `harden-semantic-suggestion-reasons` (2026-08), Spec MUST requires every
 `reason`（指摘コメント）to include why the correction is needed (all critique
-types). That MUST is primarily enforced via prompts. This module also exposes
-`has_weak_critique_reason()` — a narrow regression heuristic for location-only
-「缺少「X」在…」 reasons that omit necessity cues. It is intentionally NOT
-wired into `generate_suggestions()` retry (too noisy for production); use it
-in tests/fixtures.
+types), in accessible plain Chinese. That MUST is primarily enforced via
+prompts. This module also exposes:
+
+- `has_weak_critique_reason()` — narrow regression heuristic for location-only
+  `缺少"X"在…` / legacy `缺少「X」在…` reasons that omit necessity cues.
+  Intentionally NOT wired into `generate_suggestions()` retry (too noisy).
+- `has_japanese_corner_quotes_in_critique()` — True if reason/overallComment
+  contains Japanese corner brackets 「」. Low-noise; wired into suggestions
+  retry alongside `has_non_chinese_reason`.
 """
 
 from __future__ import annotations
@@ -361,10 +365,10 @@ def is_json_extraction_failure(result: ParsedResponse) -> bool:
 #    and catch mixed strings in tests/docs). Do NOT use Han-only compounds
 #    that also appear in Simplified Chinese — that would false-positive.
 #
-# Quoted Japanese forms inside 「…」/『…』 are stripped before the check so
-# legitimate Chinese explanations that cite TARGET TEXT (as the few-shot
-# demonstrates) are not false-positive retries. Kana / function words
-# *outside* those quotes still fail.
+# Quoted Japanese forms inside citation quotes are stripped before the check
+# so legitimate Chinese explanations that cite TARGET TEXT are not
+# false-positive retries. Preferred cite style is "" / “”; legacy 「」/『』
+# still stripped for transition. Kana / function words *outside* quotes fail.
 _JAPANESE_KANA_PATTERN = re.compile(r'[\u3040-\u30FF\uFF66-\uFF9D]')
 _JAPANESE_FUNCTION_PATTERN = re.compile(
     r'(?:です|ます|でした|ました|ません|である|だった|ではない|ではありません|'
@@ -372,17 +376,21 @@ _JAPANESE_FUNCTION_PATTERN = re.compile(
     r'べきだ|べきで|という|について|に対して|として|'
     r'のです|なので|ですが|ますが)'
 )
-# Corner-bracket quotes used when Chinese reasons cite Japanese forms.
-_QUOTED_JP_SPAN_PATTERN = re.compile(r'[「『].*?[」』]', re.DOTALL)
+# Preferred Chinese/ASCII double quotes + legacy Japanese corner brackets.
+_QUOTED_JP_SPAN_PATTERN = re.compile(
+    r'[「『].*?[」』]|“[^”]*”|"[^"]*"',
+    re.DOTALL,
+)
+_CORNER_QUOTE_CHARS = re.compile(r'[「」]')
 
 
 def _strip_quoted_japanese_spans(text: str) -> str:
-    """Remove 「…」/『…』 spans so cited Japanese forms do not trip the check."""
+    """Remove citation quote spans so cited Japanese forms do not trip the check."""
     return _QUOTED_JP_SPAN_PATTERN.sub("", text)
 
 
 def _text_looks_japanese(text: str) -> bool:
-    """True if explanatory prose (outside 「」/『』 cites) looks Japanese."""
+    """True if explanatory prose (outside citation quotes) looks Japanese."""
     if not text:
         return False
     prose = _strip_quoted_japanese_spans(text)
@@ -398,12 +406,12 @@ def has_non_chinese_reason(result: ParsedResponse) -> bool:
     """
     True if any suggestion's `reason` or the top-level `overallComment`
     looks Japanese (kana / halfwidth kana / Japanese function words outside
-    「」/『』 citation spans), indicating that field was written in Japanese
+    citation quote spans), indicating that field was written in Japanese
     rather than the required Simplified Chinese.
 
     Pure Simplified Chinese that shares Han characters with Japanese kanji
     MUST pass (returns False). Chinese explanations that quote Japanese
-    forms inside 「…」/『…』 MUST also pass. The `original` and
+    forms inside "" / “” (or legacy 「」) MUST also pass. The `original` and
     `sourceExcerpt` fields are intentionally NOT checked — both are
     required to stay in Japanese.
 
@@ -420,21 +428,38 @@ def has_non_chinese_reason(result: ParsedResponse) -> bool:
     )
 
 
-# Narrow "location-only missing form" shape: 缺少「X」在… (or 缺少『X』在…).
+def has_japanese_corner_quotes_in_critique(result: ParsedResponse) -> bool:
+    """
+    True if any `reason` or `overallComment` contains Japanese corner brackets
+    「 or 」. Spec MUST (`harden-semantic-suggestion-reasons`): Chinese critique
+    fields must use "" / “”, never 「」. Low-noise; wired into
+    `generate_suggestions()` retry alongside `has_non_chinese_reason`.
+    Does not inspect `original` / `sourceExcerpt`.
+    """
+    if _CORNER_QUOTE_CHARS.search(result.get("overallComment") or ""):
+        return True
+    return any(
+        _CORNER_QUOTE_CHARS.search(suggestion.get("reason") or "")
+        for suggestion in result["suggestions"]
+    )
+
+
+# Narrow "location-only missing form" shape: 缺少"X"在… / 缺少“X”在… / legacy 「」.
 _WEAK_QUE_SHAO_LOCATION = re.compile(
-    r"缺少[「『][^」』]+[」』]在"
+    r'缺少(?:[「『][^」』]+[」』]|“[^”]+”|"[^"]+")在'
 )
 
 # Necessity / why cues — if any appear, treat as explaining 为什么.
 _WHY_NECESSITY_MARKERS = re.compile(
     r"(因为|因此|由于|必须|需要|用于|表示|才能|否则|为了|"
     r"语感|对比|强调|主题|应[该当]?|建议|改用|不自然|错误|"
-    r"不通|无法|矛盾|限定|焦点|更自然|更委婉|更流畅|语法不通)"
+    r"不通|无法|矛盾|限定|焦点|更自然|更委婉|更流畅|语法不通|"
+    r"听不清|听懂|理解|影响|偏离|原文)"
 )
 
 
 def _reason_is_weak_location_only(reason: str) -> bool:
-    """True if reason looks like location-only 「缺少「X」在…」 without 为什么."""
+    """True if reason looks like location-only 缺少"X"在… without 为什么."""
     text = (reason or "").strip()
     if not text:
         return False
@@ -446,7 +471,7 @@ def _reason_is_weak_location_only(reason: str) -> bool:
 def has_weak_critique_reason(result: ParsedResponse) -> bool:
     """
     True if any suggestion's `reason` matches a weak location-only
-    「缺少「X」在…」 pattern without necessity/why markers.
+    缺少"X"在… (or legacy 「」) pattern without necessity/why markers.
 
     Spec MUST (`harden-semantic-suggestion-reasons`): every critique `reason`
     must include why the correction is needed. That MUST is primarily

@@ -17,11 +17,10 @@ providers:
    - it fails to parse as valid JSON at all (e.g. a small/preview model
      emitting prose, reasoning tokens, or truncated output) — see
      `parser.is_json_extraction_failure`; or
-   - it parses successfully but violates the bilingual field-content rule
-     (a suggestion's `reason` or the `overallComment` written in Japanese
-     instead of the required Simplified Chinese; detected via kana /
-     halfwidth kana / Japanese function patterns) — see
-     `parser.has_non_chinese_reason`.
+   - it parses successfully but violates Chinese critique-field rules:
+     Japanese prose in `reason`/`overallComment` (`parser.has_non_chinese_reason`)
+     or Japanese corner brackets 「」 in those fields
+     (`parser.has_japanese_corner_quotes_in_critique`).
    Within a single pass, if Groq returns either failure mode, this module
    still tries Cloudflare once before returning (same-pass salvage), so a
    usable CF response can rescue a Japanese/unparseable Groq body without
@@ -51,6 +50,7 @@ from .parser import (
     parse_model_output,
     is_json_extraction_failure,
     has_non_chinese_reason,
+    has_japanese_corner_quotes_in_critique,
     ParsedResponse,
 )
 from .groq_provider import (
@@ -71,11 +71,11 @@ from .cloudflare_provider import (
 logger = logging.getLogger(__name__)
 
 # Total number of generate+parse passes attempted when the model's response
-# either fails to parse as JSON or fails the Chinese-language content check
-# (see parser.is_json_extraction_failure / parser.has_non_chinese_reason),
-# before giving up. Both conditions share this one attempt budget. See
-# module docstring for how this composes with each provider's own
-# network-level retry.
+# either fails to parse as JSON or fails Chinese critique-field checks
+# (see parser.is_json_extraction_failure / has_non_chinese_reason /
+# has_japanese_corner_quotes_in_critique), before giving up. These
+# conditions share this one attempt budget. See module docstring for how
+# this composes with each provider's own network-level retry.
 MAX_PARSE_RETRY_ATTEMPTS = 4
 
 # Appended on language-check retries only (not JSON-parse failures) so the
@@ -83,7 +83,7 @@ MAX_PARSE_RETRY_ATTEMPTS = 4
 # prompt for the first attempt.
 LANGUAGE_RETRY_NUDGE = (
     "上次输出不合格。请只用简体中文重写全部 reason 与 overallComment。"
-    "禁止日语说明文、禁止です/ます、禁止在「」外写假名。"
+    "禁止日语说明文、禁止です/ます。引用用英文双引号或中文双引号，禁止使用「」。"
     "即使原文是中文也必须用中文说明。只输出完整 JSON，不要其他文字。"
 )
 
@@ -116,8 +116,14 @@ def are_providers_configured() -> bool:
 
 
 def _content_usable(result: ParsedResponse) -> bool:
-    """True if result is parseable JSON and passes the Chinese-content check."""
-    return (not is_json_extraction_failure(result)) and (not has_non_chinese_reason(result))
+    """True if result is parseable JSON and passes Chinese critique-field checks."""
+    if is_json_extraction_failure(result):
+        return False
+    if has_non_chinese_reason(result):
+        return False
+    if has_japanese_corner_quotes_in_critique(result):
+        return False
+    return True
 
 
 async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
@@ -280,11 +286,18 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
         if _content_usable(result):
             return result
         parse_failed = is_json_extraction_failure(result)
-        language_failed_last = (not parse_failed) and has_non_chinese_reason(result)
-        parse_failed_last = parse_failed
-        reason = (
-            "JSON parse failure" if parse_failed else "non-Chinese reason/overallComment"
+        language_failed_last = (not parse_failed) and (
+            has_non_chinese_reason(result)
+            or has_japanese_corner_quotes_in_critique(result)
         )
+        parse_failed_last = parse_failed
+        if parse_failed:
+            reason = "JSON parse failure"
+        elif has_japanese_corner_quotes_in_critique(result):
+            reason = "Japanese corner quotes in reason/overallComment"
+        else:
+            reason = "non-Chinese reason/overallComment"
+
         logger.warning(
             f"{reason} on attempt {attempt}/{MAX_PARSE_RETRY_ATTEMPTS}; "
             f"{'retrying' if attempt < MAX_PARSE_RETRY_ATTEMPTS else 'giving up'}"

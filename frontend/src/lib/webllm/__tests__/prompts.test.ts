@@ -28,6 +28,17 @@ describe("prompts exports", () => {
     expect(SYSTEM_PROMPT).toMatch(/臆造|禁止/);
   });
 
+  it("requires accessible Chinese why and forbids 「」 in critique fields", () => {
+    expect(SYSTEM_PROMPT).toMatch(/通俗|不懂日中翻译/);
+    expect(SYSTEM_PROMPT).toContain("「」");
+    expect(SYSTEM_PROMPT).toMatch(/""|双引号|“/);
+  });
+
+  it("guides accurate SOURCE citation and multi-paragraph coverage", () => {
+    expect(SYSTEM_PROMPT).toMatch(/误引|编造/);
+    expect(SYSTEM_PROMPT).toContain("多段");
+  });
+
   it("exports FEW_SHOT_EXAMPLES with expected structure", () => {
     expect(FEW_SHOT_EXAMPLES).toBeDefined();
     expect(typeof FEW_SHOT_EXAMPLES).toBe("string");
@@ -36,6 +47,9 @@ describe("prompts exports", () => {
     expect(FEW_SHOT_EXAMPLES).toContain("suggestions");
     expect(FEW_SHOT_EXAMPLES).toContain("overallComment");
     expect(FEW_SHOT_EXAMPLES).toMatch(/因此必须|需要明确/);
+    // Chinese critique cites use “”, not 「」 inside reason JSON
+    expect(FEW_SHOT_EXAMPLES).toContain("“昨日”");
+    expect(FEW_SHOT_EXAMPLES).not.toContain("「昨日」");
   });
 
   it("exports all section templates", () => {
