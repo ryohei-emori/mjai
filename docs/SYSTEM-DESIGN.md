@@ -42,7 +42,7 @@ Per the OpenSpec capability `architecture-documentation`, review and update this
 
 ## 1. Objective
 
-MJAI is a full-stack web application that assists Japanese/Chinese text correction. A reviewer submits original text and a target (corrected) text; **cloud LLM APIs (Groq → Cloudflare Workers AI → Gemini) or client-side WebLLM** generate ranked correction proposals with reasoning; the reviewer selects, edits, or overrides those proposals; the session, history, and proposals are persisted for audit.
+MJAI is a full-stack web application that assists Japanese/Chinese text correction. A reviewer submits original text and a target (corrected) text; **cloud LLM APIs (Gemini → Groq → Cloudflare Workers AI) or client-side WebLLM** generate ranked correction proposals with reasoning; the reviewer selects, edits, or overrides those proposals; the session, history, and proposals are persisted for audit.
 
 **As-built stack:** FastAPI backend, Next.js/React frontend, Supabase (Postgres for app data + Auth via Google OAuth → JWT) for persistence and access control, **Vercel hosting for both frontend and backend** (monorepo deployment).
 
@@ -81,7 +81,7 @@ Auth via Supabase Google OAuth is implemented in the current codebase (`backend/
 ### Non-goals (explicitly out of scope for the current design)
 
 - Multi-user / multi-tenant RBAC, orgs, or a user directory (auth is an email allow-list).
-- A pluggable multi-provider LLM abstraction layer beyond the simple Groq → Cloudflare → Gemini failover chain (WebLLM remains an explicit offline toggle, not an automatic fourth hop).
+- A pluggable multi-provider LLM abstraction layer beyond the simple Gemini → Groq → Cloudflare failover chain (WebLLM remains an explicit offline toggle, not an automatic fourth hop).
 - Visual design system / brand-token documentation (see [`docs/UI-DESIGN.md`](./UI-DESIGN.md) for the visual-identity document).
 
 ## 4. Proposed Design (System Overview)
@@ -107,7 +107,7 @@ flowchart TB
     Backend -- "JWT verify + email allow-list" --> Supabase
 ```
 
-**Request path (happy case):** browser signs in via Supabase Google OAuth → frontend attaches `Authorization: Bearer <access_token>` on every API call to `/api/*` (same-origin) → backend serverless function verifies JWT (`SUPABASE_JWT_SECRET`, HS256) and checks `email` against `ALLOWED_USER_EMAIL(S)` → route reads/writes via Supabase Postgres (`asyncpg`) → AI suggestions are generated via `POST /api/suggestions` (Groq → Cloudflare → Gemini failover) or client-side WebLLM (offline mode).
+**Request path (happy case):** browser signs in via Supabase Google OAuth → frontend attaches `Authorization: Bearer <access_token>` on every API call to `/api/*` (same-origin) → backend serverless function verifies JWT (`SUPABASE_JWT_SECRET`, HS256) and checks `email` against `ALLOWED_USER_EMAIL(S)` → route reads/writes via Supabase Postgres (`asyncpg`) → AI suggestions are generated via `POST /api/suggestions` (Gemini → Groq → Cloudflare failover) or client-side WebLLM (offline mode).
 
 ## 5. Detailed Design
 
@@ -121,7 +121,7 @@ flowchart TB
 | `auth.py` | FastAPI dependency `get_current_user`: Bearer JWT verify + email allow-list (`401` / `403`) |
 | `db_helper.py` | Postgres DAO: async Postgres (`asyncpg`, snake_case tables); camelCase API responses |
 
-The `backend/app/llm/` module provides cloud-based AI suggestion generation (Groq primary → Cloudflare Workers AI secondary → Gemini tertiary, each with env-driven key pools). WebLLM remains on the frontend as an offline fallback option (explicit toggle only).
+The `backend/app/llm/` module provides cloud-based AI suggestion generation (Gemini primary → Groq secondary → Cloudflare Workers AI tertiary, each with env-driven key pools). WebLLM remains on the frontend as an offline fallback option (explicit toggle only).
 
 #### Frontend (`frontend/src/`, Next.js 15 App Router, React 19, TypeScript)
 
@@ -138,7 +138,7 @@ The `backend/app/llm/` module provides cloud-based AI suggestion generation (Gro
 
 - **Supabase Auth** — Google OAuth provider and JWT issuer (data stays in app DB, not Supabase tables for app entities).
 - **Vercel** — Monorepo deployment hosting both Next.js frontend (at `/`) and FastAPI backend (at `/api/*` as a serverless function).
-- **Groq / Cloudflare Workers AI / Google Gemini** — cloud LLM providers for `POST /api/suggestions` (backend-only API keys; failover Groq → CF → Gemini).
+- **Google Gemini / Groq / Cloudflare Workers AI** — cloud LLM providers for `POST /api/suggestions` (backend-only API keys; failover Gemini → Groq → CF).
 
 ### 5.2 Data model / storage
 
@@ -176,7 +176,7 @@ All business routes hang off a FastAPI `APIRouter` with `Depends(get_current_use
 | `PUT /proposals/{id}` | Update proposal selection/edit flags | same |
 | `GET /keepalive` | Supabase keep-alive endpoint for free-tier DB pause prevention | None |
 
-AI suggestions are generated via `POST /suggestions` (Groq → Cloudflare → Gemini failover) or client-side WebLLM (offline mode toggle). On successful generation the frontend immediately persists a `pending` history + proposals; 「確定してコピー・保存」 promotes the same row to `confirmed` (no duplicate history junk). ~10s poll hydrates pending into Job Queue and confirmed into History across shared-DB clients.
+AI suggestions are generated via `POST /suggestions` (Gemini → Groq → Cloudflare failover) or client-side WebLLM (offline mode toggle). On successful generation the frontend immediately persists a `pending` history + proposals; 「確定してコピー・保存」 promotes the same row to `confirmed` (no duplicate history junk). ~10s poll hydrates pending into Job Queue and confirmed into History across shared-DB clients.
 
 ### 5.4 Frontend surface (within system design)
 
@@ -308,9 +308,9 @@ This is primarily an as-built record; most historical choices were not re-litiga
 
 | Alternative | Trade-off vs as-built |
 |---|---|
-| **Cloud LLM failover (Groq → CF → Gemini)** | Fast default path + multi-provider resilience; requires backend API keys and provider ops. **Implemented** as the default cloud path. |
+| **Cloud LLM failover (Gemini → Groq → CF)** | Quality-first default (Gemini Flash) + multi-provider resilience; happy-path latency may be higher than Groq-first. **Implemented** as the default cloud path. |
 | **Client-side WebLLM** | Removes server API dependency for offline/privacy use; adds model download and WebGPU constraints. **Implemented** as an explicit オフラインモード toggle (not automatic fallback). |
-| **Gemini-only / Gemini-primary** | Higher quality potential earlier in the chain; worse p95 latency vs Groq-first. Rejected in favor of latency-first ordering with Gemini tertiary. |
+| **Groq-primary / Gemini-tertiary** | Lower happy-path latency; weaker critique quality on the default path. Superseded by Gemini → Groq → CF ordering. |
 | **Backend on Render** | Always-on web service with traditional container deployment. **Replaced** by Vercel serverless for unified hosting and simpler operations. |
 | **Hard-delete sessions always** | Simpler; loses recoverability. Postgres path chose soft-archive via `status`. |
 

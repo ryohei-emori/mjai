@@ -1,6 +1,6 @@
 """
 LLM provider module for AI text correction suggestions.
-Supports Groq (primary), Cloudflare Workers AI (secondary), and Gemini (tertiary).
+Supports Gemini (primary), Groq (secondary), and Cloudflare Workers AI (tertiary).
 """
 
 from .suggestions import generate_suggestions

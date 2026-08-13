@@ -1,10 +1,10 @@
 """
 Tests for backend/app/llm/suggestions.py with mock providers.
 
-Note: suggestions.py calls call_groq_with_rotation() (not call_groq()
-directly) so that in-provider model rotation/retry across the Groq pool
-happens before falling back to Cloudflare, then Gemini. Tests here mock
-call_groq_with_rotation / call_cloudflare / call_gemini_with_rotation to
+Note: suggestions.py calls call_gemini_with_rotation() / call_groq_with_rotation()
+(not the single-model helpers) so in-provider model rotation/retry happens
+before falling over Gemini → Groq → Cloudflare. Tests here mock
+call_gemini_with_rotation / call_groq_with_rotation / call_cloudflare to
 exercise the failover chain without needing to also mock the rotation
 internals (those are covered by provider unit tests).
 """
@@ -254,8 +254,9 @@ class TestGenerateSuggestionsCloudflareOnly:
 
 
 @pytest.mark.asyncio
-class TestGenerateSuggestionsGeminiFailover:
-    async def test_groq_and_cf_fail_gemini_succeeds(self):
+class TestGenerateSuggestionsGeminiPrimary:
+    async def test_gemini_primary_success_skips_groq_and_cloudflare(self):
+        """Gemini succeeds first -> Groq/CF not called."""
         with patch.dict('os.environ', {
             'GROQ_API_KEY': 'test-key',
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
@@ -268,14 +269,38 @@ class TestGenerateSuggestionsGeminiFailover:
                         'app.llm.suggestions.call_gemini_with_rotation',
                         new_callable=AsyncMock,
                     ) as mock_gem:
-                        mock_groq.side_effect = GroqRateLimitError("Rate limit", status_code=429)
-                        mock_cf.side_effect = CloudflareError("CF error")
                         mock_gem.return_value = VALID_LLM_RESPONSE
 
                         result = await generate_suggestions("原文", "訳文")
 
                         assert len(result["suggestions"]) == 1
                         mock_gem.assert_called_once()
+                        mock_groq.assert_not_called()
+                        mock_cf.assert_not_called()
+
+    async def test_gemini_fails_groq_succeeds(self):
+        """Gemini 429 -> Groq succeeds (Cloudflare unused)."""
+        with patch.dict('os.environ', {
+            'GROQ_API_KEY': 'test-key',
+            'CLOUDFLARE_ACCOUNT_ID': 'acc',
+            'CLOUDFLARE_API_TOKEN': 'tok',
+            'GEMINI_API_KEY': 'gem-key',
+        }, clear=True):
+            with patch('app.llm.suggestions.call_groq_with_rotation', new_callable=AsyncMock) as mock_groq:
+                with patch('app.llm.suggestions.call_cloudflare', new_callable=AsyncMock) as mock_cf:
+                    with patch(
+                        'app.llm.suggestions.call_gemini_with_rotation',
+                        new_callable=AsyncMock,
+                    ) as mock_gem:
+                        mock_gem.side_effect = GeminiRateLimitError("Gemini 429", status_code=429)
+                        mock_groq.return_value = VALID_LLM_RESPONSE
+
+                        result = await generate_suggestions("原文", "訳文")
+
+                        assert len(result["suggestions"]) == 1
+                        mock_gem.assert_called_once()
+                        mock_groq.assert_called_once()
+                        mock_cf.assert_not_called()
 
     async def test_gemini_only_success(self):
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'gem-key'}, clear=True):
@@ -288,7 +313,7 @@ class TestGenerateSuggestionsGeminiFailover:
                 assert len(result["suggestions"]) == 1
                 mock_gem.assert_called_once()
 
-    async def test_unusable_groq_and_cf_salvaged_by_gemini(self):
+    async def test_unusable_gemini_and_groq_salvaged_by_cloudflare(self):
         with patch.dict('os.environ', {
             'GROQ_API_KEY': 'test-key',
             'CLOUDFLARE_ACCOUNT_ID': 'acc',
@@ -301,14 +326,16 @@ class TestGenerateSuggestionsGeminiFailover:
                         'app.llm.suggestions.call_gemini_with_rotation',
                         new_callable=AsyncMock,
                     ) as mock_gem:
-                        mock_groq.return_value = NON_CHINESE_LLM_RESPONSE
-                        mock_cf.return_value = UNPARSEABLE_LLM_RESPONSE
-                        mock_gem.return_value = VALID_LLM_RESPONSE
+                        mock_gem.return_value = NON_CHINESE_LLM_RESPONSE
+                        mock_groq.return_value = UNPARSEABLE_LLM_RESPONSE
+                        mock_cf.return_value = VALID_LLM_RESPONSE
 
                         result = await generate_suggestions("原文", "訳文")
 
                         assert result["suggestions"][0]["reason"] == "修正建议内容"
                         mock_gem.assert_called_once()
+                        mock_groq.assert_called_once()
+                        mock_cf.assert_called_once()
 
 
 @pytest.mark.asyncio

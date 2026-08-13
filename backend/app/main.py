@@ -333,7 +333,7 @@ async def get_session(session_id: str):
 async def generate_ai_suggestions(payload: dict = Body(...)):
     """
     Generate AI correction suggestions using cloud LLM providers.
-    Primary: Groq (fast), Fallback: Cloudflare Workers AI.
+    Primary: Gemini, then Groq, then Cloudflare Workers AI.
     WebLLM remains available on frontend as offline fallback.
     """
     from .llm import generate_suggestions
@@ -391,7 +391,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
 
 
 # ルーターをアプリに含める（/health を除く全ルートに get_current_user 依存関係が適用される）
-# AI提案生成: POST /suggestions でクラウドLLM (Groq/Cloudflare) を使用
+# AI提案生成: POST /suggestions でクラウドLLM (Gemini → Groq → Cloudflare) を使用
 # WebLLMはフロントエンドでオフラインフォールバックとして残存
 # Vercelデプロイではフロントエンドから /api/* でアクセスされるため、両方のプレフィックスで登録
 app.include_router(router)

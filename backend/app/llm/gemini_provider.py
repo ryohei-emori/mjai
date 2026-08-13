@@ -1,6 +1,6 @@
 """
 Gemini Generative Language API provider (generateContent / v1beta).
-Tertiary failover after Groq and Cloudflare Workers AI.
+Primary cloud provider for suggestion generation (before Groq / Cloudflare).
 """
 
 from __future__ import annotations
