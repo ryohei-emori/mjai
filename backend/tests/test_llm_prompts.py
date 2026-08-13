@@ -187,3 +187,82 @@ class TestTeachingQualityInPrompt:
         assert "更能体现" in TEACHING_BAD_PREFERENCE_NO_CONTRAST
         assert "偏" in TEACHING_GOOD_CONTRASTIVE_REASON
         assert "今后" in TEACHING_GOOD_CLASS_OF_ERROR_REASON or "后续" in TEACHING_GOOD_CLASS_OF_ERROR_REASON
+
+
+class TestFewShotExemplarCoherence:
+    """refine-prompt-instruction-coherence — the example must demonstrate the bar."""
+
+    @staticmethod
+    def _few_shot_suggestions():
+        from app.llm.parser import parse_model_output
+
+        return parse_model_output(FEW_SHOT_EXAMPLE)["suggestions"]
+
+    def test_few_shot_demonstrates_density_target(self):
+        # Demonstrated cardinality anchors the model harder than the numeric
+        # target does, so the example must not show fewer items than it asks for.
+        assert len(self._few_shot_suggestions()) >= 5
+
+    def test_few_shot_states_count_is_not_a_cap(self):
+        assert "不是上限" in FEW_SHOT_EXAMPLE
+
+    def test_few_shot_items_are_distinct(self):
+        originals = [s["original"] for s in self._few_shot_suggestions()]
+        assert len(originals) == len(set(originals))
+
+    def test_few_shot_demonstrates_omitted_source_excerpt(self):
+        excerpts = [s["sourceExcerpt"] for s in self._few_shot_suggestions()]
+        assert any(not e for e in excerpts), "no item omits sourceExcerpt"
+        assert any(e for e in excerpts), "no item demonstrates a present sourceExcerpt"
+
+    def test_few_shot_covers_grammar_and_modality_categories(self):
+        reasons = " ".join(s["reason"] for s in self._few_shot_suggestions())
+        assert "主语" in reasons or "谓语" in reasons or "骨架" in reasons
+        assert "推测" in reasons or "推量" in reasons or "断定" in reasons
+
+    def test_few_shot_reasons_carry_no_model_facing_directives(self):
+        # Anti-pattern rules belong in the prompt, not inside exemplar output
+        # a learner reads.
+        for suggestion in self._few_shot_suggestions():
+            assert "不要主推" not in suggestion["reason"]
+            assert "当作主指摘" not in suggestion["reason"]
+
+    def test_system_prompt_has_no_count_trading_hedge(self):
+        assert "质量优先于条数" not in SYSTEM_PROMPT
+        assert "不等于可以少报" in SYSTEM_PROMPT
+
+    def test_system_prompt_bounds_length_per_item_not_globally(self):
+        assert "宜简明完整" not in SYSTEM_PROMPT
+        assert "2–4 句" in SYSTEM_PROMPT or "2-4 句" in SYSTEM_PROMPT
+
+    def test_system_prompt_forbids_meta_instructions_in_reason(self):
+        assert "元指令" in SYSTEM_PROMPT
+
+    def test_system_prompt_explains_when_source_excerpt_is_omitted(self):
+        assert "没有对应片段" in SYSTEM_PROMPT
+
+    def test_few_shot_no_longer_restates_anti_label_rule(self):
+        # The rule stays in SYSTEM_PROMPT and the user reminder; the example
+        # demonstrates compliance instead of repeating the prohibition.
+        assert "现状：" not in FEW_SHOT_EXAMPLE
+        assert "现状：" in SYSTEM_PROMPT
+        assert "现状：" in build_user_prompt("原文", "対象")
+
+
+class TestNoDownstreamSuggestionCap:
+    """Prompt-level density must be the only thing governing item count."""
+
+    def test_parser_returns_every_suggestion(self):
+        import json
+
+        from app.llm.parser import parse_model_output
+
+        payload = {
+            "suggestions": [
+                {"id": str(i), "original": f"語{i}", "reason": f"这里有问题{i}，应改为别的写法，因为会影响理解"}
+                for i in range(1, 13)
+            ],
+            "overallComment": "先说优点，再说问题。",
+        }
+        result = parse_model_output(json.dumps(payload, ensure_ascii=False))
+        assert len(result["suggestions"]) == 12

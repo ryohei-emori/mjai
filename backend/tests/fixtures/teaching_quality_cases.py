@@ -16,6 +16,9 @@ unless オフラインモード is ON):
      necessity — not bare “原文说了X所以改成Y” or vague “更能体现…”.
   4. Spelling / domain-term reasons should mention lasting competence impact
      when applicable.
+  5. Reasons read as critique addressed to the learner. Directives aimed at the
+     model (“don't raise X as the main point”) belong in the prompt rules, not
+     inside a reason (`refine-prompt-instruction-coherence`).
 """
 
 from .gemini_quality_bar_cases import (

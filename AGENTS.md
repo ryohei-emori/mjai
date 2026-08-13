@@ -372,6 +372,8 @@ All providers return the same JSON structure:
 
 `reason` / `overallComment` are Simplified Chinese. Each `reason` should convey problem → recommended JP form (when clear) → accessible why in **natural prose** — do not force spoken machine labels `现状：` / `推荐：` / `現状：` / `推奨：`. Multi-paragraph TARGET should get systematic real-issue coverage (target ≥~5 when that many exist; no padding). Gemini `maxOutputTokens` is 8192 so dense multi-suggestion JSON is less likely to truncate mid-array.
 
+**Prompt maintenance rule (`refine-prompt-instruction-coherence`, 2026-08):** when editing prompt rules, edit the few-shot exemplar to match. Models imitate the example's item count and issue categories more reliably than they obey a numeric target, so the example MUST demonstrate the stated density (≥5 in the backend prompt), cover the categories the rules call highest priority (meaning shift / modality, systematic grammar — not lexical and register items only), keep every item distinct (a restated correction is padding), and include one item that omits `sourceExcerpt` so an always-filled excerpt does not bias the model into inventing one. Exemplar `reason` text is learner-facing critique only — anti-pattern directives belong in the rule sections. Avoid hedges whose side effect is fewer items (a standalone "quality over count" line, or a global brevity cue instead of a per-item length bound). There is no suggestion-count cap in prompts, providers, or the parser; keep it that way.
+
 ### How to Get API Keys
 
 **Gemini (primary, free tier available):**

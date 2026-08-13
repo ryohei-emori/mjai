@@ -18,6 +18,16 @@ Manual verify (UI /api/suggestions — Groq/CF, not Gemini provider):
      contrast inside prose is fine.
   4. Dense real-issue coverage across paragraphs (≥~5 when real issues
      exist); no invented false 缺少; do not stop after only 1–2 items.
+  5. Items address distinct issues — the same correction restated as an extra
+     item counts as padding, not coverage.
+  6. `sourceExcerpt` appears only where a real 原文 counterpart exists. A
+     Japanese-internal grammar or 活用 fault should omit it rather than point
+     at a loosely related span (`refine-prompt-instruction-coherence`).
+
+Live probe on the epic corpus (2026-08, Gemini Flash, informational only):
+after `fix-critique-format-and-gemini-coverage` raised the output budget,
+Gemini returned 8–9 suggestions and every `sourceExcerpt` was verbatim
+present in SOURCE, so the earlier ~2-item behavior is not reproducible.
 """
 
 from .epic_shi_source_target import EPIC_SOURCE_TEXT, EPIC_TARGET_TEXT

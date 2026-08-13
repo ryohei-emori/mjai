@@ -79,6 +79,64 @@ describe("prompts exports", () => {
     expect(FEW_SHOT_EXAMPLES).not.toContain("更能体现");
   });
 
+  it("states each coverage rule once instead of duplicating it", () => {
+    // refine-prompt-instruction-coherence: the 7B instruction budget is small,
+    // so the anti-padding and early-stop clauses must not appear twice.
+    const occurrences = (haystack: string, needle: string) =>
+      haystack.split(needle).length - 1;
+    expect(occurrences(SYSTEM_PROMPT, "逐段")).toBe(1);
+    expect(occurrences(SYSTEM_PROMPT, "1–2条")).toBe(1);
+  });
+
+  it("does not let anti-padding license under-reporting", () => {
+    expect(SYSTEM_PROMPT).toContain("不等于可以少报");
+    expect(SYSTEM_PROMPT).toMatch(/每条约2–4句|每条约2-4句/);
+  });
+
+  it("explains when sourceExcerpt should be omitted", () => {
+    expect(SYSTEM_PROMPT).toContain("没有对应片段");
+    expect(SYSTEM_PROMPT).toContain("元指令");
+  });
+
+  describe("few-shot exemplar coherence", () => {
+    const parsed = JSON.parse(
+      FEW_SHOT_EXAMPLES.slice(FEW_SHOT_EXAMPLES.indexOf("{", FEW_SHOT_EXAMPLES.indexOf("输出：")))
+    ) as {
+      suggestions: { id: string; original: string; reason: string; sourceExcerpt?: string }[];
+      overallComment: string;
+    };
+
+    it("parses as valid JSON with distinct items", () => {
+      const originals = parsed.suggestions.map((s) => s.original);
+      expect(originals.length).toBeGreaterThanOrEqual(3);
+      expect(new Set(originals).size).toBe(originals.length);
+    });
+
+    it("no item restates another item's correction", () => {
+      // The old third item repeated the first item's 史詩→叙事詩 fix, modelling
+      // the padding-by-repetition the system prompt forbids.
+      const recommendingJojishi = parsed.suggestions.filter((s) =>
+        s.reason.includes("「叙事詩」")
+      );
+      expect(recommendingJojishi.length).toBe(1);
+    });
+
+    it("demonstrates both a present and an omitted sourceExcerpt", () => {
+      const present = parsed.suggestions.filter((s) => s.sourceExcerpt);
+      expect(present.length).toBeGreaterThan(0);
+      expect(present.length).toBeLessThan(parsed.suggestions.length);
+    });
+
+    it("covers a meaning/modality issue, not only lexical and register ones", () => {
+      const reasons = parsed.suggestions.map((s) => s.reason).join(" ");
+      expect(reasons).toMatch(/意义偏移|情态|推测|脱落/);
+    });
+
+    it("states the item count is not a cap", () => {
+      expect(FEW_SHOT_EXAMPLES).toContain("不是上限");
+    });
+  });
+
   it("exports all section templates", () => {
     expect(SECTION_ORIGINAL).toBe("＜中国語または日本語に翻訳する日本語または中国語の文＞");
     expect(SECTION_TARGET).toBe("＜日本語または中国語の文から中国語または日本語に翻訳を試みた文＞");
