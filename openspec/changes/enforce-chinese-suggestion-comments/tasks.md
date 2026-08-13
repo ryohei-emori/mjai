@@ -24,4 +24,4 @@
 ## 5. Verification
 
 - [x] 5.1 `openspec validate enforce-chinese-suggestion-comments --strict` (or equivalent) passes
-- [ ] 5.2 Commit and push to main (no secrets)
+- [x] 5.2 Commit and push to main (no secrets)
