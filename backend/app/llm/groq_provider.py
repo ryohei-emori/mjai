@@ -256,18 +256,25 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
     cooldown_codes = cooldown_status_codes()
 
     while True:
-        cred = acquire_groq(exclude_ids=list(attempted))
+        # Scope cooldown by model so a 429 on model A does not block model B
+        # rotation (Groq limits are often per-model TPM/RPD).
+        cred = acquire_groq(
+            exclude_ids=list(attempted),
+            cooldown_scope=resolved_model,
+        )
         if cred is None:
             if last_error is not None:
                 # Preserve original status when possible; wrap message for ops clarity.
                 raise GroqRateLimitError(
                     f"All Groq API keys are in cooldown or exhausted "
-                    f"(pool_size={pool_size}, cooled_or_tried={len(attempted)})",
+                    f"(pool_size={pool_size}, model={resolved_model}, "
+                    f"cooled_or_tried={len(attempted)})",
                     status_code=getattr(last_error, "status_code", None) or 429,
                 )
-            # Pool has keys but all are cooled down (or excluded).
+            # Pool has keys but all are cooled down (or excluded) for this model.
             raise GroqRateLimitError(
-                f"All Groq API keys are in cooldown or exhausted (pool_size={pool_size})",
+                f"All Groq API keys are in cooldown or exhausted "
+                f"(pool_size={pool_size}, model={resolved_model})",
                 status_code=429,
             )
 
@@ -279,10 +286,12 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         except GroqError as e:
             status = e.status_code
             if status in cooldown_codes:
-                mark_cooldown(cred.id)
+                mark_cooldown(cred.id, scope=resolved_model)
                 logger.warning(
-                    "%s failed with HTTP %s; cooling down and trying next key",
+                    "%s model=%s failed with HTTP %s; cooling down for this "
+                    "model and trying next key",
                     cred_ref,
+                    resolved_model,
                     status,
                 )
                 last_error = e

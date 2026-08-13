@@ -53,6 +53,7 @@ from .parser import (
     has_japanese_corner_quotes_in_critique,
     ParsedResponse,
 )
+from .key_pool import load_cloudflare_credentials, load_groq_credentials
 from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
@@ -105,11 +106,15 @@ class SuggestionsError(Exception):
         cf_error: Optional[str] = None,
         *,
         rate_limited: bool = False,
+        groq_pool_size: int = 0,
+        cf_pool_size: int = 0,
     ):
         super().__init__(message)
         self.groq_error = groq_error
         self.cf_error = cf_error
         self.rate_limited = rate_limited
+        self.groq_pool_size = groq_pool_size
+        self.cf_pool_size = cf_pool_size
 
 
 class NoProvidersConfiguredError(SuggestionsError):
@@ -168,6 +173,13 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
     groq_error: Optional[str] = None
     cf_error: Optional[str] = None
     groq_result: Optional[ParsedResponse] = None
+    groq_pool_size = len(load_groq_credentials())
+    cf_pool_size = len(load_cloudflare_credentials())
+    logger.info(
+        "LLM credential pools: groq_pool_size=%s cf_pool_size=%s",
+        groq_pool_size,
+        cf_pool_size,
+    )
 
     groq_key = get_groq_api_key()
     if groq_key:
@@ -269,6 +281,8 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
         groq_error=groq_error,
         cf_error=cf_error,
         rate_limited=rate_limited,
+        groq_pool_size=groq_pool_size,
+        cf_pool_size=cf_pool_size,
     )
 
 

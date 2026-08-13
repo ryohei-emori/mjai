@@ -19,7 +19,11 @@ from app.llm.key_pool import (
     redact_secret,
     reset_key_pool_state,
 )
-from app.llm.groq_provider import call_groq, GroqRateLimitError
+from app.llm.groq_provider import (
+    call_groq,
+    call_groq_with_rotation,
+    GroqRateLimitError,
+)
 from app.llm.cloudflare_provider import call_cloudflare, CloudflareRateLimitError
 
 
@@ -190,12 +194,17 @@ class TestProviderKeyFallback:
 
         assert mock_client.post.call_count == 2
         assert "pool_size=2" in str(exc_info.value)
-        # Cooled keys must not be selected again within the same process.
-        assert acquire_groq() is None
+        # Cooldown is model-scoped — same model must see an empty pool.
+        from app.llm.groq_provider import get_groq_model
+
+        assert acquire_groq(cooldown_scope=get_groq_model()) is None
+        # Unscoped acquire (Cloudflare-style) is unaffected by Groq model cooldowns.
+        assert acquire_groq() is not None
 
     async def test_groq_does_not_retry_cooled_key(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEYS", "key-a,key-b")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
         mock_client = AsyncMock()
         mock_client.post.side_effect = [
@@ -218,6 +227,64 @@ class TestProviderKeyFallback:
         assert mock_client.post.call_count == 1
         auth = mock_client.post.call_args.kwargs["headers"]["Authorization"]
         assert auth == "Bearer key-b"
+
+    async def test_groq_model_scoped_cooldown_allows_second_model(
+        self, monkeypatch
+    ):
+        """429 on model A must not block the same keys for model B rotation."""
+        monkeypatch.setenv("GROQ_API_KEYS", "key-a,key-b")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("GROQ_MODEL", raising=False)
+
+        mock_client = AsyncMock()
+        # Model A: both keys 429. Model B: key-a succeeds.
+        mock_client.post.side_effect = [
+            _FakeResponse(status_code=429, text="rate"),
+            _FakeResponse(status_code=429, text="rate"),
+            _FakeResponse(status_code=200),
+        ]
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+
+        with patch("app.llm.groq_provider.httpx.AsyncClient", return_value=mock_client):
+            with patch(
+                "app.llm.groq_provider.select_groq_models",
+                return_value=["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+            ):
+                result = await call_groq_with_rotation(
+                    [{"role": "user", "content": "hi"}]
+                )
+
+        assert result == "{}"
+        assert mock_client.post.call_count == 3
+        models = [
+            c.kwargs["json"]["model"] for c in mock_client.post.call_args_list
+        ]
+        assert models[0] == "openai/gpt-oss-120b"
+        assert models[1] == "openai/gpt-oss-120b"
+        assert models[2] == "openai/gpt-oss-20b"
+        auth = mock_client.post.call_args_list[2].kwargs["headers"]["Authorization"]
+        assert auth in ("Bearer key-a", "Bearer key-b")
+
+    async def test_groq_same_model_still_skips_cooled_key(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEYS", "key-a,key-b")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        model = "openai/gpt-oss-20b"
+        monkeypatch.setenv("GROQ_MODEL", model)
+
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = [
+            _FakeResponse(status_code=429, text="rate"),
+            _FakeResponse(status_code=200),
+        ]
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+
+        with patch("app.llm.groq_provider.httpx.AsyncClient", return_value=mock_client):
+            await call_groq([{"role": "user", "content": "hi"}], model=model)
+
+        # Same model: key-a still cooled; only key-b is eligible.
+        assert acquire_groq(cooldown_scope=model).api_key == "key-b"
 
     async def test_cloudflare_retries_next_credential_on_429(self, monkeypatch):
         monkeypatch.setenv("CLOUDFLARE_ACCOUNT_IDS", "acc-a,acc-b")

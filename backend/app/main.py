@@ -352,6 +352,8 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "cf_error": e.cf_error,
                 "fallback_available": True,
                 "rate_limited": bool(getattr(e, "rate_limited", False)),
+                "groq_pool_size": int(getattr(e, "groq_pool_size", 0) or 0),
+                "cf_pool_size": int(getattr(e, "cf_pool_size", 0) or 0),
                 "message": client_message,
             }
         )

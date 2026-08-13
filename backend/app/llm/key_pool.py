@@ -145,13 +145,25 @@ def format_credential_ref(provider: str, index: int, label: str) -> str:
     return f"{provider}[{index}] ({label})"
 
 
-def _is_cooled_down(credential_id: str, now: float) -> bool:
-    until = _cooldowns.get(credential_id)
+def _cooldown_key(credential_id: str, scope: Optional[str] = None) -> str:
+    """Map key for cooldown. Optional scope = model id (Groq per-model limits)."""
+    if scope:
+        return f"{credential_id}::{scope}"
+    return credential_id
+
+
+def _is_cooled_down(
+    credential_id: str,
+    now: float,
+    scope: Optional[str] = None,
+) -> bool:
+    key = _cooldown_key(credential_id, scope)
+    until = _cooldowns.get(key)
     if until is None:
         return False
     if until <= now:
         # Expired — drop entry lazily
-        _cooldowns.pop(credential_id, None)
+        _cooldowns.pop(key, None)
         return False
     return True
 
@@ -159,16 +171,25 @@ def _is_cooled_down(credential_id: str, now: float) -> bool:
 def mark_cooldown(
     credential_id: str,
     seconds: float = DEFAULT_COOLDOWN_SECONDS,
+    *,
+    scope: Optional[str] = None,
 ) -> None:
-    """Mark a credential unavailable until now + seconds."""
+    """Mark a credential unavailable until now + seconds.
+
+    When ``scope`` is set (e.g. Groq model id), cooldown applies only to that
+    scope so a different model can still use the same key.
+    """
     with _lock:
-        _cooldowns[credential_id] = time.monotonic() + max(0.0, seconds)
+        _cooldowns[_cooldown_key(credential_id, scope)] = (
+            time.monotonic() + max(0.0, seconds)
+        )
 
 
 def _acquire(
     provider: str,
     credentials: Sequence,
     exclude_ids: Optional[Sequence[str]] = None,
+    cooldown_scope: Optional[str] = None,
 ):
     """Round-robin among credentials that are not cooled down / excluded."""
     if not credentials:
@@ -179,7 +200,8 @@ def _acquire(
         eligible_indices = [
             i
             for i, c in enumerate(credentials)
-            if c.id not in excluded and not _is_cooled_down(c.id, now)
+            if c.id not in excluded
+            and not _is_cooled_down(c.id, now, cooldown_scope)
         ]
         if not eligible_indices:
             return None
@@ -195,8 +217,16 @@ def _acquire(
 
 def acquire_groq(
     exclude_ids: Optional[Sequence[str]] = None,
+    *,
+    cooldown_scope: Optional[str] = None,
 ) -> Optional[GroqCredential]:
-    return _acquire("groq", load_groq_credentials(), exclude_ids)
+    """Select a Groq key. ``cooldown_scope`` should be the model id in use."""
+    return _acquire(
+        "groq",
+        load_groq_credentials(),
+        exclude_ids,
+        cooldown_scope,
+    )
 
 
 def acquire_cloudflare(

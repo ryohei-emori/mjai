@@ -204,6 +204,9 @@ export type SuggestionsErrorResponse = {
   cf_error?: string;
   /** True when cloud providers failed due to rate-limit / quota / cooldown. */
   rate_limited?: boolean;
+  /** Loaded credential counts (no secrets) for ops diagnosis. */
+  groq_pool_size?: number;
+  cf_pool_size?: number;
 };
 
 /** Structured cloud-suggestions failure (quota/rate-limit visible to UI). */
