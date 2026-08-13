@@ -5,10 +5,21 @@ Primary provider for fast inference (~1-3 seconds).
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import httpx
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Set
+
+from .key_pool import (
+    acquire_groq,
+    cooldown_status_codes,
+    is_groq_configured,
+    load_groq_credentials,
+    mark_cooldown,
+)
+
+logger = logging.getLogger(__name__)
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -107,8 +118,13 @@ class GroqJsonValidateError(GroqError):
 
 
 def get_groq_api_key() -> Optional[str]:
-    """Get Groq API key from environment."""
-    return os.environ.get("GROQ_API_KEY")
+    """Return a configured Groq key if the pool is non-empty (back-compat).
+
+    Prefer `call_groq` / the key pool for outbound calls — this helper is
+    used for "is configured?" checks and does not advance round-robin.
+    """
+    creds = load_groq_credentials()
+    return creds[0].api_key if creds else None
 
 
 def get_groq_model() -> str:
@@ -143,34 +159,16 @@ def select_groq_models(n: int = 2) -> List[str]:
     return random.sample(ALLOWED_GROQ_MODELS, n)
 
 
-async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None) -> str:
-    """
-    Call Groq API with the given messages.
-    
-    Args:
-        messages: List of message dicts with role and content keys.
-        model: Optional model id override. Defaults to get_groq_model()
-            (the GROQ_MODEL env var, or DEFAULT_GROQ_MODEL if unset).
-        
-    Returns:
-        The assistant's response content.
-        
-    Raises:
-        GroqError: If API key is missing or other error occurs.
-        GroqRateLimitError: If rate limited (429).
-        GroqServerError: If server error (5xx).
-        GroqTimeoutError: If request times out.
-    """
-    api_key = get_groq_api_key()
-    if not api_key:
-        raise GroqError("GROQ_API_KEY not configured")
-    
+async def _call_groq_once(
+    api_key: str,
+    messages: list[dict[str, str]],
+    resolved_model: str,
+) -> str:
+    """Single Groq HTTP attempt with a concrete API key."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    
-    resolved_model = model or get_groq_model()
     payload: dict[str, Any] = {
         "model": resolved_model,
         "messages": messages,
@@ -186,7 +184,7 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         # See QWEN_REASONING_MODELS comment: without this, thinking tokens
         # can consume the entire max_tokens budget before any JSON is emitted.
         payload["reasoning_effort"] = "none"
-    
+
     try:
         async with httpx.AsyncClient(timeout=GROQ_TIMEOUT) as client:
             response = await client.post(GROQ_API_URL, headers=headers, json=payload)
@@ -194,28 +192,91 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         raise GroqTimeoutError(f"Groq request timed out after {GROQ_TIMEOUT}s") from e
     except httpx.RequestError as e:
         raise GroqError(f"Groq request failed: {e}") from e
-    
+
     if response.status_code == 429:
         raise GroqRateLimitError("Groq rate limit exceeded", status_code=429)
-    
+
     if response.status_code >= 500:
-        raise GroqServerError(f"Groq server error: {response.status_code}", status_code=response.status_code)
+        raise GroqServerError(
+            f"Groq server error: {response.status_code}",
+            status_code=response.status_code,
+        )
 
     if response.status_code == 400 and "json_validate_failed" in response.text:
         raise GroqJsonValidateError(
             f"Groq JSON validation failed: {response.text}",
             status_code=400,
         )
-    
+
     if response.status_code != 200:
-        raise GroqError(f"Groq API error: {response.status_code} - {response.text}", status_code=response.status_code)
-    
+        raise GroqError(
+            f"Groq API error: {response.status_code} - {response.text}",
+            status_code=response.status_code,
+        )
+
     data = response.json()
-    
+
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:
         raise GroqError(f"Unexpected Groq response format: {data}") from e
+
+
+async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None) -> str:
+    """
+    Call Groq API with the given messages.
+
+    Uses the API key pool: on 401/403/429, cools down the failing key and
+    retries with another eligible key (bounded by pool size).
+
+    Args:
+        messages: List of message dicts with role and content keys.
+        model: Optional model id override. Defaults to get_groq_model()
+            (the GROQ_MODEL env var, or DEFAULT_GROQ_MODEL if unset).
+
+    Returns:
+        The assistant's response content.
+
+    Raises:
+        GroqError: If API key is missing or other error occurs.
+        GroqRateLimitError: If rate limited (429).
+        GroqServerError: If server error (5xx).
+        GroqTimeoutError: If request times out.
+    """
+    if not is_groq_configured():
+        raise GroqError("GROQ_API_KEY not configured")
+
+    resolved_model = model or get_groq_model()
+    attempted: Set[str] = set()
+    last_error: Optional[GroqError] = None
+    cooldown_codes = cooldown_status_codes()
+
+    while True:
+        cred = acquire_groq(exclude_ids=list(attempted))
+        if cred is None:
+            if last_error is not None:
+                raise last_error
+            # Pool has keys but all are cooled down (or excluded).
+            raise GroqRateLimitError(
+                "All Groq API keys are in cooldown or exhausted",
+                status_code=429,
+            )
+
+        attempted.add(cred.id)
+        try:
+            return await _call_groq_once(cred.api_key, messages, resolved_model)
+        except GroqError as e:
+            status = e.status_code
+            if status in cooldown_codes:
+                mark_cooldown(cred.id)
+                logger.warning(
+                    "Groq credential %s failed with HTTP %s; cooling down and trying next key",
+                    cred.label,
+                    status,
+                )
+                last_error = e
+                continue
+            raise
 
 
 async def call_groq_with_rotation(messages: list[dict[str, str]]) -> str:

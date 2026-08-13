@@ -72,10 +72,14 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 **AI Provider Keys (backend-only, never `NEXT_PUBLIC_*`):**
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` | Primary AI provider for fast inference (~1-3s). Get from [console.groq.com](https://console.groq.com) |
+| `GROQ_API_KEYS` | Optional comma-separated Groq keys for the credential pool (`backend/app/llm/key_pool.py`). When non-empty after parse, overrides `GROQ_API_KEY`. |
+| `GROQ_API_KEY` | Singular back-compat. Primary AI provider for fast inference (~1-3s). Used when `GROQ_API_KEYS` is unset/empty. Get from [console.groq.com](https://console.groq.com) |
 | `GROQ_MODEL` | Optional. If set, disables per-request model rotation and pins every request to this exact model id (see `ALLOWED_GROQ_MODELS` rotation pool in `backend/app/llm/groq_provider.py`) |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers AI access |
+| `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Optional parallel comma-separated lists (same length) for multi-account Cloudflare Workers AI. When either plural var is set, both must match in length or the CF pool is empty. Overrides singular pair when non-empty. |
+| `CLOUDFLARE_ACCOUNT_ID` | Singular back-compat. Cloudflare account ID for Workers AI fallback. Get from Cloudflare dashboard |
+| `CLOUDFLARE_API_TOKEN` | Singular back-compat. Cloudflare API token with Workers AI access |
+
+**Key pool behavior:** each outbound Groq/Cloudflare call selects a credential via round-robin among non-cooled-down entries; on HTTP 401/403/429 the failing credential is cooled down (~60s) and the next key/pair is tried before the provider fails over. Single-key Vercel setups need no change.
 
 WebLLM (client-side) requires no backend configuration — it runs in the browser using WebGPU.
 
@@ -252,18 +256,18 @@ User Request → POST /api/suggestions (authenticated)
 |--------|---------|
 | `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
 | `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
-| `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + in-provider retry |
-| `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 45s timeout) with response-shape normalize |
+| `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare (env-driven) |
+| `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + key-pool retry + in-provider model retry |
+| `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 45s timeout) with response-shape normalize + key-pool retry |
 | `suggestions.py` | Failover chain logic |
 
 ### Environment Variables (Vercel Production)
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `GROQ_API_KEY` | Recommended | Primary provider. Get from [console.groq.com](https://console.groq.com) → API Keys |
+| `GROQ_API_KEY` or `GROQ_API_KEYS` | Recommended | Primary provider (singular or comma-separated pool). Get from [console.groq.com](https://console.groq.com) → API Keys |
 | `GROQ_MODEL` | Optional | Pins Groq to a single model id, disabling rotation across `ALLOWED_GROQ_MODELS`, without a code change |
-| `CLOUDFLARE_ACCOUNT_ID` | Optional | Fallback provider. Get from Cloudflare dashboard → Overview |
-| `CLOUDFLARE_API_TOKEN` | Optional | Fallback provider. Create token with Workers AI read access |
+| `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` or parallel `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Optional | Fallback provider (singular pair or equal-length parallel lists). Account ID from Cloudflare dashboard → Overview |
 
 If neither is configured, `/api/suggestions` returns 503 and frontend auto-falls back to WebLLM.
 

@@ -183,7 +183,7 @@ async def _generate_suggestions_once(messages: list[dict]) -> ParsedResponse:
             groq_error = str(e)
     else:
         logger.info("Groq not configured, trying Cloudflare directly")
-        groq_error = "GROQ_API_KEY not configured"
+        groq_error = "Groq API key not configured"
     
     cf_account, cf_token = get_cloudflare_credentials()
     if cf_account and cf_token:
@@ -260,7 +260,8 @@ async def generate_suggestions(original_text: str, target_text: str) -> ParsedRe
     """
     if not are_providers_configured():
         raise NoProvidersConfiguredError(
-            "No LLM providers configured. Set GROQ_API_KEY or CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN."
+            "No LLM providers configured. Set GROQ_API_KEY(S) or "
+            "CLOUDFLARE_ACCOUNT_ID(S) + CLOUDFLARE_API_TOKEN(S)."
         )
 
     base_messages = build_messages(original_text, target_text)
