@@ -216,6 +216,8 @@ Fixed header with navigation tabs and user controls.
 - Logo: "MJAI" text wordmark only (no icon)
 - Nav tabs: `Sessions` (active), `Dashboard`, `Archive` (Coming Soon)
 - Right side: New Session button, notification bell, settings (disabled), avatar, logout
+- **Notification bell badge**: Count of **completed** jobs in the current session's Job Queue that still await HITL confirm/save (`status === 'completed'`). Does **not** show active (`queued`/`processing`) count — that remains on the Job Queue panel's "N Active" badge.
+- **Bell click**: Opens a compact dropdown listing those completed-awaiting-HITL jobs (time, target-text snippet, status). Item click runs the same HITL confirm flow as clicking the job in Job Queue. Empty state when none.
 
 ### Three-Pane Layout
 
@@ -281,7 +283,7 @@ Desktop layout below TopAppBar. Right pane is user-resizable.
 
 ### Bell Shake Animation
 
-CSS animation triggered on job completion.
+CSS animation triggered when a job **completes** (transitions to `completed` / badge would increase). Not triggered on enqueue or when a job merely enters `processing`.
 
 ```css
 @keyframes bell-shake {
@@ -361,7 +363,8 @@ Refinement focused specifically on font-weight to match the reference mockup mor
 | Session header | `text-headline-lg font-semibold` | `text-headline-lg` | Redundant weight removed (built-in 700) |
 | Session card title | `font-medium` (500) | `font-semibold` (600) | Mockup shows semibold titles |
 | Status badges | (no weight) | `font-medium` (500) | Consistent badge weight |
-| "N Active" badge | `font-medium` | `font-semibold` | Stronger emphasis for active count |
+| Job Queue "N Active" badge | `font-medium` | `font-semibold` | Stronger emphasis for in-flight queue count (not the TopAppBar bell) |
+| TopAppBar bell badge | `font-medium` | `font-medium` (500) | Completed-awaiting-HITL count; keep medium weight for compact badge |
 | History card title | `font-medium` | `font-semibold` | Consistent with session cards |
 
 ### Typography Token Weights (Updated)

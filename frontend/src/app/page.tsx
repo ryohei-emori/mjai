@@ -377,6 +377,7 @@ export default function TextCorrectionApp() {
   const [confirmingHistoryIndex, setConfirmingHistoryIndex] = useState<number | null>(null)
   const [activeNav, setActiveNav] = useState<ActiveNav>('sessions')
   const [bellShake, setBellShake] = useState(false)
+  const [bellPanelOpen, setBellPanelOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState("")
   const [rightPaneWidth, setRightPaneWidth] = useState(RIGHT_PANE_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
@@ -402,6 +403,7 @@ export default function TextCorrectionApp() {
   // 保持する。オープン中のジョブは高々1件を想定するが、Mapで安全に扱う。
   const reviewSegmentStartRef = useRef<Map<string, number>>(new Map())
   const bellShakeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const bellPanelRef = useRef<HTMLDivElement | null>(null)
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   // このブラウザタブのセッションでDraft/ジョブキューを既に復元済みのセッションID
   // （同一セッションへ何度も切り替えるたびに復元し直してユーザーの最新編集を
@@ -470,6 +472,30 @@ export default function TextCorrectionApp() {
       window.removeEventListener('pointerup', handlePointerUp)
     }
   }, [isResizing, rightPaneWidth])
+
+  // Close notification panel on outside click or Escape
+  useEffect(() => {
+    if (!bellPanelOpen) return
+
+    const handlePointerDown = (event: MouseEvent | PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && bellPanelRef.current && !bellPanelRef.current.contains(target)) {
+        setBellPanelOpen(false)
+      }
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setBellPanelOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [bellPanelOpen])
 
   // Get user avatar from Google OAuth metadata
   const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture
@@ -1602,8 +1628,22 @@ export default function TextCorrectionApp() {
     s.name.toLowerCase().includes(sessionSearch.toLowerCase())
   )
 
-  // Count active jobs for the badge
+  // Job Queue panel: in-flight work
   const activeJobCount = jobQueue.filter(j => j.status === 'processing' || j.status === 'queued').length
+  // TopAppBar bell: completed jobs awaiting HITL confirm/save
+  const completedJobs = useMemo(
+    () =>
+      jobQueue
+        .filter((j) => j.status === 'completed')
+        .slice()
+        .sort((a, b) => {
+          const aTime = (a.completedAt ?? a.queuedAt).getTime()
+          const bTime = (b.completedAt ?? b.queuedAt).getTime()
+          return bTime - aTime
+        }),
+    [jobQueue],
+  )
+  const completedJobCount = completedJobs.length
 
   // 生成タイマー表示用の派生値（add-suggestion-generation-timer改訂、design.md
   // Decision 7参照）。「最新」はキュー待機/AI処理時間を含まない、レビュー
@@ -1738,18 +1778,83 @@ export default function TextCorrectionApp() {
 
         {/* Right side icons */}
         <div className="flex items-center gap-2">
-          {/* Notification Bell */}
-          <button
-            className={`p-2 rounded-full hover:bg-surface-container transition-colors relative ${bellShake ? 'bell-shake' : ''}`}
-            title="通知"
-          >
-            <span className="material-symbols-outlined md-24 text-on-surface-variant">notifications</span>
-            {activeJobCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-error text-on-error text-xs font-medium rounded-full w-5 h-5 flex items-center justify-center">
-                {activeJobCount}
-              </span>
+          {/* Notification Bell — badge = completed awaiting HITL */}
+          <div className="relative" ref={bellPanelRef}>
+            <button
+              type="button"
+              className={`p-2 rounded-full hover:bg-surface-container transition-colors relative ${bellShake ? 'bell-shake' : ''}`}
+              title="完了通知"
+              aria-label="完了通知"
+              aria-expanded={bellPanelOpen}
+              aria-haspopup="true"
+              onClick={() => setBellPanelOpen((open) => !open)}
+            >
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">notifications</span>
+              {completedJobCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-error text-on-error text-xs font-medium rounded-full w-5 h-5 flex items-center justify-center">
+                  {completedJobCount}
+                </span>
+              )}
+            </button>
+            {bellPanelOpen && (
+              <div
+                className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-surface border border-outline-variant z-50"
+                role="menu"
+                aria-label="完了ジョブ一覧"
+              >
+                <div className="px-3 py-2 border-b border-outline-variant">
+                  <p className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+                    Notifications
+                  </p>
+                  <p className="text-metadata text-on-surface-variant mt-0.5">
+                    確認待ちの完了ジョブ
+                  </p>
+                </div>
+                {completedJobs.length === 0 ? (
+                  <p className="px-3 py-6 text-body-sm text-on-surface-variant text-center">
+                    確認待ちの完了ジョブはありません
+                  </p>
+                ) : (
+                  <ul className="py-1 max-h-80 overflow-y-auto">
+                    {completedJobs.map((job) => {
+                      const time = job.completedAt ?? job.queuedAt
+                      const snippet =
+                        job.targetText.slice(0, 40) +
+                        (job.targetText.length > 40 ? '...' : '')
+                      return (
+                        <li key={job.id}>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="w-full text-left px-3 py-2.5 hover:bg-surface-container transition-colors border-b border-outline-variant last:border-b-0"
+                            onClick={() => {
+                              confirmJob(job)
+                              setBellPanelOpen(false)
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="material-symbols-outlined md-18 text-session-complete">
+                                check_circle
+                              </span>
+                              <Badge variant="outline" className="text-xs font-medium">
+                                完了
+                              </Badge>
+                              <span className="text-metadata text-on-surface-variant ml-auto">
+                                {time.toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <p className="text-body-sm text-on-surface mt-1 truncate">
+                              {snippet || '(空のテキスト)'}
+                            </p>
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
             )}
-          </button>
+          </div>
 
           {/* Settings Icon (disabled placeholder) */}
           <button
