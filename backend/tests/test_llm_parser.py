@@ -336,6 +336,33 @@ Hope this helps!'''
 
         assert result["suggestions"] == []
 
+    def test_truncated_dense_response_keeps_every_complete_item(self):
+        """Regression (fix-gemini-thinking-coverage-budget): with thinking
+        reduced, Gemini emits far more items per response, and a live
+        gemini-3.6-flash reply arrived unterminated after 17 complete items.
+        Only the incomplete trailing item may be lost — earlier complete ones
+        must all survive, with contiguous ids."""
+        complete = ",".join(
+            f'{{"id":"{i}","original":"箇所{i}","reason":"理由{i}"}}'
+            for i in range(1, 18)
+        )
+        text = (
+            '{"suggestions":[' + complete
+            + ',{"id":"18","original":"箇所18","reason":"途中で切'
+        )
+        result = parse_model_output(text)
+
+        # All 17 complete items survive verbatim. The partial 18th is salvaged
+        # too (its `original` closed before the cutoff, so only `reason` is
+        # lost), but the guarantee under test is that no *complete* item is
+        # discarded and ids stay contiguous.
+        assert len(result["suggestions"]) >= 17
+        for i in range(1, 18):
+            item = result["suggestions"][i - 1]
+            assert item["id"] == str(i)
+            assert item["original"] == f"箇所{i}"
+            assert item["reason"] == f"理由{i}"
+
     # === Tests for blank-item filtering (2026-08 refine-suggestion-card-interactions) ===
 
     def test_fully_blank_item_is_dropped(self):

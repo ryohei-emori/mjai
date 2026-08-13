@@ -123,6 +123,8 @@ flowchart TB
 
 The `backend/app/llm/` module provides cloud-based AI suggestion generation (Gemini primary → Groq secondary → Cloudflare Workers AI tertiary, each with env-driven key pools). WebLLM remains on the frontend as an offline fallback option (explicit toggle only).
 
+**Generation budget (must stay mutually consistent):** Vercel `maxDuration` 60s bounds everything; `suggestions.py` aborts at `SUGGESTIONS_WALL_CLOCK_S` 55s so a failing chain returns app-level 503 rather than a platform 504; per-provider HTTP timeouts are Gemini 22s, Groq 25s, Cloudflare 20s. Gemini requests `maxOutputTokens` 16384 with `thinkingConfig.thinkingLevel` `low` (override: `GEMINI_THINKING_LEVEL`, where `none` restores provider-default thinking). The token ceiling is headroom, not a target — a dense multi-paragraph critique consumes ~1.4k–2.1k completion tokens against an advertised model `outputTokenLimit` of 65536. The thinking level is the load-bearing setting: Gemini 3.x Flash's default thinking spends ~2.9k–3.8k thought tokens, which pushed measured latency to ~21s against the 22s timeout (calls timed out and silently demoted to Groq) and produced *thinner* coverage (~1.4 suggestions per TARGET paragraph vs ~2–4 with thinking reduced). `gemini_provider.py` logs `finishReason` plus `usageMetadata` token counts so this stays measurable in production.
+
 #### Frontend (`frontend/src/`, Next.js 15 App Router, React 19, TypeScript)
 
 | Area | Responsibility |
@@ -311,6 +313,7 @@ This is primarily an as-built record; most historical choices were not re-litiga
 | **Cloud LLM failover (Gemini → Groq → CF)** | Quality-first default (Gemini Flash) + multi-provider resilience; happy-path latency may be higher than Groq-first. **Implemented** as the default cloud path. |
 | **Client-side WebLLM** | Removes server API dependency for offline/privacy use; adds model download and WebGPU constraints. **Implemented** as an explicit オフラインモード toggle (not automatic fallback). |
 | **Groq-primary / Gemini-tertiary** | Lower happy-path latency; weaker critique quality on the default path. Superseded by Gemini → Groq → CF ordering. |
+| **Raise `GEMINI_TIMEOUT` instead of reducing Gemini thinking** | Would stop default-thinking calls from timing out, but the chain already commits 22+25+20=67s of provider timeouts against a 55s wall clock, so a larger Gemini share makes a slow primary consume the whole budget and return 503 without Groq or CF being tried. **Rejected** in favour of `thinkingLevel: low`, which cut measured latency to ~7–16s and left the 22s timeout with real headroom. |
 | **Backend on Render** | Always-on web service with traditional container deployment. **Replaced** by Vercel serverless for unified hosting and simpler operations. |
 | **Hard-delete sessions always** | Simpler; loses recoverability. Postgres path chose soft-archive via `status`. |
 

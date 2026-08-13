@@ -8,17 +8,25 @@ import pytest
 
 from app.llm.gemini_provider import (
     ALLOWED_GEMINI_MODELS,
+    DEFAULT_GEMINI_THINKING_LEVEL,
+    GEMINI_MAX_OUTPUT_TOKENS,
     GeminiError,
     GeminiRateLimitError,
     call_gemini,
     call_gemini_with_rotation,
     get_gemini_model,
+    get_thinking_level,
     is_rotation_enabled,
     select_gemini_models,
     _extract_text_from_response,
     _messages_to_gemini_payload,
 )
 from app.llm.key_pool import reset_key_pool_state
+
+# Advertised outputTokenLimit of every model in ALLOWED_GEMINI_MODELS, confirmed
+# via live `GET /v1beta/models/{model}` probes (2026-08). Requesting more than
+# this is rejected with HTTP 400.
+GEMINI_MODEL_OUTPUT_TOKEN_LIMIT = 65536
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +74,85 @@ class TestMessageMapping:
         assert payload["system_instruction"]["parts"][0]["text"] == "sys"
         assert payload["contents"][0]["role"] == "user"
         assert payload["generationConfig"]["responseMimeType"] == "application/json"
-        assert payload["generationConfig"]["maxOutputTokens"] >= 8192
+        assert payload["generationConfig"]["maxOutputTokens"] >= 16384
+
+
+class TestTokenBudget:
+    def test_budget_has_headroom_over_dense_critique_usage(self):
+        # Live probes peak at ~2.1k completion tokens for a dense multi-paragraph
+        # critique; the ceiling must be several times that, not merely above it.
+        assert GEMINI_MAX_OUTPUT_TOKENS >= 16384
+
+    def test_budget_stays_inside_model_cap(self):
+        assert GEMINI_MAX_OUTPUT_TOKENS <= GEMINI_MODEL_OUTPUT_TOKEN_LIMIT
+
+
+class TestThinkingConfig:
+    def test_default_requests_reduced_thinking(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_THINKING_LEVEL", raising=False)
+        payload = _messages_to_gemini_payload([{"role": "user", "content": "hi"}])
+        thinking = payload["generationConfig"]["thinkingConfig"]
+        assert thinking == {"thinkingLevel": DEFAULT_GEMINI_THINKING_LEVEL}
+        assert DEFAULT_GEMINI_THINKING_LEVEL == "low"
+
+    def test_uses_thinking_level_not_thinking_budget(self, monkeypatch):
+        # gemini-3.6-flash rejects `thinkingBudget` with HTTP 400, so the pooled
+        # request must never carry that field.
+        monkeypatch.delenv("GEMINI_THINKING_LEVEL", raising=False)
+        payload = _messages_to_gemini_payload([{"role": "user", "content": "hi"}])
+        assert "thinkingBudget" not in payload["generationConfig"]["thinkingConfig"]
+
+    def test_env_override_sets_level(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_THINKING_LEVEL", "high")
+        assert get_thinking_level() == "high"
+        payload = _messages_to_gemini_payload([{"role": "user", "content": "hi"}])
+        assert payload["generationConfig"]["thinkingConfig"] == {
+            "thinkingLevel": "high"
+        }
+
+    def test_opt_out_omits_thinking_config(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_THINKING_LEVEL", "none")
+        payload = _messages_to_gemini_payload([{"role": "user", "content": "hi"}])
+        assert "thinkingConfig" not in payload["generationConfig"]
+
+    def test_blank_override_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_THINKING_LEVEL", "   ")
+        assert get_thinking_level() == DEFAULT_GEMINI_THINKING_LEVEL
+
+
+class TestUsageMetadataLogging:
+    def test_logs_usage_token_counts(self, caplog):
+        import logging
+
+        payload = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": '{"suggestions":[]}'}]},
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 3089,
+                "candidatesTokenCount": 1369,
+                "thoughtsTokenCount": 42,
+                "totalTokenCount": 4500,
+            },
+        }
+        with caplog.at_level(logging.INFO, logger="app.llm.gemini_provider"):
+            _extract_text_from_response(payload)
+        usage_logs = [r.getMessage() for r in caplog.records if "usage" in r.getMessage()]
+        assert usage_logs, "expected a usage log line"
+        joined = " ".join(usage_logs)
+        for count in ("3089", "1369", "42", "4500"):
+            assert count in joined
+
+    def test_missing_usage_metadata_does_not_raise(self):
+        payload = {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"suggestions":[]}'}]}}
+            ]
+        }
+        assert "suggestions" in _extract_text_from_response(payload)
 
     def test_extract_logs_max_tokens_finish_reason(self, caplog):
         import logging

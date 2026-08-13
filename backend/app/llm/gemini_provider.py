@@ -43,6 +43,22 @@ DEFAULT_GEMINI_MODEL = ALLOWED_GEMINI_MODELS[0]
 # budget so a hung primary call cannot alone cause FUNCTION_INVOCATION_TIMEOUT.
 GEMINI_TIMEOUT = 22.0  # seconds
 
+# Both pooled models advertise outputTokenLimit=65536, so this ceiling cannot
+# be rejected as out-of-range. Live probes consume 1.2k-2.1k completion tokens
+# for a dense multi-paragraph critique, so this is headroom, not a target.
+GEMINI_MAX_OUTPUT_TOKENS = 16384
+
+# Gemini 3.x Flash thinks by default, spending ~2.9k-3.8k thought tokens that
+# push a homework-length call to ~21s against GEMINI_TIMEOUT (live probes timed
+# out outright) *and* yield a thinner critique (~1.4 suggestions per TARGET
+# paragraph vs ~2-4 with thinking reduced). `thinkingLevel` is used rather than
+# `thinkingBudget` because gemini-3.6-flash rejects `thinkingBudget` with HTTP
+# 400 while accepting `thinkingLevel`.
+DEFAULT_GEMINI_THINKING_LEVEL = "low"
+# GEMINI_THINKING_LEVEL=none omits thinkingConfig entirely (provider default
+# thinking) instead of sending a literal "none" the API would reject.
+THINKING_LEVEL_OPT_OUT = "none"
+
 
 class GeminiError(Exception):
     """Error from Gemini API."""
@@ -85,6 +101,13 @@ def get_gemini_model() -> str:
     return (os.environ.get("GEMINI_MODEL") or "").strip() or DEFAULT_GEMINI_MODEL
 
 
+def get_thinking_level() -> str:
+    """Get the Gemini thinking level, overridable via GEMINI_THINKING_LEVEL."""
+    return (
+        os.environ.get("GEMINI_THINKING_LEVEL") or ""
+    ).strip() or DEFAULT_GEMINI_THINKING_LEVEL
+
+
 def is_rotation_enabled() -> bool:
     """Rotation is disabled when GEMINI_MODEL pins a non-empty model id."""
     return not (os.environ.get("GEMINI_MODEL") or "").strip()
@@ -123,16 +146,18 @@ def _messages_to_gemini_payload(
     if not contents:
         contents = [{"role": "user", "parts": [{"text": ""}]}]
 
+    generation_config: Dict[str, Any] = {
+        "temperature": 0.15,
+        "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
+        "responseMimeType": "application/json",
+    }
+    thinking_level = get_thinking_level()
+    if thinking_level.lower() != THINKING_LEVEL_OPT_OUT:
+        generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
+
     payload: Dict[str, Any] = {
         "contents": contents,
-        "generationConfig": {
-            "temperature": 0.15,
-            # Homework-length multi-suggestion JSON with pedagogical reasons
-            # needs headroom; 4096 truncated mid-array in live Gemini smoke
-            # (parser then kept ~2 complete items).
-            "maxOutputTokens": 8192,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": generation_config,
     }
     if system_chunks:
         payload["system_instruction"] = {
@@ -160,6 +185,23 @@ def _extract_text_from_response(data: dict[str, Any]) -> str:
             else logging.INFO
         )
         logger.log(level, "Gemini finishReason=%s", finish_reason)
+
+    # Token counts make "was the budget the constraint?" answerable from
+    # production logs: a STOP with candidatesTokenCount far below
+    # GEMINI_MAX_OUTPUT_TOKENS means the model chose to be brief, while a
+    # thoughtsTokenCount in the thousands means thinking, not output, is
+    # driving latency. Counts only — no prompt or response content.
+    usage = data.get("usageMetadata")
+    if isinstance(usage, dict):
+        logger.info(
+            "Gemini usage: prompt=%s candidates=%s thoughts=%s total=%s "
+            "(maxOutputTokens=%s)",
+            usage.get("promptTokenCount"),
+            usage.get("candidatesTokenCount"),
+            usage.get("thoughtsTokenCount"),
+            usage.get("totalTokenCount"),
+            GEMINI_MAX_OUTPUT_TOKENS,
+        )
 
     parts = (candidate0.get("content") or {}).get("parts") or []
     texts: List[str] = []

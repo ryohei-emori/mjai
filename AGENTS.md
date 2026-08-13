@@ -79,6 +79,7 @@ Defined in `conf/.env` (git-ignored; copy from `conf/.env.example`, never commit
 | `GEMINI_API_KEYS` | Optional comma-separated Gemini API keys for the primary provider pool. When non-empty after parse, overrides `GEMINI_API_KEY`. Get from [Google AI Studio](https://aistudio.google.com/apikey) |
 | `GEMINI_API_KEY` | Singular back-compat. Used when `GEMINI_API_KEYS` is unset/empty |
 | `GEMINI_MODEL` | Optional. If set, disables Gemini Flash rotation and pins every request to this exact model id (see `ALLOWED_GEMINI_MODELS` in `backend/app/llm/gemini_provider.py`) |
+| `GEMINI_THINKING_LEVEL` | Optional. Overrides the `thinkingConfig.thinkingLevel` sent to Gemini (default `low`). `none` omits `thinkingConfig` entirely, restoring provider-default thinking |
 
 **Key pool behavior:** each outbound Groq/Cloudflare/Gemini call selects a credential via round-robin among non-cooled-down entries; on HTTP 401/403/429 the failing credential is cooled down (~60s) and the next key/pair is tried before the provider fails over. **Groq and Gemini cooldown is model-scoped** (a 429 on one model does not block the same key for a sibling rotation model); Cloudflare cooldown remains credential-wide. Single-key Vercel setups need no change. Plural vars override singular (they are not merged — no double-counting). Duplicate identical keys in a plural list collapse to one entry. Cooldown is process-local (best-effort on Vercel warm instances; not shared across concurrent serverless isolates).
 
@@ -219,6 +220,7 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 | `GEMINI_API_KEYS` | Preferred. Comma-separated Gemini API keys (primary failover) |
 | `GEMINI_API_KEY` | Singular back-compat (used when plural unset/empty) |
 | `GEMINI_MODEL` | Optional pin (disables Flash rotation) |
+| `GEMINI_THINKING_LEVEL` | Optional thinking-level override (`low` default; `none` = provider default) |
 
 **How to set (CLI or Dashboard):**
 
@@ -260,7 +262,7 @@ AI correction suggestions use a **hybrid architecture**: cloud APIs by default, 
 ```
 User Request → POST /api/suggestions (authenticated)
  ↓
- Gemini API (primary, free-tier Flash pool, ~2-8s typical; 22s HTTP timeout)
+ Gemini API (primary, free-tier Flash pool, ~7-16s measured w/ thinkingLevel=low; 22s HTTP timeout)
  ↓ 429/5xx/timeout / unusable content
  Groq API (secondary, ~1-3s; 25s timeout)
  ↓ fail / unusable content
@@ -271,12 +273,14 @@ User Request → POST /api/suggestions (authenticated)
 
 | Path | Provider | Latency | When Used |
 |------|----------|---------|-----------|
-| **Default** | Gemini (`gemini-3.7-flash` / `gemini-3.6-flash` rotation; pin via `GEMINI_MODEL`) | ~2-8s | Gemini keys configured and available |
+| **Default** | Gemini (`gemini-3.7-flash` / `gemini-3.6-flash` rotation; pin via `GEMINI_MODEL`) | ~7-16s | Gemini keys configured and available |
 | **Secondary** | Groq, model rotation pool (see below), overridable/pinnable via `GROQ_MODEL` | ~1-3s | Gemini rate-limited/error/timeout or unusable content |
 | **Tertiary** | Cloudflare Workers AI | ~2-5s | Gemini and Groq failed or returned unusable content |
 | **Offline** | WebLLM (Mistral 7B) | ~10-30s | **Only** when user enables オフラインモード |
 
 **Vercel timeout ops:** `vercel.json` sets `api/index.py` `maxDuration` to **60s**. Provider HTTP timeouts (Gemini ~22s, Groq 25s, CF 20s) plus `suggestions.py` wall-clock budget (`SUGGESTIONS_WALL_CLOCK_S` ≈ 55s) MUST stay under that limit so a slow/failing failover chain returns app **503** with `gemini_pool_size` / `groq_pool_size` / `cf_pool_size` instead of opaque platform **504 FUNCTION_INVOCATION_TIMEOUT**. Empty Gemini pool skips Gemini immediately (no hang). After changing `GEMINI_API_KEYS` on Vercel, **redeploy** so serverless snapshots pick up the env.
+
+**Gemini thinking level is the latency/coverage lever (`fix-gemini-thinking-coverage-budget`, 2026-08):** Gemini 3.x Flash thinks by default, and live probes on the 5-paragraph epic fixture measured ~2.9k–3.8k `thoughtsTokenCount` per call, ~20.7–21.0s latency (**2 of 4 calls hit the 22s timeout and silently demoted to Groq**), and only 7 suggestions. `gemini_provider.py` therefore sends `generationConfig.thinkingConfig.thinkingLevel = "low"` (override `GEMINI_THINKING_LEVEL`; `none` = provider default), which measured 7.2–13.8s with 0 timeouts and 10–20 suggestions on the same prompt. Use `thinkingLevel`, **not** `thinkingBudget` — `gemini-3.6-flash` rejects `thinkingBudget` with HTTP 400 while `gemini-3.7-flash` accepts it, and the pool rotates randomly. **Do not raise `GEMINI_TIMEOUT` as an alternative fix**: 22+25+20 = 67s of provider timeouts already over-commit the 55s wall clock, so a larger Gemini share means a slow primary eats the budget and returns 503 without Groq/CF being tried. Reproduce with `backend/scripts/live_gemini_coverage.py`.
 
 **Groq model rotation (added 2026-08 ahead of `llama-3.3-70b-versatile`'s 2026-08-16 deprecation):** rather than pinning to a single hardcoded model, `backend/app/llm/groq_provider.py` selects a model per request from a curated allow-list (`ALLOWED_GROQ_MODELS`):
 
@@ -291,7 +295,7 @@ User Request → POST /api/suggestions (authenticated)
 - **JSON mode**: Groq requests send `response_format: {"type": "json_object"}` plus `max_tokens: 4096` so long epic corpora do not truncate mid-JSON or drift into prose.
 - **Content salvage**: if Gemini returns HTTP-OK but unparseable or non-Chinese `reason`/`overallComment`, `suggestions.py` still tries Groq, then Cloudflare, in the same pass before the outer language/parse retry loop.
 
-**Gemini model rotation (primary, free-tier Flash):** `backend/app/llm/gemini_provider.py` uses `ALLOWED_GEMINI_MODELS` (`gemini-3.7-flash`, `gemini-3.6-flash`) selected via `random.sample` with one in-provider retry on retriable failure — same pattern as Groq. Live probes (2026-08) confirmed these IDs on free-tier keys; `gemini-2.5-flash`/`gemini-2.5-pro` 404'd on the same keys. Prefer stable IDs over floating `gemini-flash-latest` (still pin-able via `GEMINI_MODEL`). Calls use Generative Language `generateContent` (v1beta) with `responseMimeType: application/json`. HTTP timeout is ~22s so primary + failover fit Vercel `maxDuration` (60s) with a soft wall-clock abort (~55s).
+**Gemini model rotation (primary, free-tier Flash):** `backend/app/llm/gemini_provider.py` uses `ALLOWED_GEMINI_MODELS` (`gemini-3.7-flash`, `gemini-3.6-flash`) selected via `random.sample` with one in-provider retry on retriable failure — same pattern as Groq. Live probes (2026-08) confirmed these IDs on free-tier keys; `gemini-2.5-flash`/`gemini-2.5-pro` 404'd on the same keys. Prefer stable IDs over floating `gemini-flash-latest` (still pin-able via `GEMINI_MODEL`). Calls use Generative Language `generateContent` (v1beta) with `responseMimeType: application/json`, `maxOutputTokens: 16384`, and `thinkingConfig.thinkingLevel: low`. HTTP timeout is ~22s so primary + failover fit Vercel `maxDuration` (60s) with a soft wall-clock abort (~55s). Both pooled models advertise `outputTokenLimit` 65536, so the 16384 ceiling is headroom (dense multi-paragraph critiques consume ~1.4k–2.1k completion tokens) and cannot trip the "above model limit ⇒ HTTP 400" failure mode.
 - **Excluded from the pool** (and why): `qwen/qwen3.6-27b` (live Chinese-enforcement smoke on CN-source/JP-target corpora frequently returned Japanese explanations or empty bodies despite `reasoning_effort: "none"`; still pin-able via `GROQ_MODEL`), `llama-3.3-70b-versatile` / `llama-3.1-8b-instant` (Groq shutdown date 2026-08-16), `qwen/qwen3-32b` (already deprecated/404s), `openai/gpt-oss-safeguard-20b` (safety/policy-classification tuned), `groq/compound`/`compound-mini` (agentic/tool-use, low RPD), `meta-llama/llama-prompt-guard-2-*` (classifier models), `allam-2-7b` (Arabic-focused, not evaluated for Japanese quality).
 - **Maintenance note**: `ALLOWED_GROQ_MODELS` is a static, manually-reviewed constant — there is no runtime catalog-refresh mechanism. If Groq announces further deprecations, update this list (and this table) as a small follow-up change; do not wait for production errors to surface it.
 
@@ -304,7 +308,7 @@ User Request → POST /api/suggestions (authenticated)
 | `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare + Gemini (env-driven) |
 | `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + key-pool retry + in-provider model retry |
 | `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 20s timeout) with response-shape normalize + key-pool retry |
-| `gemini_provider.py` | Gemini `generateContent` (v1beta), ~22s timeout, JSON mime type, Flash rotation pool (`ALLOWED_GEMINI_MODELS`) + key-pool retry + in-provider model retry |
+| `gemini_provider.py` | Gemini `generateContent` (v1beta), ~22s timeout, JSON mime type, `maxOutputTokens` 16384, `thinkingLevel` low, Flash rotation pool (`ALLOWED_GEMINI_MODELS`) + key-pool retry + in-provider model retry; logs `finishReason` + `usageMetadata` token counts |
 | `suggestions.py` | Failover chain logic (Gemini → Groq → Cloudflare) + wall-clock budget before platform 504 |
 
 ### Environment Variables (Vercel Production)
@@ -313,6 +317,7 @@ User Request → POST /api/suggestions (authenticated)
 |----------|----------|---------|
 | `GEMINI_API_KEY` or `GEMINI_API_KEYS` | Recommended | Primary provider (singular or comma-separated pool). Get from [Google AI Studio](https://aistudio.google.com/apikey) |
 | `GEMINI_MODEL` | Optional | Pins Gemini to a single model id, disabling rotation across `ALLOWED_GEMINI_MODELS` |
+| `GEMINI_THINKING_LEVEL` | Optional | Overrides `thinkingConfig.thinkingLevel` (default `low`); `none` omits `thinkingConfig` and restores provider-default thinking |
 | `GROQ_API_KEY` or `GROQ_API_KEYS` | Recommended | Secondary provider (singular or comma-separated pool). Get from [console.groq.com](https://console.groq.com) → API Keys |
 | `GROQ_MODEL` | Optional | Pins Groq to a single model id, disabling rotation across `ALLOWED_GROQ_MODELS`, without a code change |
 | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` or parallel `CLOUDFLARE_ACCOUNT_IDS` + `CLOUDFLARE_API_TOKENS` | Optional | Tertiary provider (singular pair or equal-length parallel lists). Account ID from Cloudflare dashboard → Overview |
@@ -370,7 +375,7 @@ All providers return the same JSON structure:
 
 `sourceExcerpt` (added 2026-08, `highlight-suggestion-text-spans` change) is optional: an excerpt from SOURCE TEXT (原文) corresponding to the flagged TARGET TEXT snippet in `original`, used by the frontend to highlight the matching span in the SOURCE TEXT textarea. Omitted/empty when the model finds no clear correspondence — never fabricated. Not persisted through `POST /proposals`.
 
-`reason` / `overallComment` are Simplified Chinese. Each `reason` should convey problem → recommended JP form (when clear) → accessible why in **natural prose** — do not force spoken machine labels `现状：` / `推荐：` / `現状：` / `推奨：`. Multi-paragraph TARGET should get systematic real-issue coverage (target ≥~5 when that many exist; no padding). Gemini `maxOutputTokens` is 8192 so dense multi-suggestion JSON is less likely to truncate mid-array.
+`reason` / `overallComment` are Simplified Chinese. Each `reason` should convey problem → recommended JP form (when clear) → accessible why in **natural prose** — do not force spoken machine labels `现状：` / `推荐：` / `現状：` / `推奨：`. Multi-paragraph TARGET should get systematic real-issue coverage (target ≥~5 when that many exist; no padding). Gemini `maxOutputTokens` is 16384 so dense multi-suggestion JSON does not truncate mid-array — but the token ceiling was never the coverage constraint (measured `finishReason` is `STOP`, not `MAX_TOKENS`, at ~1.4k–2.1k completion tokens); the thinking level is. See **Gemini thinking level is the latency/coverage lever** above.
 
 **Prompt maintenance rule (`refine-prompt-instruction-coherence`, 2026-08):** when editing prompt rules, edit the few-shot exemplar to match. Models imitate the example's item count and issue categories more reliably than they obey a numeric target, so the example MUST demonstrate the stated density (≥5 in the backend prompt), cover the categories the rules call highest priority (meaning shift / modality, systematic grammar — not lexical and register items only), keep every item distinct (a restated correction is padding), and include one item that omits `sourceExcerpt` so an always-filled excerpt does not bias the model into inventing one. Exemplar `reason` text is learner-facing critique only — anti-pattern directives belong in the rule sections. Avoid hedges whose side effect is fewer items (a standalone "quality over count" line, or a global brevity cue instead of a per-item length bound). There is no suggestion-count cap in prompts, providers, or the parser; keep it that way.
 
