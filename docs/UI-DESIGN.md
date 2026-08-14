@@ -360,6 +360,38 @@ The track keeps a **visible thin native scrollbar** (`.job-carousel-track` in `g
 
 **Accessibility.** The track is `role="group"` with `aria-label="ジョブキュー一覧（横スライド）"` and `tabIndex={0}`; `ArrowLeft`/`ArrowRight` slide it while focus is inside, except when the event came from an `input`/`textarea`/contenteditable (the page's textareas must keep their caret keys). Arrows carry `aria-label="前のジョブへ"` / `"次のジョブへ"`. Interactive elements use `focus-visible:ring-2 focus-visible:ring-md3-primary`. Completed job cards keep their existing `role="button"` / `tabIndex={0}` / Enter-Space HITL confirm behaviour, and the browser scrolls a Tab-focused off-screen card into view.
 
+### Correction Label (shared card headings)
+
+Three surfaces need a one-line label that says *which* correction round a card is: the **History** card heading, the **Job Queue** card preview, and the **TopAppBar bell** notification row. All three derive it from the same pure helper `frontend/src/lib/correctionLabel.ts` (OpenSpec change `identifiable-history-card-headings`), the same way ordering lives once in `jobQueue/ordering.ts`. Previously the queue and the bell each inlined `targetText.slice(0, 40)` and History had no preview at all — its heading was the bare sequence number `添削データ #1`, which made two rounds indistinguishable without opening them.
+
+**Derivation rule** — reads the round's target text, falling back to its source text when the target is blank:
+
+| Case | Label |
+|---|---|
+| First non-blank line is **title-like** — ≤ 30 characters, followed by more content, not ending in `。．.!！?？…、，,;；:：` | that line verbatim, **no** ellipsis |
+| Anything else | whitespace-collapsed excerpt from the start of the text, cut at 30 characters, `…` appended only when characters were actually dropped |
+| Target and source both blank/whitespace-only | `(空のテキスト)` |
+
+Truncation counts **code points** (`Array.from`, not `slice`) so a label never ends in a broken surrogate pair and the 30-character budget means the same thing for Japanese, Chinese, and mixed text. Newlines and full-width spaces collapse to single spaces, so a multi-paragraph corpus still reads as one line.
+
+The 30-character budget is set by the tightest consumer: the History heading is `text-body-sm` sharing its row with a badge, so anything longer is clipped by CSS regardless. `…` (U+2026) replaces the old hand-rolled `'...'` — one character instead of three, and it reads as elision rather than as part of the text.
+
+**History card layout.** The label is the heading; the sequence number demotes to the metadata line so it can still be used to refer to a round (and to disambiguate two rounds pasted from the same corpus) without being the only way to tell them apart.
+
+```
+┌────────────────────────────────────────┐
+│ 英雄史詩ーいかが宿命に直面   [Saved] ✓ 🗄 │
+│ #1 · 2026/8/13 21:44:01                │
+└────────────────────────────────────────┘
+```
+
+| Element | Classes |
+|---|---|
+| Heading | `font-semibold text-body-sm text-on-surface truncate` — weight unchanged from Iteration 3 |
+| Metadata line | `text-metadata text-on-surface-variant`, `#N · <timestamp>` joined by a middle dot so the card gains no height |
+| Text column | `min-w-0 flex-1` — required, or a long label pushes the action buttons out of the card |
+| Badge / action group | `shrink-0`, row spaced with `gap-2` |
+
 ### AI Suggestion Card
 
 ```

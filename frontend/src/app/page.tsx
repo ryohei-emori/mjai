@@ -41,6 +41,7 @@ import {
   sortCompletedJobsNewestFirst,
   sortJobsByRelevance,
 } from "@/lib/jobQueue/ordering"
+import { deriveCorrectionLabel } from "@/lib/correctionLabel"
 import {
   dockSessionPaneState,
   isPaneDocked,
@@ -2293,9 +2294,7 @@ export default function TextCorrectionApp() {
                   <ul className="py-1 max-h-80 overflow-y-auto">
                     {completedJobs.map((job) => {
                       const time = job.completedAt ?? job.queuedAt
-                      const snippet =
-                        job.targetText.slice(0, 40) +
-                        (job.targetText.length > 40 ? '...' : '')
+                      const snippet = deriveCorrectionLabel(job).text
                       return (
                         <li key={job.id}>
                           <button
@@ -2319,7 +2318,7 @@ export default function TextCorrectionApp() {
                               </span>
                             </div>
                             <p className="text-body-sm text-on-surface mt-1 truncate">
-                              {snippet || '(空のテキスト)'}
+                              {snippet}
                             </p>
                           </button>
                         </li>
@@ -2720,7 +2719,7 @@ export default function TextCorrectionApp() {
                                 )}
                               </div>
                               <p className="text-metadata text-on-surface-variant mt-1 truncate">
-                                {job.targetText.slice(0, 40)}{job.targetText.length > 40 ? '...' : ''}
+                                {deriveCorrectionLabel(job).text}
                               </p>
                               <p className="text-metadata text-on-surface-variant">
                                 {job.queuedAt.toLocaleTimeString()}
@@ -2984,23 +2983,31 @@ export default function TextCorrectionApp() {
                             role="button"
                             tabIndex={0}
                           >
-                            <div className="flex justify-between items-start">
-                              <div>
+                            <div className="flex justify-between items-start gap-2">
+                              {/* 見出しは中身から導いたラベル。連番だけでは
+                                  どのラウンドか判別できなかったため主従を入れ替え、
+                                  #N は日時と同じメタデータ行へ降ろした
+                                  （identifiable-history-card-headings change参照）。 */}
+                              <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <h4 className="font-semibold text-body-sm text-on-surface">添削データ #{index + 1}</h4>
+                                  <h4 className="font-semibold text-body-sm text-on-surface truncate">
+                                    {deriveCorrectionLabel(data).text}
+                                  </h4>
                                   {data.confirmed ? (
-                                    <Badge className="bg-session-complete text-white text-xs font-medium">
+                                    <Badge className="bg-session-complete text-white text-xs font-medium shrink-0">
                                       Saved
                                     </Badge>
                                   ) : (
-                                    <Badge variant="outline" className="text-on-surface-variant border-outline text-xs font-medium">
+                                    <Badge variant="outline" className="text-on-surface-variant border-outline text-xs font-medium shrink-0">
                                       未確認
                                     </Badge>
                                   )}
                                 </div>
-                                <p className="text-metadata text-on-surface-variant">{data.timestamp.toLocaleString()}</p>
+                                <p className="text-metadata text-on-surface-variant">
+                                  #{index + 1} · {data.timestamp.toLocaleString()}
+                                </p>
                               </div>
-                              <div className="flex gap-1">
+                              <div className="flex gap-1 shrink-0">
                                 <Button 
                                   variant={data.confirmed ? "ghost" : "outline"} 
                                   size="sm"
