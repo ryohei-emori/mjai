@@ -191,4 +191,21 @@ describe("describeSuggestionsFailure", () => {
     const networkError = new (class extends Error {})("Failed to fetch")
     expect(describeSuggestionsFailure(networkError)).toBe("Failed to fetch")
   })
+
+  it("explains a platform-level function timeout instead of showing its raw text", async () => {
+    // Vercel kills the function with a non-JSON 504, so none of the app's own
+    // diagnostics are in the response — the user saw the bare
+    // FUNCTION_INVOCATION_TIMEOUT string.
+    fetchMock.resetMocks()
+    fetchMock.mockResponseOnce(
+      "An error occurred with your deployment\n\nFUNCTION_INVOCATION_TIMEOUT",
+      { status: 504 },
+    )
+
+    const error = await suggestionsAPI.generate("原文", "対象").catch((e: unknown) => e)
+    const message = describeSuggestionsFailure(error)
+
+    expect(message).toContain("サーバーの実行時間上限に達した")
+    expect(message).not.toContain("FUNCTION_INVOCATION_TIMEOUT")
+  })
 })

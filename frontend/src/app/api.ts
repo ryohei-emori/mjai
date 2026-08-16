@@ -346,6 +346,21 @@ export function withProviderDetail(message: string, detail: string): string {
 }
 
 /**
+ * True when the hosting platform killed the function instead of the app
+ * answering — a 5xx whose body is not our JSON error shape, or Vercel's
+ * FUNCTION_INVOCATION_TIMEOUT text.
+ *
+ * Worth distinguishing because none of the app's own diagnostics exist in that
+ * response: no per-provider breakdown, no flags, no partial critique. The
+ * backend budget is sized to make this unreachable, so seeing it means the
+ * invocation itself overran (`fix-function-invocation-timeout`).
+ */
+export function isPlatformTimeout(err: SuggestionsAPIError): boolean {
+  if (/FUNCTION_INVOCATION_TIMEOUT/i.test(err.message)) return true;
+  return (err.status === 504 || err.status === 502) && !err.body;
+}
+
+/**
  * Japanese explanation of a failed cloud generation, plus the breakdown.
  *
  * The backend's `message` is English prose meant for logs and ops (this is how
@@ -359,6 +374,12 @@ export function describeSuggestionsFailure(err: unknown): string {
   if (err.status === 0) {
     // Never reached the backend: the browser's own message is the useful one.
     return err.message || "クラウドAPIへの接続に失敗しました";
+  }
+  if (isPlatformTimeout(err)) {
+    return (
+      "サーバーの実行時間上限に達したため、添削生成が打ち切られました。" +
+      "もう一度お試しください。繰り返す場合は原文・訳文を短く分けてください。"
+    );
   }
   const base = err.rateLimited
     ? "クラウドAPIのレート制限またはクォータ超過です。しばらく待つか、オフラインモードを有効にしてください。"
