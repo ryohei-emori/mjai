@@ -134,7 +134,8 @@ Supabase無料プランはアクティビティがないとプロジェクトが
 |----------|---------|---------|
 | `.github/workflows/ci.yml` | push to main, PRs to main | Run backend pytest + frontend jest + lint (optional) |
 | `.github/workflows/supabase-keepalive.yml` | cron (3日ごと), manual | Supabase無料プラン一時停止防止 |
-| `backend/.github/workflows/migrate-database.yml` | manual only | ⚠️ ライブDBマイグレーション（要確認） |
+| `.github/workflows/apply-migrations.yml` | manual only | ⚠️ Supabase CLIで共有Postgresにマイグレーション適用（下記参照） |
+| `backend/.github/workflows/migrate-database.yml` | manual only | ⚠️ ライブDBマイグレーション（要確認。`backend/.github/` 配下なのでGitHubからは実行されない） |
 
 ### Deployment (Vercel Git Integration)
 
@@ -156,7 +157,7 @@ GitHub repoには3つのEnvironmentが存在:
 ### GitHub Secrets
 
 **必須（現在使用中）:**
-- `DATABASE_URL` — Supabase Postgres接続文字列（`migrate-database.yml`用、Vercel envは別途設定）
+- `DATABASE_URL` — Supabase Postgres接続文字列（`apply-migrations.yml`と`migrate-database.yml`用、Vercel envは別途設定）。環境スコープの場合は`apply-migrations.yml`の`environment` inputで対応する環境を選ぶこと
 - `SUPABASE_ACCESS_TOKEN`, `SUPABASE_ORG_ID` — Supabase管理用（将来のインフラ自動化用）
 
 **不要（削除可能）:**
@@ -174,6 +175,24 @@ GitHub repoには3つのEnvironmentが存在:
 3. **lint**: ESLint + ruff（`continue-on-error: true`、警告のみ）
 
 PRがmainにマージされるにはCIテストのパスが必要（GitHub Branch Protection Rulesで設定推奨）。
+
+### apply-migrations.yml（Supabase CLIでのマイグレーション適用）
+
+手動実行のみ。inputs は `environment`（`DATABASE_URL`シークレットのスコープ選択と監査用）、`mode`（`list` / `dry-run` / `push`）、`repair_versions`。**`mode=list`で現状を見てから`push`する**。
+
+- **`db push`をそのまま叩くと001で落ちる。** 001-005はSQL Editorから手で当てられたため`supabase_migrations.schema_migrations`が空になり得る。CLIは履歴に無い版を全部適用しようとするが、`001_initial_schema.sql`は素の`CREATE TABLE`、`002`は素の`ADD COLUMN`で冪等ではないので`relation "sessions" already exists`で失敗する。→ `mode=list`のremote列が空なら`repair_versions="001 002 003 004 005"`を渡す（repairはSQLを再実行せず履歴に記録するだけ）。003以降は`IF NOT EXISTS`ガード付き。
+- 接続文字列: poolerの6543（transaction mode）はDDLを流せないため、ワークフローが同ホストの5432（session mode）へ読み替える。アプリ側は6543のまま。
+- マイグレーションは`backend/supabase/migrations/`にあるので、CLIには**`--workdir backend`が必須**。リポジトリ直下の`supabase/.temp/linked-project.json`（ref `fqyhrubqkpuyliqojbai`）は`supabase link`の残骸で、`--db-url`経路では参照されない。
+- ローカルから同じことをする場合（`conf/.env`に`DATABASE_URL`がある前提）:
+
+```bash
+supabase migration list --workdir backend --db-url "$DATABASE_URL"
+# ↑のremote列が空のときだけ（既に当たっている版を履歴に記録する。SQLは再実行されない）
+supabase migration repair --status applied 001 002 003 004 005 --workdir backend --db-url "$DATABASE_URL"
+supabase db push --workdir backend --db-url "$DATABASE_URL"
+```
+
+- 検証済み（2026-08）: 上記手順をローカルPostgres 16（001-005のみ手で適用した状態）で実行し、006/007だけが適用されて`app_settings`と`llm_provider`/`llm_model`が作られ、履歴に001-007が記録され、再pushが`Remote database is up to date.`になることを確認した。
 
 ### migrate-database.yml
 

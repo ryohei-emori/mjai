@@ -164,6 +164,18 @@ See `proposal.md` for motivation. Constraints that shape the approach:
 | Provenance round trip | `POST /histories` with `llmProvider: gemini` / `llmModel: gemini-3.7-flash` reads back on the session's history list; `PUT /histories/{id}` promoting `pending` → `confirmed` without mentioning provenance preserved both values |
 | No-keys behaviour | `POST /suggestions` still returns the unchanged 503 shape (`error` / `fallback_available` / `message`) |
 
+**Supabase CLI migration path (rehearsed in this environment):** the same local Postgres was rebuilt with only 001-005 applied, then driven with Supabase CLI 2.114.0 to establish what the operator step actually requires:
+
+| Step | Result |
+|---|---|
+| `supabase migration list --workdir backend --db-url …` | Accepts the `001_`-style versions and reports all seven as local-only, i.e. an empty remote history |
+| `supabase db push` with that empty history | Fails on `001_initial_schema.sql` with `relation "sessions" already exists` — 001 and 002 are not idempotent, so the naive command cannot be the instruction we hand over |
+| `supabase migration repair --status applied 001 … 005` | Records the five versions without re-running their SQL; `migration list` then shows 006/007 as the only pending ones |
+| `supabase db push` after repair | Applies exactly 006 and 007; `app_settings` exists, `correction_histories` gains `llm_provider`/`llm_model`, and the history table holds 001-007 |
+| Re-running `db push` | `Remote database is up to date.` — safe to press twice |
+
+`.github/workflows/apply-migrations.yml` encodes this as a manual workflow so the shared project can be migrated from the existing `DATABASE_URL` secret rather than by pasting DDL. It also rewrites a pooler URL's port 6543 (transaction mode, no DDL) to 5432 (session mode) and masks the value in the log.
+
 **Live LLM probe (blocked in this environment — no provider credentials):**
 
 `GEMINI_API_KEY(S)` / `GROQ_API_KEY(S)` are not present and there is no `conf/.env`, so the probe exits 2 (`GEMINI_API_KEY(S) not configured; skipping probe`) rather than producing numbers. Tasks 12.2–12.4 (baseline-vs-current replicates, latency/count budget check, and the custom-prompt override probe) therefore stay open and must be run by an operator who has keys:
@@ -189,13 +201,13 @@ The probe reports `elapsed_s` against `GEMINI_TIMEOUT` and `finishReason` / toke
 - **[Risk] The Chinese-recommendation guard false-positives and burns an attempt** → triple condition, unit-tested against legitimate kanji-only citations and the existing fixtures; worst case is one extra attempt inside a budget that already exists.
 - **[Risk] The guard cannot catch script-legal but wrong recommendations (需要 for 必要)** → explicitly out of the guard's reach; addressed by rules + exemplar and measured by the live probe rather than pretended away.
 - **[Risk] Shared last-write-wins prompt lets one edit overwrite another** → visible attribution and timestamp; acceptable for an allow-listed, effectively single-operator app, and cheaper than optimistic-concurrency plumbing.
-- **[Risk] New columns/table deployed before the shared Supabase project is migrated would break history writes** → migrations are additive and applied first (see Migration Plan); a missing `app_settings` table degrades to the default prompt on the generation path.
+- **[Risk] New columns/table deployed before the shared Supabase project is migrated would break history writes** → the migrations are hand-applied, so this order is realistic rather than hypothetical: history reads/writes probe `information_schema` once per process and drop the two columns when absent, a missing `app_settings` table serves the built-in prompt on read and a 503 naming the migration on save, and the generation path defaults the prompt. Both migrations are still required for the features to do anything (see Migration Plan).
 - **[Trade-off] Raw model ids in the UI** → slightly technical for an end user, but exactly matchable against provider dashboards and logs, and no display-name table to maintain as pools rotate.
 - **[Trade-off] Offline WebLLM keeps its own prompt** → the settings surface states this, so the divergence is disclosed rather than surprising.
 
 ## Migration Plan
 
-1. Apply `006_app_settings.sql` and `007_history_llm_provenance.sql` to the shared Supabase project **before** deploying the new code. Both are additive and idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`), so the currently deployed code keeps working against the migrated schema.
+1. Apply `006_app_settings.sql` and `007_history_llm_provenance.sql` to the shared Supabase project. Both are additive and idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`), so the currently deployed code keeps working against the migrated schema, and the new code tolerates the un-migrated one (see the schema probe below), so deploy order is not load-bearing. Either run `.github/workflows/apply-migrations.yml` (`mode=list` first, then `mode=push`) or the same Supabase CLI commands locally. **`supabase db push` alone fails**: 001-005 were applied through the SQL Editor, so the remote migration history can be empty, and `001_initial_schema.sql` is not idempotent (`relation "sessions" already exists`). Pass `repair_versions="001 002 003 004 005"` when the history is empty — repair records versions without re-running their SQL.
 2. Deploy backend and frontend together (one Vercel monorepo deploy). No feature flag: with no `app_settings` row the effective prompt is the new default, which is the intended behaviour.
 3. Verify after deploy: generate once and confirm the response carries `llmProvider` / `llmModel`, the caption renders, and the history row stores both; open the settings dialog, save a trivial edit, generate again to confirm it took effect, then reset.
 4. Rollback: revert the deploy. The table and columns can stay — old code ignores both. A prompt edit that turns out to be harmful does not require a rollback at all: reset-to-default is the faster remedy.
