@@ -393,7 +393,7 @@ def _can_afford_another_pass(
     True if the wall-clock budget still covers a pass like the previous one.
 
     Measured rather than assumed: provider latency varies with prompt and model,
-    and     the cost of guessing wrong is a pass that gets aborted partway and takes
+    and the cost of guessing wrong is a pass that gets aborted partway and takes
     the earlier body down with it.
     """
     remaining = seconds_left(deadline_monotonic)
