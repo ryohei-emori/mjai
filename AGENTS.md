@@ -196,10 +196,11 @@ supabase db push --workdir backend --db-url "$DATABASE_URL"
 ```
 
 - 検証済み（2026-08）: 上記手順をローカルPostgres 16（001-005のみ手で適用した状態）で実行し、006/007だけが適用されて`app_settings`と`llm_provider`/`llm_model`が作られ、履歴に001-007が記録され、再pushが`Remote database is up to date.`になることを確認した。
+- **共有Supabaseへ適用済み（2026-08-16、run 31936101275）**: remote履歴は空だったため001-005をrepairし、006/007のみを適用。`app_settings`の存在、`correction_histories.llm_provider`/`llm_model`の存在、履歴7件を`psql`で確認済み。以後この共有プロジェクトはCLI管理下にあるので、**SQL Editorで直接スキーマを変えないこと**（また履歴が乖離してrepairが必要になる）。
 
 **なぜ公式推奨の「mainマージで自動push」にしていないか:** Supabase公式（[Managing environments](https://supabase.com/docs/guides/deployment/managing-environments)）は本番マイグレーションをGitHub Actionsで自動デプロイすること（`setup-cli` → `supabase link --project-ref` → `db push`、シークレットは`SUPABASE_ACCESS_TOKEN` / `SUPABASE_DB_PASSWORD` / `SUPABASE_PROJECT_ID`）を推奨している。このリポジトリがそれに従っていないのは、公式が禁じる「remoteをSQL Editorで直接変更する」運用を既に行っており、`supabase_migrations.schema_migrations`が乖離しているため、自動pushは初回に必ず失敗するから。**`migration repair`で履歴を一度揃えた後は、自動push（`--linked`形）へ移行する価値がある** — その時点で`backend/supabase/migrations/`が唯一の真実になり、手作業のSQL Editor運用を廃止できる。移行する場合は`SUPABASE_ACCESS_TOKEN`とDBパスワードのシークレットが必要（project refは`supabase/.temp/linked-project.json`にある）。
 
-**GitHub Secretsの実在は未検証:** 上記「必須（現在使用中）」の記載にもかかわらず、`DATABASE_URL`を読むワークフローは実行履歴に存在しない（CIとKeep-aliveのみ）。`apply-migrations.yml`は空シークレットを検出して明示的に失敗するので、`mode=list`の1回実行が実質の存在確認になる（`list`はDDLを流さない）。
+**`DATABASE_URL`シークレットは直接接続文字列（IPv6のみ）で、そのままではCIから繋がらない:** 実行で確認済み（2026-08）。値は`db.fqyhrubqkpuyliqojbai.supabase.co`宛てで、このホストは**AAAAレコードしか公開していない**（IPv4は有料アドオン）。GitHub ActionsランナーはIPv6を持たないため、素の`db push`は`dial error … ECONNREFUSED 2406:da14:…`で落ちる。そこで`apply-migrations.yml`は直接URLをSupavisorのsession mode URL（ユーザ`postgres.<ref>`、`aws-N-<region>.pooler.supabase.com:5432`）へ組み替える。リージョンは`ap-northeast-1`（プロジェクトのAAAAがAWSの`2406:da14::/35`に含まれることから判定。移設時は`SUPABASE_REGION`リポジトリ変数で上書き）、クラスタ（`aws-0` / `aws-1`）は判別できないため両方を試して先に繋がった方を使う。**実測では`aws-0-ap-northeast-1`が正**。候補URLは使用前にすべてマスクし、ログにはホスト名しか出さない。
 
 **マイグレーションのファイル名:** 公式規約はタイムスタンプ（`20260816120000_name.sql`）だが、本リポジトリは`001_`連番。CLIは数値順に扱うので`supabase migration new`で作った新しいタイムスタンプ名と混在しても順序は壊れない。
 

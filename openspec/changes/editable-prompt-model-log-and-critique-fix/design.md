@@ -174,7 +174,9 @@ See `proposal.md` for motivation. Constraints that shape the approach:
 | `supabase db push` after repair | Applies exactly 006 and 007; `app_settings` exists, `correction_histories` gains `llm_provider`/`llm_model`, and the history table holds 001-007 |
 | Re-running `db push` | `Remote database is up to date.` — safe to press twice |
 
-`.github/workflows/apply-migrations.yml` encodes this as a manual workflow so the shared project can be migrated from the existing `DATABASE_URL` secret rather than by pasting DDL. It also rewrites a pooler URL's port 6543 (transaction mode, no DDL) to 5432 (session mode) and masks the value in the log.
+`.github/workflows/apply-migrations.yml` encodes this as a manual workflow so the shared project can be migrated from the existing `DATABASE_URL` secret rather than by pasting DDL.
+
+**Applied to the shared Supabase project (2026-08-16, run 31936101275).** Two things had to be solved first. The `DATABASE_URL` secret holds the *direct* connection string, and `db.<ref>.supabase.co` publishes only an AAAA record (IPv4 is a paid add-on), so the first run died at `dial error … ECONNREFUSED 2406:da14:…` — GitHub runners have no IPv6. The workflow therefore rebuilds it as a Supavisor session-mode URL (`postgres.<ref>` at `aws-N-ap-northeast-1.pooler.supabase.com:5432`, region derived from the AAAA sitting in AWS `2406:da14::/35`) and probes both possible clusters, `aws-0` answering here. Second, `workflow_dispatch` only appears once a workflow is on the default branch, so this change could not apply its own migrations before merge; labelling the PR `run-migrations` runs the same job from the branch. The run then reported an empty remote history, recorded 001-005 with `migration repair`, pushed 006 and 007, and verified with `psql` that `app_settings` exists, `correction_histories` carries `llm_provider` / `llm_model`, and the history holds seven versions.
 
 **Live LLM probe (blocked in this environment — no provider credentials):**
 
