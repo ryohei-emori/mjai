@@ -2756,7 +2756,8 @@ export default function TextCorrectionApp() {
                           <AIDiagnosticsPanel status={webllmStatus} />
                         )}
                         
-                        {/* Generate Button */}
+                        {/* Generate Button。narrow端末では中央に置いた小さな的を
+                            狙わせるより、幅いっぱいのほうが親指で押しやすい。 */}
                         <div className="flex justify-center">
                           <Button
                             onClick={handleGenerateClick}
@@ -2765,7 +2766,7 @@ export default function TextCorrectionApp() {
                               !currentSession.originalText.trim() ||
                               (offlineMode && webgpuSupported === false)
                             }
-                            className="bg-on-surface text-surface hover:bg-on-surface/90 rounded-full px-6 py-2"
+                            className="w-full sm:w-auto bg-on-surface text-surface hover:bg-on-surface/90 rounded-full px-6 py-2"
                           >
                             {(() => {
                               const processingCount = jobQueue.filter(j => j.status === 'processing').length
