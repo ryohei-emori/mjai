@@ -2601,7 +2601,12 @@ export default function TextCorrectionApp() {
                       幅が足りず、以前は日時が右へはみ出していた。名前側を縮め
                       させ、入り切らない計測値は次の行へ回す。 */}
                   <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                    <div className="min-w-0 flex-1">
+                    {/* `basis-48` gives the name a width it is willing to fight
+                        for: with a zero basis it would always yield and be
+                        truncated to a few characters, when the session name is
+                        what identifies the work and the timings are short. Below
+                        that width the timings wrap to their own line instead. */}
+                    <div className="min-w-0 flex-1 basis-48">
                       <h2 className="text-headline-lg text-on-surface truncate">{currentSession.name}</h2>
                       <p className="text-metadata text-on-surface-variant truncate">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
