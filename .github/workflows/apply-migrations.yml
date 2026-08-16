@@ -186,6 +186,7 @@ jobs:
         run: |
           psql "$MIGRATION_DB_URL" -v ON_ERROR_STOP=1 -c "
             SELECT to_regclass('app_settings') IS NOT NULL AS app_settings_exists;
+            SELECT to_regclass('provider_health') IS NOT NULL AS provider_health_exists;
             SELECT column_name FROM information_schema.columns
              WHERE table_name = 'correction_histories'
                AND column_name IN ('llm_provider', 'llm_model')
