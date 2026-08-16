@@ -69,6 +69,14 @@ async function generateWebLLMSuggestions(
 
 type ActiveNav = 'sessions' | 'dashboard' | 'archive'
 
+// Rendered twice — as tabs in the top bar, and as rows in the session drawer
+// for the narrow viewports where the top bar has no room for them.
+const NAV_ITEMS: readonly { id: ActiveNav; label: string }[] = [
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'archive', label: 'Archive' },
+]
+
 // Right pane resizing constants
 const RIGHT_PANE_MIN_WIDTH = 280 // px
 const RIGHT_PANE_MAX_WIDTH = 600 // px
@@ -2207,7 +2215,7 @@ export default function TextCorrectionApp() {
   return (
     <div className="h-viewport flex flex-col bg-surface-container-low">
       {/* TopAppBar */}
-      <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
+      <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-3 sm:px-4 gap-2 sm:gap-4 flex-shrink-0 z-50">
         {/* Session pane trigger — 全ブレークポイントで常に見えるので一覧が
             迷子にならない。ドッキング中に押すとカラムをたたんで作業領域を
             広げ、フローティング中はオーバーレイを開閉する。 */}
@@ -2239,38 +2247,24 @@ export default function TextCorrectionApp() {
         {/* Logo/Title - Text wordmark only, no icon */}
         <h1 className="text-headline-lg text-on-surface">MJAI</h1>
 
-        {/* Navigation Tabs */}
-        <nav className="flex items-center gap-1 ml-4">
-          <button
-            onClick={() => setActiveNav('sessions')}
-            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
-              activeNav === 'sessions'
-                ? 'bg-primary-container text-on-primary-container font-semibold'
-                : 'text-on-surface-variant hover:bg-surface-container font-normal'
-            }`}
-          >
-            Sessions
-          </button>
-          <button
-            onClick={() => setActiveNav('dashboard')}
-            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
-              activeNav === 'dashboard'
-                ? 'bg-primary-container text-on-primary-container font-semibold'
-                : 'text-on-surface-variant hover:bg-surface-container font-normal'
-            }`}
-          >
-            Dashboard
-          </button>
-          <button
-            onClick={() => setActiveNav('archive')}
-            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
-              activeNav === 'archive'
-                ? 'bg-primary-container text-on-primary-container font-semibold'
-                : 'text-on-surface-variant hover:bg-surface-container font-normal'
-            }`}
-          >
-            Archive
-          </button>
+        {/* Navigation Tabs — below md the bar cannot hold three of these plus
+            the account and action icons, so they move into the session drawer
+            rather than overflowing off the right edge. */}
+        <nav className="hidden md:flex items-center gap-1 ml-4" aria-label="セクション">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setActiveNav(item.id)}
+              aria-current={activeNav === item.id ? 'page' : undefined}
+              className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
+                activeNav === item.id
+                  ? 'bg-primary-container text-on-primary-container font-semibold'
+                  : 'text-on-surface-variant hover:bg-surface-container font-normal'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
 
         {/* New Session Button */}
@@ -2378,28 +2372,33 @@ export default function TextCorrectionApp() {
             <span className="material-symbols-outlined md-24 text-on-surface-variant">settings</span>
           </button>
 
-          {/* User Avatar */}
-          {avatarUrl ? (
-            <Image
-              src={avatarUrl}
-              alt="User avatar"
-              width={32}
-              height={32}
-              className="rounded-full border border-outline-variant"
-              unoptimized
-            />
-          ) : (
-            <span className="material-symbols-outlined md-24 text-on-surface-variant">account_circle</span>
-          )}
+          {/* Identity and sign-out. Below sm this is the pair that has to give
+              way for the bar to fit a 320px screen, so it moves to the foot of
+              the session drawer — where a phone's account controls usually are
+              anyway — rather than being dropped. */}
+          <div className="hidden sm:flex items-center gap-2">
+            {avatarUrl ? (
+              <Image
+                src={avatarUrl}
+                alt="User avatar"
+                width={32}
+                height={32}
+                className="rounded-full border border-outline-variant"
+                unoptimized
+              />
+            ) : (
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">account_circle</span>
+            )}
 
-          {/* Logout Button */}
-          <button
-            onClick={() => signOut()}
-            className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
-            title="ログアウト"
-          >
-            <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
-          </button>
+            <button
+              onClick={() => signOut()}
+              className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
+              title="ログアウト"
+              aria-label="ログアウト"
+            >
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2429,11 +2428,64 @@ export default function TextCorrectionApp() {
               )}
             </div>
           </SheetHeader>
+          {/* セクション切り替え。md未満ではトップバーにタブを置く幅がないため、
+              一覧と同じドロワーが行き先になる（design.md Decision 5）。選択後は
+              ドロワーが本文を覆い続けないよう閉じる。 */}
+          <nav
+            className="md:hidden px-4 pt-4 flex flex-col gap-1 flex-shrink-0"
+            aria-label="セクション"
+          >
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveNav(item.id)
+                  setSidebarOpen(false)
+                }}
+                aria-current={activeNav === item.id ? 'page' : undefined}
+                className={`px-3 py-2.5 text-body-sm rounded-lg text-left transition-colors ${
+                  activeNav === item.id
+                    ? 'bg-primary-container text-on-primary-container font-semibold'
+                    : 'text-on-surface-variant hover:bg-surface-container font-normal'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
           <div className="p-4 flex-1 min-h-0 flex flex-col">
             <div className="mb-4 flex-shrink-0">{sessionSearchInput}</div>
             {/* 高さはflexから導く。`calc(100vh-12rem)` はヘッダー等の高さを
                 決め打ちしていたため、ブラウザUIの分だけ下端が切れていた。 */}
             <ScrollArea className="flex-1 min-h-0">{sessionListItems}</ScrollArea>
+          </div>
+          {/* sm未満でトップバーから外したアカウント操作の行き先。 */}
+          <div className="sm:hidden border-t border-outline-variant p-4 flex items-center gap-3 flex-shrink-0">
+            {avatarUrl ? (
+              <Image
+                src={avatarUrl}
+                alt="User avatar"
+                width={32}
+                height={32}
+                className="rounded-full border border-outline-variant flex-shrink-0"
+                unoptimized
+              />
+            ) : (
+              <span className="material-symbols-outlined md-24 text-on-surface-variant flex-shrink-0">
+                account_circle
+              </span>
+            )}
+            <span className="text-body-sm text-on-surface-variant truncate min-w-0 flex-1">
+              {user?.email ?? ''}
+            </span>
+            <button
+              onClick={() => signOut()}
+              className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target flex-shrink-0"
+              title="ログアウト"
+              aria-label="ログアウト"
+            >
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
+            </button>
           </div>
         </SheetContent>
       </Sheet>
