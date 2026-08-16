@@ -40,16 +40,16 @@
 
 - [x] 6.1 Add a pure predicate to `backend/app/llm/parser.py` that flags a `reason` only when a recommendation-introducing pattern is followed by a quoted span that contains no kana *and* contains at least one Simplified-only character from a curated set
 - [x] 6.2 Wire it into `_content_usable()` in `suggestions.py` with a dedicated retry nudge instructing that recommended forms must be Japanese, reusing `MAX_PARSE_RETRY_ATTEMPTS` so the attempt ceiling does not change
-- [ ] 6.3 Verify budget-exhaustion behaviour is unchanged: the last result is still returned rather than raising
+- [x] 6.3 Verify budget-exhaustion behaviour is unchanged: the last result is still returned rather than raising
 
 ## 7. Backend tests
 
-- [ ] 7.1 New `backend/tests/test_prompt_settings.py`: default read when no row, save + read round trip, empty and oversized rejection, reset idempotence, 401 unauthenticated, 403 non-allow-listed
-- [ ] 7.2 Extend `test_llm_prompts.py`: `SYSTEM_PROMPT == BODY + OUTPUT_CONTRACT`; override replaces only the body; contract present with an override that never mentions JSON; exemplar ordering (rules before contract); few-shot assertions for the new rules (Japanese-only recommendations, ≥5 distinct items, one without `sourceExcerpt`)
-- [ ] 7.3 Extend `test_llm_suggestions.py`: override threading into provider messages; settings-read failure falls back to the default; `llmProvider`/`llmModel` reported for each winning provider, for the failover path, and for an in-provider retry model
-- [ ] 7.4 Extend `test_llm_parser.py`: the new predicate fires on `改为“理论上”` / `改为“对比睡眠数据”`-style reasons and does NOT fire on kanji-only Japanese citations (e.g. 「叙事詩」), Japanese-with-kana recommendations, or the existing fixture corpora
-- [ ] 7.5 Extend `test_pending_histories.py`: provenance persisted on create, preserved through confirm/update, and absent-safe when omitted
-- [ ] 7.6 Run `pytest -m "not integration"` and confirm no regressions
+- [x] 7.1 New `backend/tests/test_prompt_settings.py`: default read when no row, save + read round trip, empty and oversized rejection, reset idempotence, 401 unauthenticated, 403 non-allow-listed
+- [x] 7.2 Extend `test_llm_prompts.py`: `SYSTEM_PROMPT == BODY + OUTPUT_CONTRACT`; override replaces only the body; contract present with an override that never mentions JSON; exemplar ordering (rules before contract); few-shot assertions for the new rules (Japanese-only recommendations, ≥5 distinct items, one without `sourceExcerpt`)
+- [x] 7.3 Extend `test_llm_suggestions.py`: override threading into provider messages; settings-read failure falls back to the default; `llmProvider`/`llmModel` reported for each winning provider, for the failover path, and for an in-provider retry model
+- [x] 7.4 Extend `test_llm_parser.py`: the new predicate fires on `改为“理论上”` / `改为“对比睡眠数据”`-style reasons and does NOT fire on kanji-only Japanese citations (e.g. 「叙事詩」), Japanese-with-kana recommendations, or the existing fixture corpora
+- [x] 7.5 Extend `test_pending_histories.py`: provenance persisted on create, preserved through confirm/update, and absent-safe when omitted
+- [x] 7.6 Run `pytest -m "not integration"` and confirm no regressions
 
 ## 8. Frontend settings dialog
 

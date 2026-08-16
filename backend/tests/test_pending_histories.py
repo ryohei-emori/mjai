@@ -246,3 +246,109 @@ def test_list_histories_includes_pending_fields(
     assert body[0]["provider"] == "webllm"
     assert body[0]["clientJobId"] == "job-9"
     assert body[0]["overallComment"] == "整体评价"
+
+
+def test_create_history_persists_llm_provenance(
+    client, auth_headers, fake_pg_connection
+):
+    """Which model produced a round is logged alongside the transport."""
+    payload = {
+        "sessionId": "sess-1",
+        "originalText": "原文",
+        "targetText": "訳文",
+        "status": "pending",
+        "provider": "api",
+        "llmProvider": "gemini",
+        "llmModel": "gemini-3.7-flash",
+    }
+
+    response = client.post("/histories", json=payload, headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "api"
+    assert body["llmProvider"] == "gemini"
+    assert body["llmModel"] == "gemini-3.7-flash"
+
+    query, params = fake_pg_connection.executed[0]
+    assert "llm_provider" in query
+    assert "llm_model" in query
+    assert "gemini" in params
+    assert "gemini-3.7-flash" in params
+
+
+def test_create_history_without_provenance_stores_nulls(
+    client, auth_headers, fake_pg_connection
+):
+    payload = {
+        "sessionId": "sess-1",
+        "originalText": "原文",
+        "targetText": "訳文",
+    }
+    response = client.post("/histories", json=payload, headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["llmProvider"] is None
+    assert response.json()["llmModel"] is None
+
+
+def test_put_history_without_provenance_keys_leaves_them_untouched(
+    client, auth_headers, fake_pg_connection
+):
+    """Confirming a pending round must not wipe the generating model."""
+    fake_pg_connection.fetchrow_result = _FakeRecord({
+        "historyId": "hist-1",
+        "sessionId": "sess-1",
+        "timestamp": datetime(2026, 8, 16, 1, 0, 0),
+        "originalText": "原文",
+        "instructionPrompt": None,
+        "targetText": "訳文",
+        "combinedComment": "final",
+        "selectedProposalIds": '["a"]',
+        "customProposals": None,
+        "status": "confirmed",
+        "overallComment": "整体评价",
+        "provider": "api",
+        "llmProvider": "groq",
+        "llmModel": "openai/gpt-oss-120b",
+        "clientJobId": "job-123",
+    })
+
+    response = client.put(
+        "/histories/hist-1",
+        json={"status": "confirmed", "combinedComment": "final"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["llmModel"] == "openai/gpt-oss-120b"
+    query, _ = fake_pg_connection.executed[0]
+    assert "llm_model =" not in query
+    assert 'llm_model AS "llmModel"' in query
+
+
+def test_list_histories_returns_stored_provenance(
+    client, auth_headers, fake_pg_connection
+):
+    fake_pg_connection.fetch_result = [
+        _FakeRecord({
+            "historyId": "hist-1",
+            "sessionId": "sess-1",
+            "timestamp": datetime(2026, 8, 16, 1, 0, 0),
+            "originalText": "原文",
+            "instructionPrompt": None,
+            "targetText": "訳文",
+            "combinedComment": "整体评价",
+            "selectedProposalIds": None,
+            "customProposals": None,
+            "status": "confirmed",
+            "overallComment": "整体评价",
+            "provider": "api",
+            "llmProvider": "gemini",
+            "llmModel": "gemini-3.6-flash",
+            "clientJobId": "job-9",
+        })
+    ]
+
+    body = client.get("/sessions/sess-1/histories", headers=auth_headers).json()
+    assert body[0]["llmProvider"] == "gemini"
+    assert body[0]["llmModel"] == "gemini-3.6-flash"
