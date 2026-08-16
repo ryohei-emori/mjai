@@ -346,7 +346,11 @@ async def put_prompt_setting_route(
     user: dict = Depends(get_current_user),
 ):
     """Save the shared custom correction prompt (validated, attributed to the caller)."""
-    from .prompt_settings import PromptValidationError, save_prompt_settings
+    from .prompt_settings import (
+        PromptStoreUnavailableError,
+        PromptValidationError,
+        save_prompt_settings,
+    )
     try:
         return await save_prompt_settings(
             payload.get("systemPrompt"),
@@ -354,6 +358,8 @@ async def put_prompt_setting_route(
         )
     except PromptValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except PromptStoreUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.delete("/settings/prompt")

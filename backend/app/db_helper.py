@@ -1,8 +1,11 @@
+import logging
 import os
 import asyncpg
 from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # Supabase Postgres接続設定
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -108,12 +111,45 @@ async def fetch_session(session_id):
             }
         return None
 
-# 履歴一覧取得（アーカイブ済みラウンドを除く）
-async def fetch_histories_by_session(session_id):
-    async with get_db() as conn:
-        rows = await conn.fetch(
-            '''
-            SELECT 
+# The LLM provenance columns arrive with migration 007, which is applied to the
+# shared Supabase project by hand. A deploy can therefore reach production
+# before the migration does, and every history read and write names those
+# columns — so they are probed once per process instead of assumed. Without
+# them the app drops provenance (no model caption) rather than 500-ing on every
+# history operation, which is the difference between a missing nicety and an
+# unusable workspace.
+_HAS_PROVENANCE_COLUMNS: Optional[bool] = None
+
+
+async def _has_provenance_columns(conn) -> bool:
+    global _HAS_PROVENANCE_COLUMNS
+    if _HAS_PROVENANCE_COLUMNS is None:
+        _HAS_PROVENANCE_COLUMNS = bool(
+            await conn.fetchval(
+                '''
+                SELECT COUNT(*) = 2 FROM information_schema.columns
+                WHERE table_name = 'correction_histories'
+                  AND column_name IN ('llm_provider', 'llm_model')
+                '''
+            )
+        )
+        if not _HAS_PROVENANCE_COLUMNS:
+            logger.warning(
+                "correction_histories.llm_provider/llm_model are missing; "
+                "serving histories without model provenance. Apply "
+                "007_history_llm_provenance.sql to start recording it."
+            )
+    return _HAS_PROVENANCE_COLUMNS
+
+
+def _history_columns(with_provenance: bool) -> str:
+    """Projection shared by every history read."""
+    provenance = (
+        'llm_provider AS "llmProvider",\n                llm_model AS "llmModel",'
+        if with_provenance
+        else ''
+    )
+    return f'''
                 history_id AS "historyId",
                 session_id AS "sessionId",
                 timestamp,
@@ -126,9 +162,18 @@ async def fetch_histories_by_session(session_id):
                 status,
                 overall_comment AS "overallComment",
                 provider,
-                llm_provider AS "llmProvider",
-                llm_model AS "llmModel",
+                {provenance}
                 client_job_id AS "clientJobId"
+    '''
+
+
+# 履歴一覧取得（アーカイブ済みラウンドを除く）
+async def fetch_histories_by_session(session_id):
+    async with get_db() as conn:
+        columns = _history_columns(await _has_provenance_columns(conn))
+        rows = await conn.fetch(
+            f'''
+            SELECT {columns}
             FROM correction_histories 
             WHERE session_id = $1 AND is_archived = false
             ORDER BY timestamp DESC
@@ -180,16 +225,14 @@ async def insert_history(history):
     if overall_comment is None:
         overall_comment = history.get('combined_comment')
     async with get_db() as conn:
-        await conn.execute(
-            '''
-            INSERT INTO correction_histories (
-                history_id, session_id, timestamp, original_text, instruction_prompt,
-                target_text, combined_comment, selected_proposal_ids, custom_proposals,
-                status, overall_comment, provider, client_job_id,
-                llm_provider, llm_model
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-            ''',
+        with_provenance = await _has_provenance_columns(conn)
+        columns = [
+            'history_id', 'session_id', 'timestamp', 'original_text',
+            'instruction_prompt', 'target_text', 'combined_comment',
+            'selected_proposal_ids', 'custom_proposals', 'status',
+            'overall_comment', 'provider', 'client_job_id',
+        ]
+        values = [
             history['history_id'],
             history['session_id'],
             history['timestamp'],
@@ -203,14 +246,28 @@ async def insert_history(history):
             overall_comment,
             history.get('provider'),
             history.get('client_job_id'),
-            history.get('llm_provider'),
-            history.get('llm_model'),
+        ]
+        if with_provenance:
+            columns += ['llm_provider', 'llm_model']
+            values += [history.get('llm_provider'), history.get('llm_model')]
+        placeholders = ', '.join(f'${i}' for i in range(1, len(values) + 1))
+        await conn.execute(
+            f'''
+            INSERT INTO correction_histories ({', '.join(columns)})
+            VALUES ({placeholders})
+            ''',
+            *values,
         )
-        return _history_row_to_camel({
+        stored = {
             **history,
             'status': status,
             'overall_comment': overall_comment,
-        })
+        }
+        if not with_provenance:
+            # Do not claim provenance the row does not carry.
+            stored.pop('llm_provider', None)
+            stored.pop('llm_model', None)
+        return _history_row_to_camel(stored)
 
 
 async def update_history(history_id, updates):
@@ -237,39 +294,29 @@ async def update_history(history_id, updates):
         'instruction_prompt': 'instruction_prompt',
         'instructionPrompt': 'instruction_prompt',
     }
-    set_parts = []
-    params = []
-    for key, column in allowed.items():
-        if key not in updates:
-            continue
-        value = updates[key]
-        if column == 'status':
-            value = _normalize_history_status(value)
-        # Avoid duplicate column sets when both camel and snake keys are present
-        if any(part.startswith(f"{column} =") for part in set_parts):
-            continue
-        params.append(value)
-        set_parts.append(f"{column} = ${len(params)}")
-    if not set_parts:
-        async with get_db() as conn:
+    async with get_db() as conn:
+        with_provenance = await _has_provenance_columns(conn)
+        columns = _history_columns(with_provenance)
+        set_parts = []
+        params = []
+        for key, column in allowed.items():
+            if key not in updates:
+                continue
+            if column in ('llm_provider', 'llm_model') and not with_provenance:
+                continue
+            value = updates[key]
+            if column == 'status':
+                value = _normalize_history_status(value)
+            # Avoid duplicate column sets when both camel and snake keys are present
+            if any(part.startswith(f"{column} =") for part in set_parts):
+                continue
+            params.append(value)
+            set_parts.append(f"{column} = ${len(params)}")
+
+        if not set_parts:
             row = await conn.fetchrow(
-                '''
-                SELECT
-                    history_id AS "historyId",
-                    session_id AS "sessionId",
-                    timestamp,
-                    original_text AS "originalText",
-                    instruction_prompt AS "instructionPrompt",
-                    target_text AS "targetText",
-                    combined_comment AS "combinedComment",
-                    selected_proposal_ids AS "selectedProposalIds",
-                    custom_proposals AS "customProposals",
-                    status,
-                    overall_comment AS "overallComment",
-                    provider,
-                    llm_provider AS "llmProvider",
-                    llm_model AS "llmModel",
-                    client_job_id AS "clientJobId"
+                f'''
+                SELECT {columns}
                 FROM correction_histories
                 WHERE history_id = $1 AND is_archived = false
                 ''',
@@ -277,30 +324,16 @@ async def update_history(history_id, updates):
             )
             return dict(row) if row else None
 
-    params.append(history_id)
-    query = f'''
-        UPDATE correction_histories
-        SET {", ".join(set_parts)}
-        WHERE history_id = ${len(params)} AND is_archived = false
-        RETURNING
-            history_id AS "historyId",
-            session_id AS "sessionId",
-            timestamp,
-            original_text AS "originalText",
-            instruction_prompt AS "instructionPrompt",
-            target_text AS "targetText",
-            combined_comment AS "combinedComment",
-            selected_proposal_ids AS "selectedProposalIds",
-            custom_proposals AS "customProposals",
-            status,
-            overall_comment AS "overallComment",
-            provider,
-            llm_provider AS "llmProvider",
-            llm_model AS "llmModel",
-            client_job_id AS "clientJobId"
-    '''
-    async with get_db() as conn:
-        row = await conn.fetchrow(query, *params)
+        params.append(history_id)
+        row = await conn.fetchrow(
+            f'''
+            UPDATE correction_histories
+            SET {", ".join(set_parts)}
+            WHERE history_id = ${len(params)} AND is_archived = false
+            RETURNING {columns}
+            ''',
+            *params,
+        )
         return dict(row) if row else None
 
 # --- app_settings (global key/value settings shared by all users) -----------

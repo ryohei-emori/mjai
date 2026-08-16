@@ -18,6 +18,8 @@ import asyncio
 import logging
 from typing import Optional, TypedDict
 
+import asyncpg
+
 from .db_helper import delete_setting, fetch_setting, upsert_setting
 from .llm.prompts import SYSTEM_PROMPT_BODY
 
@@ -36,6 +38,17 @@ PROMPT_LOOKUP_TIMEOUT_S = 3.0
 
 class PromptValidationError(ValueError):
     """The submitted prompt is empty or exceeds MAX_PROMPT_LENGTH."""
+
+
+class PromptStoreUnavailableError(RuntimeError):
+    """`app_settings` does not exist yet (migration 006 not applied)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Prompt storage is not available: the app_settings table does not "
+            "exist. Apply backend/supabase/migrations/006_app_settings.sql to "
+            "the database, then retry."
+        )
 
 
 class PromptSettings(TypedDict):
@@ -101,15 +114,30 @@ async def get_prompt_settings() -> PromptSettings:
 
 
 async def save_prompt_settings(prompt: str, updated_by: Optional[str] = None) -> PromptSettings:
-    """Validate and store a custom prompt. Raises PromptValidationError."""
+    """
+    Validate and store a custom prompt.
+
+    Raises PromptValidationError for bad input, and
+    PromptStoreUnavailableError when the table has not been created yet — a
+    save silently doing nothing would be worse than a message naming the
+    migration to apply.
+    """
     value = validate_prompt(prompt)
-    row = await upsert_setting(SETTING_KEY, value, updated_by)
+    try:
+        row = await upsert_setting(SETTING_KEY, value, updated_by)
+    except asyncpg.exceptions.UndefinedTableError:
+        raise PromptStoreUnavailableError()
     return _to_settings(row)
 
 
 async def reset_prompt_settings() -> PromptSettings:
     """Delete the stored prompt so the built-in default applies again."""
-    await delete_setting(SETTING_KEY)
+    try:
+        await delete_setting(SETTING_KEY)
+    except asyncpg.exceptions.UndefinedTableError:
+        # Nothing stored can exist without the table, so the default is already
+        # in effect and reset has nothing to undo.
+        logger.warning("app_settings missing; reset is a no-op (default in effect)")
     return _to_settings(None)
 
 

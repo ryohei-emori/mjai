@@ -49,10 +49,21 @@ class _FakeConnection:
         self.executed = []
         self.fetch_result = []
         self.fetchrow_result = None
+        # Stands in for the information_schema probe of migration 007's
+        # columns; flip to False to simulate a database that has not been
+        # migrated yet.
+        self.has_provenance_columns = True
 
     async def execute(self, query, *params):
         self.executed.append((query, params))
         return "INSERT 0 1"
+
+    async def fetchval(self, query, *params):
+        # Deliberately not recorded in `executed`: schema introspection is not
+        # a data query, and the tests below assert on `executed[0]`.
+        if "information_schema.columns" in query:
+            return self.has_provenance_columns
+        return None
 
     async def fetch(self, query, *params):
         self.executed.append((query, params))
@@ -82,6 +93,9 @@ class _FakeDbContext:
 def fake_pg_connection(monkeypatch):
     conn = _FakeConnection()
     monkeypatch.setattr(db_helper, "get_db", lambda: _FakeDbContext(conn))
+    # The probe result is cached for the process, so it must not leak between
+    # tests that simulate migrated and un-migrated databases.
+    monkeypatch.setattr(db_helper, "_HAS_PROVENANCE_COLUMNS", None)
     return conn
 
 
@@ -352,3 +366,87 @@ def test_list_histories_returns_stored_provenance(
     body = client.get("/sessions/sess-1/histories", headers=auth_headers).json()
     assert body[0]["llmProvider"] == "gemini"
     assert body[0]["llmModel"] == "gemini-3.6-flash"
+
+
+class TestDatabaseWithoutProvenanceColumns:
+    """Migration 007 is applied by hand, so a deploy can arrive first.
+
+    Naming a missing column in these queries would 500 every history read and
+    write — i.e. break the workspace — so the columns are probed and simply
+    dropped when absent.
+    """
+
+    def test_create_history_omits_provenance_columns(
+        self, client, auth_headers, fake_pg_connection
+    ):
+        fake_pg_connection.has_provenance_columns = False
+
+        response = client.post(
+            "/histories",
+            json={
+                "sessionId": "sess-1",
+                "originalText": "原文",
+                "targetText": "訳文",
+                "status": "pending",
+                "provider": "api",
+                "llmProvider": "gemini",
+                "llmModel": "gemini-3.7-flash",
+            },
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        query, params = fake_pg_connection.executed[0]
+        assert "llm_provider" not in query
+        assert "llm_model" not in query
+        assert "gemini-3.7-flash" not in params
+        # The response must not claim provenance the row does not carry.
+        body = response.json()
+        assert body["llmProvider"] is None
+        assert body["llmModel"] is None
+        assert body["provider"] == "api"
+
+    def test_list_histories_omits_provenance_columns(
+        self, client, auth_headers, fake_pg_connection
+    ):
+        fake_pg_connection.has_provenance_columns = False
+        fake_pg_connection.fetch_result = []
+
+        response = client.get("/sessions/sess-1/histories", headers=auth_headers)
+
+        assert response.status_code == 200
+        query, _ = fake_pg_connection.executed[0]
+        assert "llm_provider" not in query
+        assert "is_archived = false" in query
+
+    def test_put_history_drops_provenance_updates(
+        self, client, auth_headers, fake_pg_connection
+    ):
+        fake_pg_connection.has_provenance_columns = False
+        fake_pg_connection.fetchrow_result = _FakeRecord({
+            "historyId": "hist-1",
+            "sessionId": "sess-1",
+            "timestamp": datetime(2026, 8, 16, 1, 0, 0),
+            "originalText": "原文",
+            "instructionPrompt": None,
+            "targetText": "訳文",
+            "combinedComment": "final",
+            "selectedProposalIds": None,
+            "customProposals": None,
+            "status": "confirmed",
+            "overallComment": "整体评价",
+            "provider": "api",
+            "clientJobId": "job-123",
+        })
+
+        response = client.put(
+            "/histories/hist-1",
+            json={"status": "confirmed", "llmModel": "gemini-3.7-flash"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        query, params = fake_pg_connection.executed[0]
+        assert "llm_model" not in query
+        assert "gemini-3.7-flash" not in params
+        assert "status = $1" in query
