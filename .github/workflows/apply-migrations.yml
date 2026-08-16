@@ -1,16 +1,20 @@
 # ============================================================================
-# ⚠️  MANUAL DISPATCH ONLY — applies DDL to the shared Supabase Postgres.
+# ⚠️  Applies DDL to the shared Supabase Postgres. Never runs on its own.
 # ============================================================================
-# Runs the Supabase CLI against the shared project so schema changes do not
-# have to be pasted into the SQL Editor by hand. Start with mode=list to see
-# what the remote history says, then dry-run, then push.
+# Two ways in:
+#   * Manual dispatch — pick mode=list to inspect, dry-run, or push.
+#   * Labelling a pull request `run-migrations` — pushes that branch's
+#     migrations. This exists because `workflow_dispatch` only appears once the
+#     workflow is on the default branch, so a change that adds migrations
+#     cannot be applied before its own merge without it.
 #
-# Why `repair_versions` exists: migrations 001-005 were applied through the
+# Why `repair` is part of the flow: migrations 001-005 were applied through the
 # SQL Editor, so `supabase_migrations.schema_migrations` can be empty even
-# though the tables exist. `db push` then tries to apply 001 first and fails
-# with `relation "sessions" already exists`, because 001 and 002 are not
-# idempotent. Recording the already-applied versions with `migration repair`
-# does not re-run them, and the following push applies only what is new.
+# though the tables exist. `db push` then starts at 001 and fails with
+# `relation "sessions" already exists`, because 001 and 002 are not idempotent.
+# `migration repair` records versions without running their SQL, and is safe to
+# repeat. Once the shared project's history is complete, Supabase's documented
+# setup (push automatically on merge to main) becomes the better fit.
 # ============================================================================
 
 name: Apply Supabase Migrations (Manual Only)
@@ -40,11 +44,16 @@ on:
         required: false
         default: ''
         type: string
+  pull_request:
+    types: [labeled]
 
 jobs:
   migrate:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'run-migrations'
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -53,12 +62,29 @@ jobs:
         with:
           version: latest
 
+      - name: Resolve run parameters
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_REPAIR: ${{ inputs.repair_versions }}
+          # Versions applied by hand through the SQL Editor before the CLI was
+          # used. Recording them is what lets a push apply only what is new.
+          # Harmless once the remote history already lists them.
+          BASELINE_VERSIONS: '001 002 003 004 005'
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "MODE=${INPUT_MODE}" >> "$GITHUB_ENV"
+            echo "REPAIR=${INPUT_REPAIR}" >> "$GITHUB_ENV"
+          else
+            echo "MODE=push" >> "$GITHUB_ENV"
+            echo "REPAIR=${BASELINE_VERSIONS}" >> "$GITHUB_ENV"
+          fi
+
       - name: Resolve connection string
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ -z "${DATABASE_URL}" ]; then
-            echo "::error::DATABASE_URL secret is empty for environment '${{ github.event.inputs.environment }}'. Add it as a repository or environment secret (Settings -> Secrets and variables -> Actions)."
+            echo "::error::DATABASE_URL secret is empty for this environment. Add it under Settings -> Secrets and variables -> Actions (repository secret, or an environment secret on 'production')."
             exit 1
           fi
           url="$(python3 - <<'PY'
@@ -81,22 +107,22 @@ jobs:
         run: supabase migration list --workdir backend --db-url "$MIGRATION_DB_URL"
 
       - name: Record already-applied versions
-        if: ${{ github.event.inputs.repair_versions != '' }}
+        if: env.REPAIR != ''
         run: |
-          supabase migration repair --status applied ${{ github.event.inputs.repair_versions }} \
+          supabase migration repair --status applied $REPAIR \
             --workdir backend --db-url "$MIGRATION_DB_URL"
           supabase migration list --workdir backend --db-url "$MIGRATION_DB_URL"
 
       - name: Dry run
-        if: ${{ github.event.inputs.mode != 'list' }}
+        if: env.MODE != 'list'
         run: supabase db push --workdir backend --db-url "$MIGRATION_DB_URL" --dry-run
 
       - name: Apply migrations
-        if: ${{ github.event.inputs.mode == 'push' }}
+        if: env.MODE == 'push'
         run: supabase db push --workdir backend --db-url "$MIGRATION_DB_URL" --yes
 
       - name: Verify schema
-        if: ${{ github.event.inputs.mode == 'push' }}
+        if: env.MODE == 'push'
         run: |
           psql "$MIGRATION_DB_URL" -v ON_ERROR_STOP=1 -c "
             SELECT to_regclass('app_settings') IS NOT NULL AS app_settings_exists;

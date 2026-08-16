@@ -178,7 +178,10 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 
 ### apply-migrations.yml（Supabase CLIでのマイグレーション適用）
 
-手動実行のみ。inputs は `environment`（`DATABASE_URL`シークレットのスコープ選択と監査用）、`mode`（`list` / `dry-run` / `push`）、`repair_versions`。**`mode=list`で現状を見てから`push`する**。
+起動経路は2つで、どちらも人手のトリガーが必要（自動実行はしない）。
+
+1. **手動dispatch**: inputs は `environment`（`DATABASE_URL`シークレットのスコープ選択と監査用）、`mode`（`list` / `dry-run` / `push`）、`repair_versions`。**`mode=list`で現状を見てから`push`する**。
+2. **PRに`run-migrations`ラベルを付ける**: そのブランチのマイグレーションを`push`する（`repair_versions`は下記のベースライン001-005が自動で入る）。`workflow_dispatch`はデフォルトブランチ上の版しか起動できないため、**マイグレーションを追加した変更を自分のマージ前に適用する経路がこれしかない**。ラベルを外して付け直せば再実行され、適用済みなら`Remote database is up to date.`で終わる。
 
 - **`db push`をそのまま叩くと001で落ちる。** 001-005はSQL Editorから手で当てられたため`supabase_migrations.schema_migrations`が空になり得る。CLIは履歴に無い版を全部適用しようとするが、`001_initial_schema.sql`は素の`CREATE TABLE`、`002`は素の`ADD COLUMN`で冪等ではないので`relation "sessions" already exists`で失敗する。→ `mode=list`のremote列が空なら`repair_versions="001 002 003 004 005"`を渡す（repairはSQLを再実行せず履歴に記録するだけ）。003以降は`IF NOT EXISTS`ガード付き。
 - 接続文字列: poolerの6543（transaction mode）はDDLを流せないため、ワークフローが同ホストの5432（session mode）へ読み替える。アプリ側は6543のまま。
