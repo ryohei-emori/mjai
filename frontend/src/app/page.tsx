@@ -2095,7 +2095,8 @@ export default function TextCorrectionApp() {
                 e.stopPropagation()
                 deleteSession(s.id)
               }}
-              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
+              aria-label={`セッション「${s.name}」を削除`}
+              className="can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity p-1 h-auto touch-target"
             >
               <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
             </Button>
@@ -2213,7 +2214,7 @@ export default function TextCorrectionApp() {
         <button
           type="button"
           onClick={toggleSessionPane}
-          className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary"
+          className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
           title={
             isSessionPaneDocked
               ? 'セッション一覧をたたむ'
@@ -2295,7 +2296,7 @@ export default function TextCorrectionApp() {
           <div className="relative" ref={bellPanelRef}>
             <button
               type="button"
-              className={`p-2 rounded-full hover:bg-surface-container transition-colors relative ${bellShake ? 'bell-shake' : ''}`}
+              className={`p-2 rounded-full hover:bg-surface-container transition-colors relative touch-target ${bellShake ? 'bell-shake' : ''}`}
               title="完了通知"
               aria-label="完了通知"
               aria-expanded={bellPanelOpen}
@@ -2370,7 +2371,7 @@ export default function TextCorrectionApp() {
           {/* Settings (shared AI correction prompt) */}
           <button
             onClick={() => setPromptSettingsOpen(true)}
-            className="p-2 rounded-full hover:bg-surface-container transition-colors"
+            className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
             title="設定"
             aria-label="設定"
           >
@@ -2394,7 +2395,7 @@ export default function TextCorrectionApp() {
           {/* Logout Button */}
           <button
             onClick={() => signOut()}
-            className="p-2 rounded-full hover:bg-surface-container transition-colors"
+            className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
             title="ログアウト"
           >
             <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
@@ -2417,7 +2418,7 @@ export default function TextCorrectionApp() {
                 <button
                   type="button"
                   onClick={dockSessionPane}
-                  className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary"
+                  className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
                   title="セッション一覧を左に固定する"
                   aria-label="セッション一覧を左に固定する"
                 >
@@ -2533,8 +2534,9 @@ export default function TextCorrectionApp() {
                           </CardTitle>
                           <button
                             onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText, "原文がクリップボードにコピーされました")}
-                            className="p-1.5 rounded hover:bg-surface-container transition-colors"
+                            className="p-1.5 rounded hover:bg-surface-container transition-colors touch-target"
                             title="コピー"
+                            aria-label="原文をコピー"
                           >
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                           </button>
@@ -2571,8 +2573,9 @@ export default function TextCorrectionApp() {
                           </CardTitle>
                           <button
                             onClick={() => currentSession?.targetText && copyToClipboard(currentSession.targetText, "添削対象テキストがクリップボードにコピーされました")}
-                            className="p-1.5 rounded hover:bg-surface-container transition-colors"
+                            className="p-1.5 rounded hover:bg-surface-container transition-colors touch-target"
                             title="コピー"
+                            aria-label="添削対象テキストをコピー"
                           >
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                           </button>
@@ -2858,7 +2861,7 @@ export default function TextCorrectionApp() {
                               ? 'bg-primary-container border-md3-primary'
                               : 'border-outline-variant hover:bg-surface-container'
                           }`}
-                          title="ダブルクリックで選択/選択解除"
+                          title="ダブルクリック、または右上の選択ボタンで選択/選択解除"
                         >
                           <div className="flex-1 min-w-0 space-y-2">
                             <div className="flex items-center justify-between">
@@ -2873,15 +2876,18 @@ export default function TextCorrectionApp() {
                                   </Badge>
                                 )}
                               </div>
-                              {/* Hover-reveal action icons */}
-                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {/* Quiet until hover on a mouse; always present on
+                                  touch, where the select button below is also
+                                  the single-tap alternative to double-click. */}
+                              <div className="flex items-center gap-1 can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity">
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "提案内容がクリップボードにコピーされました")
                                   }}
-                                  className="p-1 rounded hover:bg-surface-container-high"
+                                  className="p-1 rounded hover:bg-surface-container-high touch-target"
                                   title="コピー"
+                                  aria-label="この提案をコピー"
                                 >
                                   <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                                 </button>
@@ -2890,8 +2896,10 @@ export default function TextCorrectionApp() {
                                     e.stopPropagation()
                                     toggleSuggestionSelection(suggestion.id)
                                   }}
-                                  className="p-1 rounded hover:bg-surface-container-high"
+                                  className="p-1 rounded hover:bg-surface-container-high touch-target"
                                   title={suggestion.selected ? "選択解除" : "選択"}
+                                  aria-label={suggestion.selected ? "この提案の選択を解除" : "この提案を選択"}
+                                  aria-pressed={suggestion.selected}
                                 >
                                   <span className={`material-symbols-outlined md-18 ${suggestion.selected ? 'text-session-complete' : 'text-on-surface-variant'}`}>
                                     {suggestion.selected ? 'check_circle' : 'radio_button_unchecked'}
@@ -3072,8 +3080,9 @@ export default function TextCorrectionApp() {
                                 <Button 
                                   variant={data.confirmed ? "ghost" : "outline"} 
                                   size="sm"
-                                  className="h-8 px-2"
+                                  className="h-8 px-2 touch-target"
                                   title="確認"
+                                  aria-label="この履歴を確認"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleRestore()
@@ -3086,8 +3095,9 @@ export default function TextCorrectionApp() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-8 px-2"
+                                  className="h-8 px-2 touch-target"
                                   title="アーカイブ"
+                                  aria-label="この履歴をアーカイブ"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     archiveHistoryRound(data, index)

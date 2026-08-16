@@ -156,7 +156,7 @@ export function JobQueueCarousel<T>({
               aria-label="前のジョブへ"
               disabled={!canScrollPrev}
               onClick={() => scrollByPage(-1)}
-              className="p-1 rounded-full text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md3-primary"
+              className="p-1 rounded-full text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
             >
               <span className="material-symbols-outlined md-20">chevron_left</span>
             </button>
@@ -165,7 +165,7 @@ export function JobQueueCarousel<T>({
               aria-label="次のジョブへ"
               disabled={!canScrollNext}
               onClick={() => scrollByPage(1)}
-              className="p-1 rounded-full text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md3-primary"
+              className="p-1 rounded-full text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
             >
               <span className="material-symbols-outlined md-20">chevron_right</span>
             </button>

@@ -95,8 +95,9 @@ export function ExemplarTextCard({
           {onCopy && (
             <button
               onClick={() => value && onCopy(value)}
-              className="p-1.5 rounded hover:bg-surface-container transition-colors shrink-0"
+              className="p-1.5 rounded hover:bg-surface-container transition-colors shrink-0 touch-target"
               title="コピー"
+              aria-label="模範回答訳文をコピー"
             >
               <span className="material-symbols-outlined md-18 text-on-surface-variant">
                 content_copy

@@ -190,6 +190,22 @@ a {
     min-height: 100dvh;
   }
 
+  /* Icon-only controls in this app are sized for a cursor (an 18px glyph in
+     `p-1` is a 26px target). Where the pointer cannot hover it is also a
+     finger, so those controls get the 44px minimum. Scoped to `hover: none` so
+     desktop density is untouched, and applied with flex centering because a
+     minimum size alone would leave the glyph in the corner of a larger box.
+     The hover-capable counterpart is the `can-hover:` variant (tailwind.config.js). */
+  @media (hover: none) {
+    .touch-target {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+    }
+  }
+
   /* Used by HighlightedTextarea's backdrop layer: scrollTop/scrollLeft are
      mirrored from the real textarea via JS, so no visible/interactive
      scrollbar is needed on this layer. */
