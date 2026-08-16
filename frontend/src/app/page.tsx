@@ -453,6 +453,10 @@ export default function TextCorrectionApp() {
   const [rightPaneWidth, setRightPaneWidth] = useState(RIGHT_PANE_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [isLgScreen, setIsLgScreen] = useState(false)
+  // Below lg there is not enough width to show the editor and the review panes
+  // side by side, and not enough height to stack them, so only one is on screen
+  // at a time (design.md Decision 3). Ignored at lg and above, where both are.
+  const [mobilePane, setMobilePane] = useState<'editor' | 'review'>('editor')
   // Hover-preview trigger for suggestion-card text-span highlighting
   // (see highlight-suggestion-text-spans design.md Decision 2).
   const [hoveredSuggestionId, setHoveredSuggestionId] = useState<string | null>(null)
@@ -1223,6 +1227,11 @@ export default function TextCorrectionApp() {
       currentSession.suggestions.length > 0
     ) {
       lastScrolledJobIdRef.current = confirmingJobId
+      // Below lg the suggestions card is not merely further down the page, it is
+      // in the pane that is currently hidden — so bringing it into view means
+      // switching panes first. The scroll below then still positions the card
+      // within that pane.
+      setMobilePane('review')
       // Small delay to ensure DOM is updated after React render
       const timeoutId = setTimeout(() => {
         const suggestionsCard = document.querySelector('[data-suggestions-card]')
@@ -1236,6 +1245,12 @@ export default function TextCorrectionApp() {
     // reference, to avoid re-scrolling on every selection/edit (see comment above)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmingJobId, currentSession?.suggestions?.length])
+
+  // A pane choice belongs to the session it was made in: carrying "review" over
+  // to a session with nothing to review would open on an empty pane.
+  useEffect(() => {
+    setMobilePane('editor')
+  }, [currentSessionId])
 
   // 「実際にレビュー作業をしている」ジョブID（add-suggestion-generation-timer
   // 改訂、design.md Decision 7）。以下の全てを満たす場合のみ非nullになる:
@@ -2138,6 +2153,9 @@ export default function TextCorrectionApp() {
   // Job Queueと同じヘルパーを使い「最新」の定義が2箇所でズレないようにする。
   const completedJobs = useMemo(() => sortCompletedJobsNewestFirst(jobQueue), [jobQueue])
   const completedJobCount = completedJobs.length
+  // Shown on the pane switch below lg, where the review pane is off screen: the
+  // proposals under review, or failing that the work that will produce them.
+  const reviewPaneCount = currentSession?.suggestions?.length || activeJobCount
 
   // 生成タイマー表示用の派生値（add-suggestion-generation-timer改訂、design.md
   // Decision 7参照）。「最新」はキュー待機/AI処理時間を含まない、レビュー
@@ -2510,8 +2528,55 @@ export default function TextCorrectionApp() {
 
           {/* Center + Right Pane Container */}
           <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+            {/* Pane switch — only below lg, where one pane is on screen at a
+                time. Rendered inside the flex-col container so it takes its own
+                row above whichever pane is showing, and removed from layout at
+                lg where both panes are visible and the switch would be a lie. */}
+            {currentSession && (
+              <div
+                className="lg:hidden flex-shrink-0 flex gap-1 border-b border-outline-variant bg-surface px-3 py-2"
+                role="group"
+                aria-label="表示するペーン"
+              >
+                <button
+                  type="button"
+                  onClick={() => setMobilePane('editor')}
+                  aria-pressed={mobilePane === 'editor'}
+                  className={`flex-1 rounded-lg px-3 py-2 text-body-sm transition-colors ${
+                    mobilePane === 'editor'
+                      ? 'bg-primary-container text-on-primary-container font-semibold'
+                      : 'text-on-surface-variant hover:bg-surface-container font-normal'
+                  }`}
+                >
+                  編集
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobilePane('review')}
+                  aria-pressed={mobilePane === 'review'}
+                  className={`flex-1 rounded-lg px-3 py-2 text-body-sm transition-colors inline-flex items-center justify-center gap-1.5 ${
+                    mobilePane === 'review'
+                      ? 'bg-primary-container text-on-primary-container font-semibold'
+                      : 'text-on-surface-variant hover:bg-surface-container font-normal'
+                  }`}
+                >
+                  添削案
+                  {/* What is waiting in the pane you cannot currently see. */}
+                  {reviewPaneCount > 0 && (
+                    <Badge className="bg-surface-container text-on-surface-variant text-xs font-medium">
+                      {reviewPaneCount}
+                    </Badge>
+                  )}
+                </button>
+              </div>
+            )}
+
             {/* Center Pane - Editor */}
-            <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+            <main
+              className={`flex-1 min-h-0 overflow-y-auto p-4 lg:p-6 ${
+                mobilePane === 'editor' ? 'block' : 'hidden'
+              } lg:block`}
+            >
               {!currentSession ? (
                 <div className="flex items-center justify-center min-h-full">
                   <Card className="max-w-md w-full bg-surface border-outline-variant">
@@ -2734,8 +2799,10 @@ export default function TextCorrectionApp() {
             </div>
 
             {/* Right Pane - Job Queue + Suggestions (Desktop: side panel with resizable width, Mobile: below editor) */}
-            <aside 
-              className="w-full lg:flex-shrink-0 bg-surface border-t lg:border-t-0 border-outline-variant overflow-y-auto"
+            <aside
+              className={`w-full flex-1 min-h-0 lg:flex-none bg-surface border-outline-variant overflow-y-auto ${
+                mobilePane === 'review' ? 'block' : 'hidden'
+              } lg:block`}
               style={isLgScreen ? { width: rightPaneWidth } : undefined}
             >
               <div className="p-4 lg:p-6 space-y-card-gap">
