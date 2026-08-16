@@ -82,26 +82,72 @@ jobs:
       - name: Resolve connection string
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Supabase's direct host `db.<ref>.supabase.co` publishes only an AAAA
+          # record unless the paid IPv4 add-on is on, and GitHub runners have no
+          # IPv6, so a direct URL has to be rewritten to a Supavisor pooler host.
+          # The region below is the project's: its AAAA sits in AWS 2406:da14::/35
+          # (ap-northeast-1). Set the SUPABASE_REGION repository variable if the
+          # project ever moves. Which cluster (aws-0 / aws-1) serves the tenant is
+          # not derivable, so both are tried and the first that connects wins.
+          SUPABASE_REGION: ${{ vars.SUPABASE_REGION || 'ap-northeast-1' }}
         run: |
           if [ -z "${DATABASE_URL}" ]; then
             echo "::error::DATABASE_URL secret is empty for this environment. Add it under Settings -> Secrets and variables -> Actions (repository secret, or an environment secret on 'production')."
             exit 1
           fi
-          url="$(python3 - <<'PY'
+          python3 - > /tmp/candidates <<'PY'
           import os
+          import re
           from urllib.parse import urlsplit, urlunsplit
 
           url = urlsplit(os.environ["DATABASE_URL"])
-          # Port 6543 on the Supabase pooler is transaction mode, which cannot run
-          # migrations; 5432 on the same host is session mode and takes the same
-          # credentials. The app keeps using 6543 — this only affects DDL here.
-          if (url.hostname or "").endswith("pooler.supabase.com") and url.port == 6543:
-              url = url._replace(netloc=url.netloc.replace(":6543", ":5432"))
-          print(urlunsplit(url))
+          host = url.hostname or ""
+          candidates = []
+
+          direct = re.fullmatch(r"db\.([a-z0-9]+)\.supabase\.co", host)
+          if direct:
+              ref = direct.group(1)
+              region = os.environ["SUPABASE_REGION"]
+              userinfo = url.netloc.rsplit("@", 1)[0]
+              password = userinfo.split(":", 1)[1] if ":" in userinfo else ""
+              for cluster in ("aws-0", "aws-1"):
+                  netloc = f"postgres.{ref}:{password}@{cluster}-{region}.pooler.supabase.com:5432"
+                  candidates.append(urlunsplit(url._replace(netloc=netloc)))
+              # Last resort: the direct host itself, in case IPv4 is available.
+              candidates.append(urlunsplit(url))
+          else:
+              # Port 6543 on the pooler is transaction mode, which cannot run DDL;
+              # 5432 on the same host is session mode and takes the same
+              # credentials. The app keeps using 6543 — this only affects DDL here.
+              if host.endswith("pooler.supabase.com") and url.port == 6543:
+                  url = url._replace(netloc=url.netloc.replace(":6543", ":5432"))
+              candidates.append(urlunsplit(url))
+
+          print("\n".join(candidates))
           PY
-          )"
-          echo "::add-mask::${url}"
-          echo "MIGRATION_DB_URL=${url}" >> "$GITHUB_ENV"
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] && echo "::add-mask::${candidate}"
+          done < /tmp/candidates
+
+          selected=''
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            host="$(python3 -c 'import sys; from urllib.parse import urlsplit; print(urlsplit(sys.argv[1]).hostname)' "$candidate")"
+            printf 'Trying %s ... ' "$host"
+            if PGCONNECT_TIMEOUT=10 psql "$candidate" -tAc 'SELECT 1' >/dev/null 2>&1; then
+              echo 'connected'
+              selected="$candidate"
+              break
+            fi
+            echo 'no'
+          done < /tmp/candidates
+          rm -f /tmp/candidates
+
+          if [ -z "$selected" ]; then
+            echo "::error::No usable connection. Put the Session pooler string (Dashboard -> Connect -> Session pooler) in the DATABASE_URL secret, or set the SUPABASE_REGION variable if the project is not in ${SUPABASE_REGION}."
+            exit 1
+          fi
+          echo "MIGRATION_DB_URL=${selected}" >> "$GITHUB_ENV"
 
       - name: Show remote migration history
         run: supabase migration list --workdir backend --db-url "$MIGRATION_DB_URL"
