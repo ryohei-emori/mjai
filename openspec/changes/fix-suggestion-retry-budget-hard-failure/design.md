@@ -37,6 +37,8 @@ Alternative considered: lowering `MAX_PARSE_RETRY_ATTEMPTS`. Rejected because it
 
 `call_gemini_with_rotation()` / `call_groq_with_rotation()` take `allow_model_retry`. The chain computes it from the remaining budget and the next configured provider's timeout (`_allow_model_retry`, `_next_provider_timeout`). Two Gemini timeouts alone are 44s of the 55s budget, after which starting Groq's 25s call could exceed Vercel's 60s limit — the exact platform-504 outcome the wall clock exists to avoid. The gate lives in the chain, not the provider, because "who answers next" is chain knowledge.
 
+**Superseded by `fix-function-invocation-timeout`.** This gate was not sufficient, and the follow-up change removes it. Because the flag is computed *before* the provider's first attempt, it cannot account for how long that attempt actually takes: the first Gemini call still satisfied the gate, ran its full 22s, and the sibling attempt then starved Groq anyway — and none of it bounded the *duration* of a call, only whether one could start. It is replaced by a per-provider phase deadline that every attempt is re-checked against.
+
 ### Require an absent Japanese form before flagging a Chinese one
 
 `has_non_japanese_recommendation()` now collects every recommended form in a reason and flags only when at least one is Chinese and none is Japanese. Recommendation verbs (`改成` / `改为` / `写成`) are also how critique narrates the shift it found, so the previous rule punished good critiques. `_form_is_japanese()` accepts kana, or CJK with no Simplified-only character, which keeps kanji-only forms (`叙事詩`) and digit notation (`9.5時間`) legitimate.
