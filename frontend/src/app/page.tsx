@@ -23,8 +23,7 @@ import {
   historyAPI,
   proposalAPI,
   suggestionsAPI,
-  isSuggestionsAPIError,
-  withProviderDetail,
+  describeSuggestionsFailure,
 } from "./api"
 import { useAuth } from "./auth-provider"
 import { LoginScreen } from "./login-screen"
@@ -702,28 +701,11 @@ export default function TextCorrectionApp() {
           llmProvider = data.llmProvider || undefined
           llmModel = data.llmModel || undefined
         } catch (apiError) {
-          // The per-provider breakdown is appended to whichever message we
-          // show: "全プロバイダ失敗" alone cannot tell an unset key from an
-          // exhausted quota from a timeout, and only the user can see it.
-          const providerDetail = isSuggestionsAPIError(apiError)
-            ? apiError.providerDetail
-            : ""
-          if (isSuggestionsAPIError(apiError) && apiError.rateLimited) {
-            console.warn("[suggestions] Rate-limited / quota exhausted:", apiError)
-            throw new Error(
-              withProviderDetail(
-                apiError.message ||
-                  "クラウドAPIのレート制限またはクォータ超過です。しばらく待つか、オフラインモードを有効にしてください。",
-                providerDetail,
-              ),
-            )
-          }
-          const detail =
-            apiError instanceof Error
-              ? apiError.message
-              : "クラウドAPIに接続できませんでした"
+          // Localized message plus the per-provider breakdown: a generic
+          // failure line cannot tell an unset key from an exhausted quota from
+          // a timeout, and only the user can see this screen.
           console.warn("[suggestions] API failed (no WebLLM fallback):", apiError)
-          throw new Error(withProviderDetail(detail, providerDetail))
+          throw new Error(describeSuggestionsFailure(apiError))
         }
       }
 

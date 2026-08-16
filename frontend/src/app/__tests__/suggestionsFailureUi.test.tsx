@@ -133,6 +133,9 @@ test("failed job names each provider that declined and its key count", async () 
   const details = await screen.findAllByText(/内訳: Gemini（鍵1件）/)
   expect(details).toHaveLength(2)
   for (const detail of details) {
+    // The backend's ops-facing English is not what the user reads.
+    expect(detail).toHaveTextContent("クラウドAPIでの添削生成に失敗しました")
+    expect(detail).not.toHaveTextContent("All cloud providers failed")
     expect(detail).toHaveTextContent("Gemini request timed out after 22.0s")
     expect(detail).toHaveTextContent("Groq（鍵0件）: Groq API key not configured")
     expect(detail).toHaveTextContent("Cloudflare（鍵0件）")

@@ -345,6 +345,29 @@ export function withProviderDetail(message: string, detail: string): string {
   return detail ? `${message}\n内訳: ${detail}` : message;
 }
 
+/**
+ * Japanese explanation of a failed cloud generation, plus the breakdown.
+ *
+ * The backend's `message` is English prose meant for logs and ops (this is how
+ * "All cloud providers failed" reached a Japanese UI), so the localized text is
+ * chosen here from the machine-readable flags it returns instead.
+ */
+export function describeSuggestionsFailure(err: unknown): string {
+  if (!isSuggestionsAPIError(err)) {
+    return err instanceof Error ? err.message : "クラウドAPIに接続できませんでした";
+  }
+  if (err.status === 0) {
+    // Never reached the backend: the browser's own message is the useful one.
+    return err.message || "クラウドAPIへの接続に失敗しました";
+  }
+  const base = err.rateLimited
+    ? "クラウドAPIのレート制限またはクォータ超過です。しばらく待つか、オフラインモードを有効にしてください。"
+    : err.body?.timed_out
+      ? "クラウド生成が制限時間内に終わりませんでした。もう一度お試しください（原文・訳文が長い場合は分けると通りやすくなります）。"
+      : "クラウドAPIでの添削生成に失敗しました。時間をおいて再試行するか、オフラインモードを有効にしてください。";
+  return withProviderDetail(base, err.providerDetail);
+}
+
 /** Structured cloud-suggestions failure (quota/rate-limit visible to UI). */
 export class SuggestionsAPIError extends Error {
   status: number;
@@ -367,14 +390,20 @@ export class SuggestionsAPIError extends Error {
     this.status = status;
     this.body = body;
     this.providerDetail = describeProviderFailures(body);
-    const haystack = [
-      body?.message,
-      body?.error,
-      body?.gemini_error,
-      body?.groq_error,
-      body?.cf_error,
-      fallbackMessage,
-    ]
+    // Only the parsed fields, never the raw response text: that text is the
+    // JSON body, whose `"rate_limited"` key matched the pattern below and made
+    // every 503 with a body look rate-limited.
+    const haystack = (
+      body
+        ? [
+            body.message,
+            body.error,
+            body.gemini_error,
+            body.groq_error,
+            body.cf_error,
+          ]
+        : [fallbackMessage]
+    )
       .filter(Boolean)
       .join(" ")
       .toLowerCase();

@@ -45,6 +45,10 @@ Alternative considered: lowering `MAX_PARSE_RETRY_ATTEMPTS`. Rejected because it
 
 The backend already returned `gemini_error` / `groq_error` / `cf_error` and pool sizes; the client dropped the Gemini ones from its type and showed only `message`. `describeProviderFailures()` renders `Gemini（鍵1件）: … / Groq（鍵0件）: …`, appended under the message on the toast and the failed job card (which now renders newlines and carries the full text in `title`). `timed_out` is threaded through so a budget abort reads as "retry" rather than "check your keys".
 
+The message itself is now composed on the client (`describeSuggestionsFailure`) from those flags, because forwarding `apiError.message` is how ops-facing English (`All cloud providers failed. Try WebLLM offline mode.`) became the user-visible text of a Japanese UI. The backend keeps its English message for logs and non-UI consumers.
+
+Fixing that surfaced a second bug behind it: `SuggestionsAPIError` classified rate limits by pattern-matching a haystack that included the raw response text — i.e. the JSON body, which always contains the key `"rate_limited"`. Every 503 with a body therefore matched `/rate.?limit/`, so the flag carried no information (and the old code path masked it by throwing the backend message either way). Classification now reads parsed fields, falling back to the raw message only when there is no body, which is the network-error case it was written for.
+
 ## Risks / Trade-offs
 
 - **A flawed critique can now reach the user** where it previously produced an error. That is the intended trade: the alternative shown in production was no critique at all after 55s. The nudge still runs once, and the model provenance caption tells the user which model wrote it.

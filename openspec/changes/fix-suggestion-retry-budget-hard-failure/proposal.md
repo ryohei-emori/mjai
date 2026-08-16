@@ -23,6 +23,8 @@ Independently, the UI could not distinguish these causes. The backend returns `g
 - `has_non_japanese_recommendation()` no longer flags a reason that also introduces a Japanese recommended form.
 - `SuggestionsError` carries `timed_out`, exposed as `timed_out` in the 503 body, so a wall-clock abort gets retry-oriented advice instead of "all providers failed".
 - The frontend types `gemini_error` / `gemini_pool_size` / `timed_out`, includes the Gemini error in its rate-limit classification, and appends a per-provider breakdown (`内訳: Gemini（鍵1件）: … / Groq（鍵0件）: …`) to the toast and the failed job card.
+- The user-facing message is composed on the client from those flags instead of forwarding the backend's ops-facing English. `All cloud providers failed. Try WebLLM offline mode.` is exactly the string that reached a Japanese UI, because the previous code threw `apiError.message` (the backend text) whenever it was present.
+- Rate-limit classification stops reading the raw response text. That text is the JSON body, whose `"rate_limited"` key matched the `/rate.?limit/` pattern — so **every** 503 with a body was classified as rate-limited, making the flag meaningless. Classification now uses the parsed fields, falling back to the raw message only when there is no body (network errors).
 
 Deliberately unchanged: failover order, provider timeouts, `SUGGESTIONS_WALL_CLOCK_S`, `MAX_PARSE_RETRY_ATTEMPTS` for parse/language failures, the prompt rules and few-shot, the response schema, and オフラインモード gating (WebLLM still never auto-starts).
 

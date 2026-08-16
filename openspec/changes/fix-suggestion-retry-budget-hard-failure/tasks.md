@@ -26,6 +26,8 @@
 - [x] 5.1 Add `timed_out` to `SuggestionsError` and to the 503 body, with distinct advice
 - [x] 5.2 Type `gemini_error` / `gemini_pool_size` / `timed_out` on the client and include the Gemini error in rate-limit classification
 - [x] 5.3 Append the per-provider breakdown to the toast and the failed job card, rendering newlines and keeping the full text in `title`
+- [x] 5.4 Compose the user-facing message in Japanese from the flags (`describeSuggestionsFailure`) instead of forwarding the backend's English `message`
+- [x] 5.5 Stop classifying rate limits from the raw response text, whose `"rate_limited"` key matched the pattern and flagged every 503 with a body
 
 ## 6. Tests
 
@@ -36,9 +38,9 @@
 - [x] 6.5 Backend: persistent Chinese recommended form stops after the cap
 - [x] 6.6 Backend: `_allow_model_retry` / `_next_provider_timeout` units, and the chain passes the flag through
 - [x] 6.7 Parser: a reason that also recommends a Japanese form is not flagged
-- [x] 6.8 Frontend: `describeProviderFailures`, Gemini-only quota classified as rate-limited, `timed_out` exposed
-- [x] 6.9 Frontend: failed job and toast both show the breakdown
-- [x] 6.10 Run backend pytest and frontend jest / tsc / lint — 350 passed + 1 skipped, 272 jest passed, tsc clean, lint unchanged (pre-existing font warning only)
+- [x] 6.8 Frontend: `describeProviderFailures`, Gemini-only quota classified as rate-limited, `timed_out` exposed, JSON key names not read as quota wording
+- [x] 6.9 Frontend: failed job and toast both show the breakdown, in Japanese, without the backend's English message
+- [x] 6.10 Run backend pytest and frontend jest / tsc / lint — 350 passed + 1 skipped, 277 jest passed, tsc clean, lint unchanged (pre-existing font warning only)
 
 ## 7. Docs
 

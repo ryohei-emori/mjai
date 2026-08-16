@@ -14,6 +14,7 @@ jest.mock("@/lib/supabaseClient", () => ({
 
 import {
   describeProviderFailures,
+  describeSuggestionsFailure,
   isSuggestionsAPIError,
   suggestionsAPI,
   withProviderDetail,
@@ -89,6 +90,29 @@ describe("SuggestionsAPIError provider diagnostics", () => {
     expect(error.providerDetail).toContain("Groq（鍵0件）")
   })
 
+  it("does not read the response JSON's key names as quota wording", async () => {
+    // The raw body text used to be part of the classification input, so the
+    // `"rate_limited"` key alone made every 503 look rate-limited.
+    fetchMock.mockResponseOnce(
+      JSON.stringify({
+        error: "All LLM providers failed",
+        message: "All cloud providers failed. Try WebLLM offline mode.",
+        fallback_available: true,
+        rate_limited: false,
+        gemini_error: "Gemini request timed out after 22.0s",
+        gemini_pool_size: 1,
+      }),
+      { status: 503 },
+    )
+
+    const error = await suggestionsAPI
+      .generate("原文", "対象")
+      .catch((e: unknown) => e)
+
+    if (!isSuggestionsAPIError(error)) throw new Error("expected a suggestions error")
+    expect(error.rateLimited).toBe(false)
+  })
+
   it("exposes the wall-clock abort flag distinctly from a provider outage", async () => {
     fetchMock.mockResponseOnce(
       JSON.stringify({
@@ -111,5 +135,60 @@ describe("SuggestionsAPIError provider diagnostics", () => {
     if (!isSuggestionsAPIError(error)) throw new Error("expected a suggestions error")
     expect(error.body?.timed_out).toBe(true)
     expect(error.rateLimited).toBe(false)
+  })
+})
+
+describe("describeSuggestionsFailure", () => {
+  function failure(body: Record<string, unknown>, status = 503) {
+    fetchMock.resetMocks()
+    fetchMock.mockResponseOnce(JSON.stringify(body), { status })
+    return suggestionsAPI.generate("原文", "対象").catch((e: unknown) => e)
+  }
+
+  it("explains a provider outage in Japanese rather than passing English through", async () => {
+    // The backend `message` is ops-facing English; it is what reached the user
+    // as "All cloud providers failed" in a Japanese UI.
+    const message = describeSuggestionsFailure(
+      await failure({
+        error: "All LLM providers failed",
+        message: "All cloud providers failed. Try WebLLM offline mode.",
+        fallback_available: true,
+        gemini_error: "Gemini request timed out after 22.0s",
+        gemini_pool_size: 1,
+      }),
+    )
+
+    expect(message).toContain("クラウドAPIでの添削生成に失敗しました")
+    expect(message).not.toContain("All cloud providers failed")
+    expect(message).toContain("内訳: Gemini（鍵1件）")
+  })
+
+  it("advises retrying when the failure was the wall-clock budget", async () => {
+    const message = describeSuggestionsFailure(
+      await failure({
+        error: "Suggestions generation exceeded wall-clock budget (55s)",
+        fallback_available: true,
+        timed_out: true,
+      }),
+    )
+
+    expect(message).toContain("制限時間内に終わりませんでした")
+  })
+
+  it("advises waiting when providers are rate-limited", async () => {
+    const message = describeSuggestionsFailure(
+      await failure({
+        error: "All LLM providers rate-limited or quota exhausted",
+        fallback_available: true,
+        rate_limited: true,
+      }),
+    )
+
+    expect(message).toContain("レート制限またはクォータ超過")
+  })
+
+  it("keeps the browser's own message when the request never reached the backend", () => {
+    const networkError = new (class extends Error {})("Failed to fetch")
+    expect(describeSuggestionsFailure(networkError)).toBe("Failed to fetch")
   })
 })

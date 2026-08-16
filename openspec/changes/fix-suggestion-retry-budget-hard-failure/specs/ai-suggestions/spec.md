@@ -72,14 +72,24 @@ The check that rejects a Chinese word offered as the corrected form MUST NOT fir
 
 ### Requirement: A cloud suggestion failure MUST tell the user which provider declined and why
 
-When cloud generation fails, the user-facing failure MUST include each provider's reported error together with the number of credentials that provider had loaded, for every provider in the chain including the primary. The client MUST also consider the primary provider's error when classifying a failure as rate-limited.
+When cloud generation fails, the user-facing failure MUST include each provider's reported error together with the number of credentials that provider had loaded, for every provider in the chain including the primary. The explanatory text MUST be composed in the UI language from the machine-readable failure flags rather than forwarding the backend's operator-facing message. Rate-limit classification MUST consider the primary provider's error, and MUST NOT be derived from the raw response text, whose field names can match quota wording.
 
 #### Scenario: Failure names every provider that declined
 
 - **WHEN** cloud generation fails with per-provider errors in the response
 - **THEN** the failed job and the notification both show each provider's name, loaded credential count, and reported error
 
+#### Scenario: Failure text is in the UI language
+
+- **WHEN** cloud generation fails with an operator-facing message in the response
+- **THEN** the user reads a message in the interface language, chosen by whether the failure was rate-limited, a wall-clock abort, or a provider outage
+
 #### Scenario: Primary-provider quota exhaustion is classified as rate-limited
 
 - **WHEN** the only reported quota/cooldown error comes from the primary provider
 - **THEN** the client classifies the failure as rate-limited
+
+#### Scenario: Response field names are not mistaken for quota wording
+
+- **WHEN** a failure response carries a rate-limit *flag* set to false and no quota wording in any message
+- **THEN** the client does not classify the failure as rate-limited
