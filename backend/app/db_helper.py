@@ -126,6 +126,8 @@ async def fetch_histories_by_session(session_id):
                 status,
                 overall_comment AS "overallComment",
                 provider,
+                llm_provider AS "llmProvider",
+                llm_model AS "llmModel",
                 client_job_id AS "clientJobId"
             FROM correction_histories 
             WHERE session_id = $1 AND is_archived = false
@@ -165,6 +167,8 @@ def _history_row_to_camel(history):
         'status': history.get('status', 'confirmed'),
         'overallComment': history.get('overall_comment'),
         'provider': history.get('provider'),
+        'llmProvider': history.get('llm_provider'),
+        'llmModel': history.get('llm_model'),
         'clientJobId': history.get('client_job_id'),
     }
 
@@ -181,9 +185,10 @@ async def insert_history(history):
             INSERT INTO correction_histories (
                 history_id, session_id, timestamp, original_text, instruction_prompt,
                 target_text, combined_comment, selected_proposal_ids, custom_proposals,
-                status, overall_comment, provider, client_job_id
+                status, overall_comment, provider, client_job_id,
+                llm_provider, llm_model
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ''',
             history['history_id'],
             history['session_id'],
@@ -198,6 +203,8 @@ async def insert_history(history):
             overall_comment,
             history.get('provider'),
             history.get('client_job_id'),
+            history.get('llm_provider'),
+            history.get('llm_model'),
         )
         return _history_row_to_camel({
             **history,
@@ -219,6 +226,12 @@ async def update_history(history_id, updates):
         'customProposals': 'custom_proposals',
         'status': 'status',
         'provider': 'provider',
+        # Provenance is only written when explicitly sent, so a confirm/update
+        # that omits these keys leaves the generating model on the row.
+        'llm_provider': 'llm_provider',
+        'llmProvider': 'llm_provider',
+        'llm_model': 'llm_model',
+        'llmModel': 'llm_model',
         'client_job_id': 'client_job_id',
         'clientJobId': 'client_job_id',
         'instruction_prompt': 'instruction_prompt',
@@ -254,6 +267,8 @@ async def update_history(history_id, updates):
                     status,
                     overall_comment AS "overallComment",
                     provider,
+                    llm_provider AS "llmProvider",
+                    llm_model AS "llmModel",
                     client_job_id AS "clientJobId"
                 FROM correction_histories
                 WHERE history_id = $1 AND is_archived = false
@@ -280,11 +295,68 @@ async def update_history(history_id, updates):
             status,
             overall_comment AS "overallComment",
             provider,
+            llm_provider AS "llmProvider",
+            llm_model AS "llmModel",
             client_job_id AS "clientJobId"
     '''
     async with get_db() as conn:
         row = await conn.fetchrow(query, *params)
         return dict(row) if row else None
+
+# --- app_settings (global key/value settings shared by all users) -----------
+# Row absence means "built-in code default in effect" (see migration 006), so
+# reset deletes the row instead of writing the default text into it.
+
+async def fetch_setting(setting_key):
+    """Return one setting as camelCase dict, or None when unset."""
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            '''
+            SELECT
+                setting_key AS "settingKey",
+                setting_value AS "settingValue",
+                updated_at AS "updatedAt",
+                updated_by AS "updatedBy"
+            FROM app_settings
+            WHERE setting_key = $1
+            ''',
+            setting_key,
+        )
+        return dict(row) if row else None
+
+
+async def upsert_setting(setting_key, setting_value, updated_by=None):
+    """Insert or replace a setting, stamping who saved it and when."""
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            '''
+            INSERT INTO app_settings (setting_key, setting_value, updated_at, updated_by)
+            VALUES ($1, $2, NOW(), $3)
+            ON CONFLICT (setting_key) DO UPDATE
+                SET setting_value = EXCLUDED.setting_value,
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by = EXCLUDED.updated_by
+            RETURNING
+                setting_key AS "settingKey",
+                setting_value AS "settingValue",
+                updated_at AS "updatedAt",
+                updated_by AS "updatedBy"
+            ''',
+            setting_key,
+            setting_value,
+            updated_by,
+        )
+        return dict(row) if row else None
+
+
+async def delete_setting(setting_key):
+    """Delete a setting so the built-in default applies again. Idempotent."""
+    async with get_db() as conn:
+        await conn.execute(
+            'DELETE FROM app_settings WHERE setting_key = $1',
+            setting_key,
+        )
+
 
 # 提案一覧取得（フル field set, camelCase)
 async def fetch_proposals_by_history(history_id):

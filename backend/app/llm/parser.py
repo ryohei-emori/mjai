@@ -47,6 +47,12 @@ prompts. This module also exposes:
   unpaired brackets). Allowed JP TARGET cites inside 「」 do not trip this.
   Wired into suggestions retry alongside `has_non_chinese_reason`
   (`raise-suggestion-quality-to-gemini-bar`).
+- `has_non_japanese_recommendation()` — True if a `reason` offers a Chinese
+  word/phrase as the *corrected form* (e.g. 应该改为“理论上”), which is
+  unusable for a Japanese TARGET. Wired into suggestions retry
+  (`editable-prompt-model-log-and-critique-fix`); script-level only, so a
+  script-legal but semantically wrong recommendation (需要 for 必要) is left
+  to the prompt rules.
 """
 
 from __future__ import annotations
@@ -507,6 +513,61 @@ def _reason_is_weak_location_only(reason: str) -> bool:
     if not _WEAK_QUE_SHAO_LOCATION.search(text):
         return False
     return _WHY_NECESSITY_MARKERS.search(text) is None
+
+
+# Recommendation-introducing verbs used in Chinese critique prose, followed by
+# the recommended form in quotes: 改为"X" / 改成「X」 / 换成“X” / 写成"X" …
+_RECOMMENDATION_QUOTE_PATTERN = re.compile(
+    r'(?:改为|改成|改写成|换成|替换成|写成)\s*(?:为|成)?\s*'
+    r'(?:[「『]([^」』]+)[」』]|“([^”]+)”|"([^"]+)")'
+)
+
+# Characters that exist only in Simplified Chinese, i.e. never appear in a
+# legitimate modern Japanese form. Deliberately excludes characters shared with
+# Japanese kanji (数, 据, 点, 准, 与, 后, 体 …) so a kanji-only Japanese
+# recommendation such as 「叙事詩」 or 「学者」 is not flagged. This is a
+# script-level check only: a recommendation that is script-legal Japanese but
+# semantically wrong (需要 for 必要) is out of its reach by design and is
+# handled by the prompt rules instead.
+_SIMPLIFIED_ONLY_CHARS = frozenset(
+    "对现实论语说标脑为义习书东车马鸟岛时间问题类结经给应认识讲译记词让过还进运达边连远选适观见规视觉确转释变处众优华汉们这单复备关键层术无较仅从众叶"
+)
+
+
+def _recommended_forms(reason: str) -> List[str]:
+    """Quoted forms introduced as the recommended replacement in `reason`."""
+    forms: List[str] = []
+    for match in _RECOMMENDATION_QUOTE_PATTERN.finditer(reason or ""):
+        form = next((g for g in match.groups() if g), "")
+        if form.strip():
+            forms.append(form.strip())
+    return forms
+
+
+def _form_is_non_japanese(form: str) -> bool:
+    """True if a recommended form is Chinese rather than Japanese."""
+    if _JAPANESE_KANA_PATTERN.search(form):
+        return False
+    return any(ch in _SIMPLIFIED_ONLY_CHARS for ch in form)
+
+
+def has_non_japanese_recommendation(result: ParsedResponse) -> bool:
+    """
+    True if any `reason` presents a Chinese word/phrase as the corrected form
+    (e.g. 应该改为“理论上” for a Japanese TARGET), which a learner cannot use.
+
+    Spec (`editable-prompt-model-log-and-critique-fix`): recommended forms MUST
+    be written in the target language. Wired into `suggestions._content_usable()`
+    alongside the Chinese-explanation checks, sharing the same
+    MAX_PARSE_RETRY_ATTEMPTS budget so the worst-case attempt count is
+    unchanged. Requires a recommendation verb, a quoted span with no kana, and
+    a Simplified-only character in that span, so kanji-only Japanese citations
+    do not trip it. `original` / `sourceExcerpt` are not inspected.
+    """
+    return any(
+        any(_form_is_non_japanese(form) for form in _recommended_forms(suggestion.get("reason") or ""))
+        for suggestion in result["suggestions"]
+    )
 
 
 def has_weak_critique_reason(result: ParsedResponse) -> bool:

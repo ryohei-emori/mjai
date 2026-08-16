@@ -195,7 +195,7 @@ class TestCallGroqWithRotation:
                 mock_call.return_value = '{"ok": true}'
                 result = await call_groq_with_rotation([{"role": "user", "content": "hi"}])
 
-        assert result == '{"ok": true}'
+        assert result == ('{"ok": true}', "openai/gpt-oss-120b")
         mock_call.assert_called_once()
         _, kwargs = mock_call.call_args
         assert kwargs["model"] == "openai/gpt-oss-120b"
@@ -215,7 +215,8 @@ class TestCallGroqWithRotation:
                 ]
                 result = await call_groq_with_rotation([{"role": "user", "content": "hi"}])
 
-        assert result == '{"ok": true}'
+        # The reported model is the one that answered, not the one first tried.
+        assert result == ('{"ok": true}', "openai/gpt-oss-20b")
         assert mock_call.call_count == 2
         used_models = [c.kwargs["model"] for c in mock_call.call_args_list]
         assert used_models == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
@@ -254,7 +255,7 @@ class TestCallGroqWithRotation:
                 ]
                 result = await call_groq_with_rotation([{"role": "user", "content": "hi"}])
 
-        assert result == '{"ok": true}'
+        assert result == ('{"ok": true}', "openai/gpt-oss-120b")
         assert mock_call.call_count == 2
 
     async def test_non_retriable_error_does_not_retry(self, monkeypatch):

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import httpx
 
+from .provider_output import ProviderOutput
 from .key_pool import (
     acquire_gemini,
     cooldown_status_codes,
@@ -330,21 +331,30 @@ async def call_gemini(messages: list[dict[str, str]], model: Optional[str] = Non
             raise
 
 
-async def call_gemini_with_rotation(messages: list[dict[str, str]]) -> str:
+async def call_gemini_with_rotation(
+    messages: list[dict[str, str]],
+) -> ProviderOutput:
     """
     Call Gemini with in-provider model rotation and bounded retry.
 
     When rotation is enabled (GEMINI_MODEL unset), attempts up to 2 distinct
     models from ALLOWED_GEMINI_MODELS. When GEMINI_MODEL pins a model,
     behaves like a single call_gemini() with no model retry.
+
+    Returns the raw text together with the model that produced it — after a
+    retry that is the second model, not the first one attempted.
     """
     models = select_gemini_models(n=2)
     first_model = models[0]
 
     try:
-        return await call_gemini(messages, model=first_model)
+        return ProviderOutput(
+            await call_gemini(messages, model=first_model), first_model
+        )
     except (GeminiRateLimitError, GeminiServerError, GeminiTimeoutError):
         if len(models) < 2:
             raise
         second_model = models[1]
-        return await call_gemini(messages, model=second_model)
+        return ProviderOutput(
+            await call_gemini(messages, model=second_model), second_model
+        )

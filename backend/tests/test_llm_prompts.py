@@ -5,7 +5,9 @@ Tests for backend/app/llm/prompts.py framing and language rules.
 from app.llm.prompts import (
     CORRECTION_TASK_BRIEF,
     EXEMPLAR_REFERENCE_RULES,
+    OUTPUT_CONTRACT,
     SYSTEM_PROMPT,
+    SYSTEM_PROMPT_BODY,
     FEW_SHOT_EXAMPLE,
     build_system_prompt,
     build_user_prompt,
@@ -277,9 +279,12 @@ class TestOptionalExemplarTranslation:
         assert "模範回答訳文（参考・校准用，禁止直接当作理由或原样照搬）：模範の訳文C" in prompt
 
     def test_exemplar_rules_appended_to_system_prompt_only_when_present(self):
+        # Exemplar rules land between the rules body and the output contract,
+        # so the JSON schema stays the last thing the model reads.
         with_exemplar = build_system_prompt("模範の訳文C")
-        assert with_exemplar.startswith(SYSTEM_PROMPT)
+        assert with_exemplar.startswith(SYSTEM_PROMPT_BODY)
         assert EXEMPLAR_REFERENCE_RULES.strip() in with_exemplar
+        assert with_exemplar.endswith(OUTPUT_CONTRACT)
         assert EXEMPLAR_REFERENCE_RULES.strip() not in SYSTEM_PROMPT
 
     def test_exemplar_rules_forbid_copying_and_citing_the_exemplar(self):

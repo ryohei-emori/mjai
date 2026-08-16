@@ -1,45 +1,45 @@
 ## 1. Database schema
 
-- [ ] 1.1 Add `backend/supabase/migrations/006_app_settings.sql`: `app_settings(setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_by TEXT)` with `CREATE TABLE IF NOT EXISTS`, RLS enabled and the same permissive policy name as existing tables, plus `COMMENT ON TABLE/COLUMN` describing the `correction_system_prompt` key
-- [ ] 1.2 Add `backend/supabase/migrations/007_history_llm_provenance.sql`: `ADD COLUMN IF NOT EXISTS llm_provider TEXT` and `llm_model TEXT` on `correction_histories`, with column comments distinguishing them from the existing transport-level `provider`
+- [x] 1.1 Add `backend/supabase/migrations/006_app_settings.sql`: `app_settings(setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_by TEXT)` with `CREATE TABLE IF NOT EXISTS`, RLS enabled and the same permissive policy name as existing tables, plus `COMMENT ON TABLE/COLUMN` describing the `correction_system_prompt` key
+- [x] 1.2 Add `backend/supabase/migrations/007_history_llm_provenance.sql`: `ADD COLUMN IF NOT EXISTS llm_provider TEXT` and `llm_model TEXT` on `correction_histories`, with column comments distinguishing them from the existing transport-level `provider`
 - [ ] 1.3 Apply both migrations to the shared Supabase project (they are additive, so current production code keeps working) and note in the change that this precedes deploy
 
 ## 2. Backend prompt settings store and API
 
-- [ ] 2.1 Add settings CRUD to `backend/app/db_helper.py`: read one setting by key, upsert with `updated_at`/`updated_by`, delete by key — all through the existing `get_db()` context manager and camelCase-mapped returns
-- [ ] 2.2 Add a prompt-settings module (or main.py handlers) exposing `GET /settings/prompt` returning `{ systemPrompt, defaultSystemPrompt, isCustomized, updatedAt, updatedBy }`, with attribution fields absent/null when not customized
-- [ ] 2.3 Add `PUT /settings/prompt` accepting `{ systemPrompt }`: trim-empty → 400 with a reason, over 20,000 chars → 400 stating the limit, otherwise upsert with `updated_by` taken from the authenticated JWT's email and return the read shape
-- [ ] 2.4 Add `DELETE /settings/prompt` (reset) that deletes the row, is idempotent when no row exists, and returns the read shape with `isCustomized: false`
-- [ ] 2.5 Register the routes on the existing authenticated `router` (so they are served at both `/settings/...` and `/api/settings/...` and inherit JWT + allow-list enforcement)
-- [ ] 2.6 Add a short-timeout read helper used by the generation path that returns the stored prompt or `None`, never raising, and logs a warning on timeout/error
+- [x] 2.1 Add settings CRUD to `backend/app/db_helper.py`: read one setting by key, upsert with `updated_at`/`updated_by`, delete by key — all through the existing `get_db()` context manager and camelCase-mapped returns
+- [x] 2.2 Add a prompt-settings module (or main.py handlers) exposing `GET /settings/prompt` returning `{ systemPrompt, defaultSystemPrompt, isCustomized, updatedAt, updatedBy }`, with attribution fields absent/null when not customized
+- [x] 2.3 Add `PUT /settings/prompt` accepting `{ systemPrompt }`: trim-empty → 400 with a reason, over 20,000 chars → 400 stating the limit, otherwise upsert with `updated_by` taken from the authenticated JWT's email and return the read shape
+- [x] 2.4 Add `DELETE /settings/prompt` (reset) that deletes the row, is idempotent when no row exists, and returns the read shape with `isCustomized: false`
+- [x] 2.5 Register the routes on the existing authenticated `router` (so they are served at both `/settings/...` and `/api/settings/...` and inherit JWT + allow-list enforcement)
+- [x] 2.6 Add a short-timeout read helper used by the generation path that returns the stored prompt or `None`, never raising, and logs a warning on timeout/error
 
 ## 3. Backend prompt composition
 
-- [ ] 3.1 Split `backend/app/llm/prompts.py` into `SYSTEM_PROMPT_BODY` (editable rules) and `OUTPUT_CONTRACT` (JSON-only instruction + `格式：` schema line), keeping `SYSTEM_PROMPT = BODY + OUTPUT_CONTRACT` byte-identical to today's value
-- [ ] 3.2 Extend `build_system_prompt(exemplar_translation=None, override=None)` to compose `(override or BODY) [+ EXEMPLAR_REFERENCE_RULES when exemplar] + OUTPUT_CONTRACT`, and thread `override` through `build_messages()`
-- [ ] 3.3 Thread `system_prompt_override` from the `/suggestions` handler through `generate_suggestions()` into `build_messages()`, reading the stored prompt via 2.6 and falling back to the default on failure
-- [ ] 3.4 Confirm the wall-clock deadline is established before the settings read so the lookup is inside the existing 55s budget
+- [x] 3.1 Split `backend/app/llm/prompts.py` into `SYSTEM_PROMPT_BODY` (editable rules) and `OUTPUT_CONTRACT` (JSON-only instruction + `格式：` schema line), keeping `SYSTEM_PROMPT = BODY + OUTPUT_CONTRACT` byte-identical to today's value
+- [x] 3.2 Extend `build_system_prompt(exemplar_translation=None, override=None)` to compose `(override or BODY) [+ EXEMPLAR_REFERENCE_RULES when exemplar] + OUTPUT_CONTRACT`, and thread `override` through `build_messages()`
+- [x] 3.3 Thread `system_prompt_override` from the `/suggestions` handler through `generate_suggestions()` into `build_messages()`, reading the stored prompt via 2.6 and falling back to the default on failure
+- [x] 3.4 Confirm the wall-clock deadline is established before the settings read so the lookup is inside the existing 55s budget
 
 ## 4. Backend provider/model provenance
 
-- [ ] 4.1 Add a `ProviderOutput` value type (`text`, `model`) and return it from `call_gemini_with_rotation()` and `call_groq_with_rotation()`, reporting the model that actually produced the content (including after in-provider retry or credential rotation)
-- [ ] 4.2 Update `backend/app/llm/suggestions.py` call sites for the new return type, and pair Cloudflare's raw string with the exported `CF_MODEL`
-- [ ] 4.3 Have `generate_suggestions()` return `llmProvider` (`gemini` | `groq` | `cloudflare`) and `llmModel` alongside `suggestions` / `overallComment`, including on the salvage and retry paths, and leave the 503 error shape unchanged
-- [ ] 4.4 Return those fields from `POST /suggestions` and log the winning provider/model on success
-- [ ] 4.5 Accept `llmProvider` / `llmModel` on `POST /histories`, include them in `PUT /histories/{id}`'s allowed-field map (without clearing them when unmentioned), and return them from the history read queries in `db_helper.py`
+- [x] 4.1 Add a `ProviderOutput` value type (`text`, `model`) and return it from `call_gemini_with_rotation()` and `call_groq_with_rotation()`, reporting the model that actually produced the content (including after in-provider retry or credential rotation)
+- [x] 4.2 Update `backend/app/llm/suggestions.py` call sites for the new return type, and pair Cloudflare's raw string with the exported `CF_MODEL`
+- [x] 4.3 Have `generate_suggestions()` return `llmProvider` (`gemini` | `groq` | `cloudflare`) and `llmModel` alongside `suggestions` / `overallComment`, including on the salvage and retry paths, and leave the 503 error shape unchanged
+- [x] 4.4 Return those fields from `POST /suggestions` and log the winning provider/model on success
+- [x] 4.5 Accept `llmProvider` / `llmModel` on `POST /histories`, include them in `PUT /histories/{id}`'s allowed-field map (without clearing them when unmentioned), and return them from the history read queries in `db_helper.py`
 
 ## 5. Backend critique-quality rules
 
-- [ ] 5.1 Add to hard rules 【一】: recommended forms MUST be written in Japanese, and only 添削対象 may be corrected (the 原文 is reference material, never the object of correction)
-- [ ] 5.2 Extend 【三】 with the near-synonym prohibition (interchangeable alternatives are not faults; a reported wording item must name a concrete defect), the collocation-validity check on any proposed form, and the meaning-transfer framing requirement (what a Japanese reader would misunderstand, not which word maps to which)
-- [ ] 5.3 Rebuild `FEW_SHOT_EXAMPLE` so every recommended form is Japanese, no item rests on synonym preference, at least one item is a meaning-transfer/modality fault explained by its reader-facing consequence, while keeping ≥5 distinct items, the category spread, and one item without `sourceExcerpt`
-- [ ] 5.4 Add the matching clauses to the per-request reminder in `build_user_prompt` (concise, no new colon-label formats)
-- [ ] 5.5 Update the module docstring in `prompts.py` with a dated note for this change, following the existing changelog-style convention
+- [x] 5.1 Add to hard rules 【一】: recommended forms MUST be written in Japanese, and only 添削対象 may be corrected (the 原文 is reference material, never the object of correction)
+- [x] 5.2 Extend 【三】 with the near-synonym prohibition (interchangeable alternatives are not faults; a reported wording item must name a concrete defect), the collocation-validity check on any proposed form, and the meaning-transfer framing requirement (what a Japanese reader would misunderstand, not which word maps to which)
+- [x] 5.3 Rebuild `FEW_SHOT_EXAMPLE` so every recommended form is Japanese, no item rests on synonym preference, at least one item is a meaning-transfer/modality fault explained by its reader-facing consequence, while keeping ≥5 distinct items, the category spread, and one item without `sourceExcerpt`
+- [x] 5.4 Add the matching clauses to the per-request reminder in `build_user_prompt` (concise, no new colon-label formats)
+- [x] 5.5 Update the module docstring in `prompts.py` with a dated note for this change, following the existing changelog-style convention
 
 ## 6. Backend mechanical guard
 
-- [ ] 6.1 Add a pure predicate to `backend/app/llm/parser.py` that flags a `reason` only when a recommendation-introducing pattern is followed by a quoted span that contains no kana *and* contains at least one Simplified-only character from a curated set
-- [ ] 6.2 Wire it into `_content_usable()` in `suggestions.py` with a dedicated retry nudge instructing that recommended forms must be Japanese, reusing `MAX_PARSE_RETRY_ATTEMPTS` so the attempt ceiling does not change
+- [x] 6.1 Add a pure predicate to `backend/app/llm/parser.py` that flags a `reason` only when a recommendation-introducing pattern is followed by a quoted span that contains no kana *and* contains at least one Simplified-only character from a curated set
+- [x] 6.2 Wire it into `_content_usable()` in `suggestions.py` with a dedicated retry nudge instructing that recommended forms must be Japanese, reusing `MAX_PARSE_RETRY_ATTEMPTS` so the attempt ceiling does not change
 - [ ] 6.3 Verify budget-exhaustion behaviour is unchanged: the last result is still returned rather than raising
 
 ## 7. Backend tests

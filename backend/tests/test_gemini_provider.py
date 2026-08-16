@@ -240,7 +240,8 @@ class TestCallGemini:
                     [{"role": "user", "content": "hi"}]
                 )
 
-        assert result == '{"ok":true}'
+        # The reported model is the one that answered, not the one first tried.
+        assert result == ('{"ok":true}', "gemini-3.6-flash")
         urls = [c.args[0] for c in mock_client.post.call_args_list]
         assert "gemini-3.7-flash" in urls[0]
         assert "gemini-3.6-flash" in urls[1]

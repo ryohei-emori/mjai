@@ -21,17 +21,25 @@ providers:
    - it parses successfully but violates Chinese critique-field rules:
      Japanese prose in `reason`/`overallComment` (`parser.has_non_chinese_reason`)
      or misused Japanese corner brackets 「」 wrapping Chinese prose
-     (`parser.has_japanese_corner_quotes_in_critique`; JP TARGET cites OK).
+     (`parser.has_japanese_corner_quotes_in_critique`; JP TARGET cites OK); or
+   - it parses and explains in Chinese but offers a Chinese word as the
+     *corrected form* (`parser.has_non_japanese_recommendation`), which the
+     learner cannot write into a Japanese sentence.
    Within a single pass, if Gemini returns either failure mode, this module
    still tries Groq, then Cloudflare, before returning (same-pass salvage),
    so a usable later response can rescue a Japanese/unparseable earlier body
    without burning the outer retry budget. When all providers in a pass still
    fail the content checks, `generate_suggestions()` retries the *entire*
    Gemini→Groq→Cloudflare pass up to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing
-   one attempt budget across both conditions, before giving up and returning
-   the last result as-is. A genuine network-level failure (`SuggestionsError`,
-   raised when all providers fail at the HTTP layer even after their own
-   retries) is NOT retried by this axis and propagates immediately.
+   one attempt budget across all of these conditions, before giving up and
+   returning the last result as-is. A genuine network-level failure
+   (`SuggestionsError`, raised when all providers fail at the HTTP layer even
+   after their own retries) is NOT retried by this axis and propagates
+   immediately.
+
+The returned body also carries `llmProvider` / `llmModel` for the winning
+provider and its exact model id, since Gemini and Groq rotate models per
+request (`editable-prompt-model-log-and-critique-fix`).
 
 Worst case total LLM calls for axis 2, per `generate_suggestions()` call:
 `MAX_PARSE_RETRY_ATTEMPTS` passes * (up to 2 Gemini + up to 2 Groq + 1
@@ -44,7 +52,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from .prompts import build_messages
 from .parser import (
@@ -52,8 +60,10 @@ from .parser import (
     is_json_extraction_failure,
     has_non_chinese_reason,
     has_japanese_corner_quotes_in_critique,
+    has_non_japanese_recommendation,
     ParsedResponse,
 )
+from .provider_output import ProviderOutput
 from .key_pool import (
     load_cloudflare_credentials,
     load_gemini_credentials,
@@ -62,6 +72,7 @@ from .key_pool import (
 from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
+    get_groq_model,
     GroqError,
     GroqRateLimitError,
     GroqServerError,
@@ -72,10 +83,12 @@ from .cloudflare_provider import (
     call_cloudflare,
     get_cloudflare_credentials,
     CloudflareError,
+    CF_MODEL,
 )
 from .gemini_provider import (
     call_gemini_with_rotation,
     get_gemini_api_key,
+    get_gemini_model,
     GeminiError,
     GeminiRateLimitError,
     GeminiServerError,
@@ -85,9 +98,10 @@ from .gemini_provider import (
 logger = logging.getLogger(__name__)
 
 # Total number of generate+parse passes attempted when the model's response
-# either fails to parse as JSON or fails Chinese critique-field checks
+# either fails to parse as JSON or fails a critique-field content check
 # (see parser.is_json_extraction_failure / has_non_chinese_reason /
-# has_japanese_corner_quotes_in_critique), before giving up. These
+# has_japanese_corner_quotes_in_critique /
+# has_non_japanese_recommendation), before giving up. These
 # conditions share this one attempt budget. See module docstring for how
 # this composes with each provider's own network-level retry.
 MAX_PARSE_RETRY_ATTEMPTS = 4
@@ -113,6 +127,16 @@ PARSE_RETRY_NUDGE = (
     "上次没有返回可解析的 JSON。请只输出一个完整 JSON 对象，"
     '格式为 {"suggestions":[...],"overallComment":"..."}，'
     "不要前言、后记或 Markdown 代码块。reason/overallComment 用简体中文。"
+)
+
+# Appended when the previous pass offered Chinese words as the corrected form
+# (parser.has_non_japanese_recommendation) — the learner cannot use those.
+RECOMMENDATION_RETRY_NUDGE = (
+    "上次输出把中文词当成了修正后的形（例如 改为“理论上”），这是不合格的："
+    "添削対象是日语，推荐形必须用日语写出（可用「」），中文只用于解释。"
+    "另外只添削「添削対象」，不要改写原文；可互换的近义替换不算错误；"
+    "推荐形要代入原句确认语法与搭配自然。请据此重写全部 reason。"
+    "只输出完整 JSON，不要其他文字。"
 )
 
 
@@ -170,24 +194,52 @@ def are_providers_configured() -> bool:
 
 
 def _content_usable(result: ParsedResponse) -> bool:
-    """True if result is parseable JSON and passes Chinese critique-field checks."""
+    """True if result parses and passes the critique-field content checks."""
     if is_json_extraction_failure(result):
         return False
     if has_non_chinese_reason(result):
         return False
     if has_japanese_corner_quotes_in_critique(result):
         return False
+    if has_non_japanese_recommendation(result):
+        return False
     return True
 
 
-def _prefer_result(
-    primary: Optional[ParsedResponse],
-    secondary: ParsedResponse,
-) -> ParsedResponse:
+class GenerationOutcome(NamedTuple):
+    """A parsed body plus which provider/model produced it (None if unknown)."""
+
+    result: ParsedResponse
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+def _text_and_model(
+    output: "ProviderOutput | str",
+    fallback_model: str,
+) -> tuple[str, str]:
+    """
+    Normalize a provider call result to (text, model).
+
+    Rotating providers return ProviderOutput so the model that actually
+    answered is known. Cloudflare has a single fixed model and returns plain
+    text, in which case the caller's configured/default model id is used.
+    """
+    if isinstance(output, ProviderOutput):
+        return output.text, output.model
+    return str(output), fallback_model
+
+
+def _prefer_outcome(
+    primary: Optional[GenerationOutcome],
+    secondary: GenerationOutcome,
+) -> GenerationOutcome:
     """Prefer a non-parse-failure body when choosing among soft failures."""
     if primary is None:
         return secondary
-    if is_json_extraction_failure(secondary) and not is_json_extraction_failure(primary):
+    if is_json_extraction_failure(secondary.result) and not is_json_extraction_failure(
+        primary.result
+    ):
         return primary
     return secondary
 
@@ -232,18 +284,30 @@ def _raise_if_wall_clock_exceeded(
     )
 
 
+def _unusable_reason(result: ParsedResponse) -> str:
+    """Short description of why `_content_usable()` rejected a body."""
+    if is_json_extraction_failure(result):
+        return "JSON parse failure"
+    if has_japanese_corner_quotes_in_critique(result):
+        return "Japanese corner quotes in reason/overallComment"
+    if has_non_japanese_recommendation(result):
+        return "Chinese recommended form in reason"
+    return "non-Chinese reason/overallComment"
+
+
 async def _generate_suggestions_once(
     messages: list[dict],
     *,
     deadline_monotonic: float,
-) -> ParsedResponse:
+) -> GenerationOutcome:
     """
     Single generate+parse pass: Gemini → Groq → Cloudflare on network
     failure *or* unusable content (same-pass salvage).
 
-    May return a ParsedResponse that is itself a parse failure or still
-    non-Chinese — the outer retry loop in `generate_suggestions()` decides
-    whether to retry.
+    May return an outcome whose body is itself a parse failure or still fails
+    a content check — the outer retry loop in `generate_suggestions()` decides
+    whether to retry. The outcome also carries the provider and model that
+    produced the body, so a critique can be attributed to a specific model.
 
     Raises:
         SuggestionsError: If all configured providers fail at the network
@@ -253,7 +317,7 @@ async def _generate_suggestions_once(
     groq_error: Optional[str] = None
     cf_error: Optional[str] = None
     gemini_error: Optional[str] = None
-    best_soft: Optional[ParsedResponse] = None
+    best_soft: Optional[GenerationOutcome] = None
     gemini_pool_size, groq_pool_size, cf_pool_size = _pool_sizes()
     logger.info(
         "LLM credential pools: gemini_pool_size=%s groq_pool_size=%s cf_pool_size=%s",
@@ -267,7 +331,9 @@ async def _generate_suggestions_once(
         _raise_if_wall_clock_exceeded(deadline_monotonic)
         try:
             logger.info("Attempting Gemini inference...")
-            raw_output = await call_gemini_with_rotation(messages)
+            raw_output, gemini_model = _text_and_model(
+                await call_gemini_with_rotation(messages), get_gemini_model()
+            )
             # Empty/whitespace content is a successful HTTP response but unusable;
             # fall through to Groq instead of burning parse-retry budget.
             if not (raw_output or "").strip():
@@ -277,25 +343,25 @@ async def _generate_suggestions_once(
                 gemini_error = "Gemini returned empty content"
             else:
                 logger.info(
-                    f"Gemini inference successful, raw output length: {len(raw_output)}"
+                    f"Gemini inference successful (model={gemini_model}), "
+                    f"raw output length: {len(raw_output)}"
                 )
                 logger.debug(f"Gemini raw output: {raw_output[:500]}...")
                 gemini_result = parse_model_output(raw_output)
+                gemini_outcome = GenerationOutcome(
+                    gemini_result, "gemini", gemini_model
+                )
                 if _content_usable(gemini_result):
                     logger.info(
                         f"Parsed result: {len(gemini_result['suggestions'])} suggestions"
                     )
-                    return gemini_result
-                reason = (
-                    "JSON parse failure"
-                    if is_json_extraction_failure(gemini_result)
-                    else "non-Chinese reason/overallComment"
-                )
+                    return gemini_outcome
+                reason = _unusable_reason(gemini_result)
                 logger.warning(
                     f"Gemini content unusable ({reason}); trying Groq salvage"
                 )
                 gemini_error = f"Gemini content unusable: {reason}"
-                best_soft = gemini_result
+                best_soft = gemini_outcome
         except (
             GeminiRateLimitError,
             GeminiServerError,
@@ -320,7 +386,9 @@ async def _generate_suggestions_once(
         )
         try:
             logger.info("Attempting Groq inference...")
-            raw_output = await call_groq_with_rotation(messages)
+            raw_output, groq_model = _text_and_model(
+                await call_groq_with_rotation(messages), get_groq_model()
+            )
             if not (raw_output or "").strip():
                 logger.warning(
                     "Groq returned empty content, falling back to Cloudflare"
@@ -328,25 +396,23 @@ async def _generate_suggestions_once(
                 groq_error = "Groq returned empty content"
             else:
                 logger.info(
-                    f"Groq inference successful, raw output length: {len(raw_output)}"
+                    f"Groq inference successful (model={groq_model}), "
+                    f"raw output length: {len(raw_output)}"
                 )
                 logger.debug(f"Groq raw output: {raw_output[:500]}...")
                 groq_result = parse_model_output(raw_output)
+                groq_outcome = GenerationOutcome(groq_result, "groq", groq_model)
                 if _content_usable(groq_result):
                     logger.info(
                         f"Parsed result: {len(groq_result['suggestions'])} suggestions"
                     )
-                    return groq_result
-                reason = (
-                    "JSON parse failure"
-                    if is_json_extraction_failure(groq_result)
-                    else "non-Chinese reason/overallComment"
-                )
+                    return groq_outcome
+                reason = _unusable_reason(groq_result)
                 logger.warning(
                     f"Groq content unusable ({reason}); trying Cloudflare salvage"
                 )
                 groq_error = f"Groq content unusable: {reason}"
-                best_soft = _prefer_result(best_soft, groq_result)
+                best_soft = _prefer_outcome(best_soft, groq_outcome)
         except (
             GroqRateLimitError,
             GroqServerError,
@@ -379,16 +445,17 @@ async def _generate_suggestions_once(
             )
             logger.debug(f"Cloudflare raw output: {raw_output[:500]}...")
             cf_result = parse_model_output(raw_output)
+            cf_outcome = GenerationOutcome(cf_result, "cloudflare", CF_MODEL)
             if _content_usable(cf_result):
                 logger.info(
                     f"Parsed result: {len(cf_result['suggestions'])} suggestions"
                 )
-                return cf_result
+                return cf_outcome
             logger.warning(
                 "Cloudflare content unusable; returning best soft result"
             )
             cf_error = "Cloudflare content unusable"
-            return _prefer_result(best_soft, cf_result)
+            return _prefer_outcome(best_soft, cf_outcome)
         except CloudflareError as e:
             logger.error(f"Cloudflare failed: {e}")
             cf_error = str(e)
@@ -421,17 +488,33 @@ async def _generate_suggestions_once(
     )
 
 
+def _with_provenance(outcome: GenerationOutcome) -> dict:
+    """Response body: parsed fields plus which provider/model produced them."""
+    logger.info(
+        "Suggestions produced by provider=%s model=%s (%s suggestions)",
+        outcome.provider,
+        outcome.model,
+        len(outcome.result["suggestions"]),
+    )
+    return {
+        **outcome.result,
+        "llmProvider": outcome.provider,
+        "llmModel": outcome.model,
+    }
+
+
 async def generate_suggestions(
     original_text: str,
     target_text: str,
     exemplar_translation: Optional[str] = None,
-) -> ParsedResponse:
+    system_prompt_override: Optional[str] = None,
+) -> dict:
     """
     Generate AI correction suggestions for the given text.
 
     Tries Gemini first (with in-provider Flash rotation), then Groq,
     then Cloudflare on failure or unusable content. If a pass still fails
-    JSON parse or the Chinese-language content check, the whole pass is
+    JSON parse or a critique-field content check, the whole pass is
     retried up to `MAX_PARSE_RETRY_ATTEMPTS` times before giving up.
 
     Args:
@@ -440,14 +523,19 @@ async def generate_suggestions(
         exemplar_translation: Optional known-good translation of
             `original_text` used purely as reference calibration. Omitted
             from the prompt entirely when empty/whitespace-only.
+        system_prompt_override: Optional stored custom rules body replacing
+            `prompts.SYSTEM_PROMPT_BODY`. The output contract is appended by
+            `build_system_prompt()` either way, so an override cannot break
+            the JSON response shape.
 
     Returns:
-        ParsedResponse with suggestions and overall comment. May be the
+        The parsed suggestions and overall comment, plus `llmProvider` and
+        `llmModel` naming the model that produced them. May be the
         parse-failure placeholder response if every attempt failed to
         parse (see `parser.is_json_extraction_failure`), or the
-        last-attempted result even if it still fails the Chinese-language
-        check (see `parser.has_non_chinese_reason`) — either way this
-        degrades gracefully rather than raising.
+        last-attempted result even if it still fails a content check (see
+        `parser.has_non_chinese_reason`) — either way this degrades
+        gracefully rather than raising.
 
     Raises:
         NoProvidersConfiguredError: If no providers are configured.
@@ -461,11 +549,17 @@ async def generate_suggestions(
             "or GEMINI_API_KEY(S)."
         )
 
-    base_messages = build_messages(original_text, target_text, exemplar_translation)
+    base_messages = build_messages(
+        original_text,
+        target_text,
+        exemplar_translation,
+        system_prompt_override,
+    )
 
-    last_result: Optional[ParsedResponse] = None
+    last_outcome: Optional[GenerationOutcome] = None
     language_failed_last = False
     parse_failed_last = False
+    recommendation_failed_last = False
     deadline_monotonic = time.monotonic() + SUGGESTIONS_WALL_CLOCK_S
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
         _raise_if_wall_clock_exceeded(deadline_monotonic)
@@ -474,35 +568,39 @@ async def generate_suggestions(
             messages.append({"role": "user", "content": LANGUAGE_RETRY_NUDGE})
         elif parse_failed_last:
             messages.append({"role": "user", "content": PARSE_RETRY_NUDGE})
+        elif recommendation_failed_last:
+            messages.append(
+                {"role": "user", "content": RECOMMENDATION_RETRY_NUDGE}
+            )
 
-        result = await _generate_suggestions_once(
+        outcome = await _generate_suggestions_once(
             messages,
             deadline_monotonic=deadline_monotonic,
         )
+        result = outcome.result
         if _content_usable(result):
-            return result
+            return _with_provenance(outcome)
         parse_failed = is_json_extraction_failure(result)
         language_failed_last = (not parse_failed) and (
             has_non_chinese_reason(result)
             or has_japanese_corner_quotes_in_critique(result)
         )
         parse_failed_last = parse_failed
-        if parse_failed:
-            reason = "JSON parse failure"
-        elif has_japanese_corner_quotes_in_critique(result):
-            reason = "Japanese corner quotes in reason/overallComment"
-        else:
-            reason = "non-Chinese reason/overallComment"
+        recommendation_failed_last = (
+            (not parse_failed)
+            and (not language_failed_last)
+            and has_non_japanese_recommendation(result)
+        )
+        reason = _unusable_reason(result)
 
         logger.warning(
             f"{reason} on attempt {attempt}/{MAX_PARSE_RETRY_ATTEMPTS}; "
             f"{'retrying' if attempt < MAX_PARSE_RETRY_ATTEMPTS else 'giving up'}"
         )
-        last_result = result
+        last_outcome = outcome
 
-    # All attempts failed (JSON parse and/or Chinese-language check) —
-    # return the last result rather than raising, matching the pre-existing
-    # "degrade gracefully" behavior of surfacing a best-effort/placeholder
-    # response rather than a 503.
-    assert last_result is not None  # loop runs at least once (MAX_PARSE_RETRY_ATTEMPTS >= 1)
-    return last_result
+    # All attempts failed a content check — return the last result rather than
+    # raising, matching the pre-existing "degrade gracefully" behavior of
+    # surfacing a best-effort/placeholder response rather than a 503.
+    assert last_outcome is not None  # loop runs at least once (MAX_PARSE_RETRY_ATTEMPTS >= 1)
+    return _with_provenance(last_outcome)
