@@ -144,6 +144,30 @@ See `proposal.md` for motivation. Constraints that shape the approach:
 
 **Rationale**: every previous prompt change in this repo that stuck was backed by a live probe; a rules diff alone cannot show whether the model's behaviour moved. The 「９点５時間」 check is the positive control — the class of fault the current prompt spends its items *not* reporting.
 
+## Validation Results
+
+**Automated (run in this environment):**
+
+- Backend `pytest -m "not integration"`: green, including the new `test_prompt_settings.py` and the extended prompt/suggestions/parser/history suites.
+- Frontend `npm test`: 266 tests across 21 suites green, including the settings-dialog, `settingsAPI` request-shape, WebLLM-clause, and model-caption/provenance-persistence tests. `npm run lint` reports only the pre-existing `no-page-custom-font` warning; `tsc --noEmit` is clean.
+- Scorer of `backend/scripts/live_critique_quality.py` checked offline against two synthetic critiques: the reported failing output scores `chinese_forms=3` (对比睡眠数据 / 理论上 / 实现), `source_items=1` (完成了逐渐独特的进化 — an excerpt from the Chinese source, not the Japanese target), `synonym_only=3`, `numeral_caught=false`; a compliant critique scores zero on all three and `numeral_caught=true`. So the metrics do discriminate the reported failure mode before any live call is made.
+
+**Live (blocked in this environment — no provider credentials):**
+
+`GEMINI_API_KEY(S)` / `GROQ_API_KEY(S)` are not present and there is no `conf/.env`, so the probe exits 2 (`GEMINI_API_KEY(S) not configured; skipping probe`) rather than producing numbers. Tasks 12.2–12.4 (baseline-vs-current replicates, latency/count budget check, and the custom-prompt override probe) therefore stay open and must be run by an operator who has keys:
+
+```bash
+set -a && . conf/.env && set +a
+git show <pre-change-sha>:backend/app/llm/prompts.py > /tmp/old_prompts.py
+cd backend && PYTHONPATH=. \
+  CRITIQUE_PROBE_BASELINE_PROMPTS_FILE=/tmp/old_prompts.py \
+  CRITIQUE_PROBE_ITERS=2 python scripts/live_critique_quality.py
+# then, for 12.4, save an edited prompt body and re-run with:
+#   CRITIQUE_PROBE_PROMPT_FILE=/tmp/custom_body.txt
+```
+
+The probe reports `elapsed_s` against `GEMINI_TIMEOUT` and `finishReason` / token counts on every row, which is what 12.3 needs: the acceptance bar is no `TIMEOUT` rows and `n_suggestions` no lower than baseline. No numbers are recorded here because none were measured — inventing them is exactly what the probe exists to prevent.
+
 ## Risks / Trade-offs
 
 - **[Risk] A bad prompt edit degrades critique quality for everyone, silently** → the output contract is code-owned so responses stay parseable; reset-to-default is one click and does not depend on the stored text being valid; attribution shows who last saved it.

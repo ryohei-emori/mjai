@@ -82,10 +82,10 @@
 
 ## 12. Live validation
 
-- [ ] 12.1 Add `backend/scripts/live_critique_quality.py` (existing `live_*.py` pattern) with the reported Toronto primate-sleep passage as a fixture, reporting per-run counts of Simplified-only recommended forms, items whose excerpt is not a target-text span, synonym-preference-only items, and whether 「９点５時間」 is caught
-- [ ] 12.2 Run it against the pre-change prompt and the rewritten prompt on at least two replicates per condition, and record the numbers in `design.md`
-- [ ] 12.3 Confirm latency and suggestion counts stay within the existing budget (no Gemini timeouts introduced by the longer rules) and record them
-- [ ] 12.4 Probe once with a saved custom prompt to confirm the override reaches the provider and the output contract still holds
+- [x] 12.1 Add `backend/scripts/live_critique_quality.py` (existing `live_*.py` pattern) with the reported Toronto primate-sleep passage as a fixture, reporting per-run counts of Simplified-only recommended forms, items whose excerpt is not a target-text span, synonym-preference-only items, and whether 「９点５時間」 is caught
+- [ ] 12.2 Run it against the pre-change prompt and the rewritten prompt on at least two replicates per condition, and record the numbers in `design.md` — **blocked: no provider credentials in this environment; command and acceptance bar recorded in `design.md` (Validation Results)**
+- [ ] 12.3 Confirm latency and suggestion counts stay within the existing budget (no Gemini timeouts introduced by the longer rules) and record them — **blocked on 12.2 (same credentials); the probe already reports `elapsed_s` / `finishReason` / token counts per row**
+- [ ] 12.4 Probe once with a saved custom prompt to confirm the override reaches the provider and the output contract still holds — **blocked on credentials; `CRITIQUE_PROBE_PROMPT_FILE` condition implemented and exercises the same `system_prompt_override` path**
 
 ## 13. Documentation
 
