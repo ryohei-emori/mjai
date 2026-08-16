@@ -305,20 +305,53 @@ export type SuggestionsErrorResponse = {
   error: string;
   fallback_available: boolean;
   message?: string;
+  gemini_error?: string;
   groq_error?: string;
   cf_error?: string;
   /** True when cloud providers failed due to rate-limit / quota / cooldown. */
   rate_limited?: boolean;
+  /** True when the failover chain ran out of its wall-clock budget. */
+  timed_out?: boolean;
   /** Loaded credential counts (no secrets) for ops diagnosis. */
+  gemini_pool_size?: number;
   groq_pool_size?: number;
   cf_pool_size?: number;
 };
+
+/**
+ * Per-provider breakdown of a cloud-suggestions failure, for display.
+ *
+ * The backend already returns why each provider declined and how many
+ * credentials it loaded; without this the UI showed only "全プロバイダ失敗",
+ * which cannot distinguish an unset key from an exhausted quota from a timeout.
+ */
+export function describeProviderFailures(
+  body: SuggestionsErrorResponse | null,
+): string {
+  if (!body) return "";
+  const providers: Array<[string, string | undefined, number | undefined]> = [
+    ["Gemini", body.gemini_error, body.gemini_pool_size],
+    ["Groq", body.groq_error, body.groq_pool_size],
+    ["Cloudflare", body.cf_error, body.cf_pool_size],
+  ];
+  return providers
+    .filter(([, error]) => !!error)
+    .map(([name, error, poolSize]) => `${name}（鍵${poolSize ?? 0}件）: ${error}`)
+    .join(" / ");
+}
+
+/** Append the provider breakdown to a user-facing failure message. */
+export function withProviderDetail(message: string, detail: string): string {
+  return detail ? `${message}\n内訳: ${detail}` : message;
+}
 
 /** Structured cloud-suggestions failure (quota/rate-limit visible to UI). */
 export class SuggestionsAPIError extends Error {
   status: number;
   rateLimited: boolean;
   body: SuggestionsErrorResponse | null;
+  /** Per-provider breakdown ("" when the response carried none). */
+  providerDetail: string;
 
   constructor(
     status: number,
@@ -333,9 +366,11 @@ export class SuggestionsAPIError extends Error {
     this.name = "SuggestionsAPIError";
     this.status = status;
     this.body = body;
+    this.providerDetail = describeProviderFailures(body);
     const haystack = [
       body?.message,
       body?.error,
+      body?.gemini_error,
       body?.groq_error,
       body?.cf_error,
       fallbackMessage,

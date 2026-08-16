@@ -420,6 +420,14 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "per-account RPD/quota limits — check the Groq/Cloudflare/Gemini "
                 "dashboards. Retry later, or enable WebLLM offline mode."
             )
+        elif getattr(e, "timed_out", False):
+            # Distinct advice: nothing is misconfigured, the chain simply ran
+            # out of time, and a retry usually succeeds.
+            client_message = (
+                "Cloud generation ran out of time before any provider returned "
+                "a usable answer. Retry, shorten the text, or enable WebLLM "
+                "offline mode."
+            )
         else:
             client_message = (
                 "All cloud providers failed. Try WebLLM offline mode."
@@ -433,6 +441,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "gemini_error": getattr(e, "gemini_error", None),
                 "fallback_available": True,
                 "rate_limited": bool(getattr(e, "rate_limited", False)),
+                "timed_out": bool(getattr(e, "timed_out", False)),
                 "groq_pool_size": int(getattr(e, "groq_pool_size", 0) or 0),
                 "cf_pool_size": int(getattr(e, "cf_pool_size", 0) or 0),
                 "gemini_pool_size": int(getattr(e, "gemini_pool_size", 0) or 0),

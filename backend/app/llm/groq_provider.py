@@ -302,6 +302,7 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
 
 async def call_groq_with_rotation(
     messages: list[dict[str, str]],
+    allow_model_retry: bool = True,
 ) -> ProviderOutput:
     """
     Call Groq API with in-provider model rotation and bounded retry.
@@ -312,6 +313,11 @@ async def call_groq_with_rotation(
     model, retries once against a second, different model. If GROQ_MODEL
     pins a single model, rotation is disabled and this behaves exactly like
     a single call_groq() invocation — no retry, matching prior behavior.
+
+    `allow_model_retry=False` also disables that second attempt, which the
+    failover chain uses when the remaining wall-clock budget would not leave
+    room for the next provider afterwards
+    (`fix-suggestion-retry-budget-hard-failure`).
 
     Non-retriable GroqError (e.g. missing API key, malformed response) is
     raised immediately without a retry attempt, since a different model
@@ -332,7 +338,7 @@ async def call_groq_with_rotation(
             await call_groq(messages, model=first_model), first_model
         )
     except (GroqRateLimitError, GroqServerError, GroqTimeoutError, GroqJsonValidateError):
-        if len(models) < 2:
+        if len(models) < 2 or not allow_model_retry:
             raise
         second_model = models[1]
         return ProviderOutput(

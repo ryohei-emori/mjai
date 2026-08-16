@@ -333,6 +333,7 @@ async def call_gemini(messages: list[dict[str, str]], model: Optional[str] = Non
 
 async def call_gemini_with_rotation(
     messages: list[dict[str, str]],
+    allow_model_retry: bool = True,
 ) -> ProviderOutput:
     """
     Call Gemini with in-provider model rotation and bounded retry.
@@ -340,6 +341,12 @@ async def call_gemini_with_rotation(
     When rotation is enabled (GEMINI_MODEL unset), attempts up to 2 distinct
     models from ALLOWED_GEMINI_MODELS. When GEMINI_MODEL pins a model,
     behaves like a single call_gemini() with no model retry.
+
+    `allow_model_retry=False` also disables the second attempt. The failover
+    chain passes that when the remaining wall-clock budget would not leave room
+    for Groq/Cloudflare afterwards: two Gemini timeouts alone cost 44s of a 55s
+    budget, which used to push the whole request past Vercel's 60s function
+    limit (`fix-suggestion-retry-budget-hard-failure`).
 
     Returns the raw text together with the model that produced it — after a
     retry that is the second model, not the first one attempted.
@@ -352,7 +359,7 @@ async def call_gemini_with_rotation(
             await call_gemini(messages, model=first_model), first_model
         )
     except (GeminiRateLimitError, GeminiServerError, GeminiTimeoutError):
-        if len(models) < 2:
+        if len(models) < 2 or not allow_model_retry:
             raise
         second_model = models[1]
         return ProviderOutput(

@@ -529,6 +529,8 @@ _RECOMMENDATION_QUOTE_PATTERN = re.compile(
 # script-level check only: a recommendation that is script-legal Japanese but
 # semantically wrong (需要 for 必要) is out of its reach by design and is
 # handled by the prompt rules instead.
+_CJK_IDEOGRAPH_PATTERN = re.compile(r'[\u4e00-\u9fff]')
+
 _SIMPLIFIED_ONLY_CHARS = frozenset(
     "对现实论语说标脑为义习书东车马鸟岛时间问题类结经给应认识讲译记词让过还进运达边连远选适观见规视觉确转释变处众优华汉们这单复备关键层术无较仅从众叶"
 )
@@ -551,6 +553,15 @@ def _form_is_non_japanese(form: str) -> bool:
     return any(ch in _SIMPLIFIED_ONLY_CHARS for ch in form)
 
 
+def _form_is_japanese(form: str) -> bool:
+    """True if a recommended form is writable as-is into a Japanese sentence."""
+    if _JAPANESE_KANA_PATTERN.search(form):
+        return True
+    if any(ch in _SIMPLIFIED_ONLY_CHARS for ch in form):
+        return False
+    return bool(_CJK_IDEOGRAPH_PATTERN.search(form))
+
+
 def has_non_japanese_recommendation(result: ParsedResponse) -> bool:
     """
     True if any `reason` presents a Chinese word/phrase as the corrected form
@@ -558,16 +569,26 @@ def has_non_japanese_recommendation(result: ParsedResponse) -> bool:
 
     Spec (`editable-prompt-model-log-and-critique-fix`): recommended forms MUST
     be written in the target language. Wired into `suggestions._content_usable()`
-    alongside the Chinese-explanation checks, sharing the same
-    MAX_PARSE_RETRY_ATTEMPTS budget so the worst-case attempt count is
-    unchanged. Requires a recommendation verb, a quoted span with no kana, and
-    a Simplified-only character in that span, so kanji-only Japanese citations
-    do not trip it. `original` / `sourceExcerpt` are not inspected.
+    alongside the Chinese-explanation checks. Requires a recommendation verb, a
+    quoted span with no kana, and a Simplified-only character in that span, so
+    kanji-only Japanese citations do not trip it. `original` / `sourceExcerpt`
+    are not inspected.
+
+    A reason that *also* introduces a Japanese recommended form is not flagged
+    (`fix-suggestion-retry-budget-hard-failure`): critique prose legitimately
+    quotes a Chinese word with the same verbs when narrating the meaning shift
+    it found (原文的“对比”被改成了“比较”，应写成「対比」), and rejecting those
+    bodies spent retry passes — and, once the wall clock ran out, the whole
+    request — on a critique that had already given the learner a usable form.
     """
-    return any(
-        any(_form_is_non_japanese(form) for form in _recommended_forms(suggestion.get("reason") or ""))
-        for suggestion in result["suggestions"]
-    )
+    for suggestion in result["suggestions"]:
+        forms = _recommended_forms(suggestion.get("reason") or "")
+        if not any(_form_is_non_japanese(form) for form in forms):
+            continue
+        if any(_form_is_japanese(form) for form in forms):
+            continue
+        return True
+    return False
 
 
 def has_weak_critique_reason(result: ParsedResponse) -> bool:

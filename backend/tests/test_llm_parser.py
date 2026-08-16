@@ -879,6 +879,18 @@ class TestHasNonJapaneseRecommendation:
             self._result("原文的“对比”强调两者相较，这里的译法把这层意思丢了")
         ) is False
 
+    def test_does_not_fire_when_a_japanese_form_is_also_recommended(self):
+        # Narrating the meaning shift uses the same verbs as recommending, so a
+        # reason that does hand over a usable Japanese form is not a violation —
+        # rejecting it cost retry passes for nothing
+        # (fix-suggestion-retry-budget-hard-failure).
+        assert has_non_japanese_recommendation(
+            self._result(
+                "译文把原文的“对比”改成了“比较”，两者的着眼点不同；"
+                "这里应写成「対比する」，否则读者读不出相互比照的关系"
+            )
+        ) is False
+
     def test_does_not_fire_on_the_few_shot_exemplar(self):
         from app.llm.parser import parse_model_output
         from app.llm.prompts import FEW_SHOT_EXAMPLE

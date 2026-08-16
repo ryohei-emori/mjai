@@ -24,6 +24,7 @@ import {
   proposalAPI,
   suggestionsAPI,
   isSuggestionsAPIError,
+  withProviderDetail,
 } from "./api"
 import { useAuth } from "./auth-provider"
 import { LoginScreen } from "./login-screen"
@@ -701,11 +702,20 @@ export default function TextCorrectionApp() {
           llmProvider = data.llmProvider || undefined
           llmModel = data.llmModel || undefined
         } catch (apiError) {
+          // The per-provider breakdown is appended to whichever message we
+          // show: "全プロバイダ失敗" alone cannot tell an unset key from an
+          // exhausted quota from a timeout, and only the user can see it.
+          const providerDetail = isSuggestionsAPIError(apiError)
+            ? apiError.providerDetail
+            : ""
           if (isSuggestionsAPIError(apiError) && apiError.rateLimited) {
             console.warn("[suggestions] Rate-limited / quota exhausted:", apiError)
             throw new Error(
-              apiError.message ||
-                "クラウドAPIのレート制限またはクォータ超過です。しばらく待つか、オフラインモードを有効にしてください。",
+              withProviderDetail(
+                apiError.message ||
+                  "クラウドAPIのレート制限またはクォータ超過です。しばらく待つか、オフラインモードを有効にしてください。",
+                providerDetail,
+              ),
             )
           }
           const detail =
@@ -713,7 +723,7 @@ export default function TextCorrectionApp() {
               ? apiError.message
               : "クラウドAPIに接続できませんでした"
           console.warn("[suggestions] API failed (no WebLLM fallback):", apiError)
-          throw new Error(detail)
+          throw new Error(withProviderDetail(detail, providerDetail))
         }
       }
 
@@ -2772,7 +2782,14 @@ export default function TextCorrectionApp() {
                                 {job.completedAt && ` → ${job.completedAt.toLocaleTimeString()}`}
                               </p>
                               {job.error && (
-                                <p className="text-metadata text-error mt-1 line-clamp-2">{job.error}</p>
+                                // Cloud failures carry a per-provider breakdown on a
+                                // second line; keep it readable here and in full on hover.
+                                <p
+                                  className="text-metadata text-error mt-1 line-clamp-3 whitespace-pre-line"
+                                  title={job.error}
+                                >
+                                  {job.error}
+                                </p>
                               )}
                               {isClickable && (
                                 <div className="mt-2 flex items-center text-body-sm text-session-complete font-medium">

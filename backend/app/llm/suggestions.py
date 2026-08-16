@@ -32,10 +32,24 @@ providers:
    fail the content checks, `generate_suggestions()` retries the *entire*
    Gemini→Groq→Cloudflare pass up to `MAX_PARSE_RETRY_ATTEMPTS` times, sharing
    one attempt budget across all of these conditions, before giving up and
-   returning the last result as-is. A genuine network-level failure
+   returning the best result as-is. A genuine network-level failure
    (`SuggestionsError`, raised when all providers fail at the HTTP layer even
    after their own retries) is NOT retried by this axis and propagates
    immediately.
+
+   Axis 2 is capped so it cannot turn a readable critique into a failed
+   request (`fix-suggestion-retry-budget-hard-failure`). Once any pass has
+   produced a body, that body is returned instead of raising when a later pass
+   cannot run — whether because the wall-clock budget is gone or because the
+   providers stopped answering — and a retry is not even started unless the
+   remaining budget still covers a pass as long as the previous one. The
+   Chinese-recommended-form check additionally stops after
+   `MAX_RECOMMENDATION_RETRIES` passes, since that body is parseable Chinese
+   critique whose remaining flaw does not justify more latency and free-tier
+   requests. Before this cap, a model that kept recommending Chinese forms —
+   exactly the behaviour the check exists to catch — spent four passes and then
+   surfaced 503 "All cloud providers failed" for a critique the user could have
+   read after the first pass.
 
 The returned body also carries `llmProvider` / `llmModel` for the winning
 provider and its exact model id, since Gemini and Groq rotate models per
@@ -46,6 +60,10 @@ Worst case total LLM calls for axis 2, per `generate_suggestions()` call:
 Cloudflare attempts) — preferred for Chinese/JSON success, but truncated
 in practice by `SUGGESTIONS_WALL_CLOCK_S` so Vercel does not emit
 FUNCTION_INVOCATION_TIMEOUT (504) before we can return an app-level 503.
+The second in-provider model attempt is also skipped when the remaining budget
+would not leave the next provider room to answer: two Gemini timeouts alone
+cost 44s of the 55s budget, so keeping that attempt could push a request past
+Vercel's 60s limit *and* deny a fast, fresh secondary its turn.
 """
 
 from __future__ import annotations
@@ -73,6 +91,7 @@ from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
     get_groq_model,
+    GROQ_TIMEOUT,
     GroqError,
     GroqRateLimitError,
     GroqServerError,
@@ -84,11 +103,13 @@ from .cloudflare_provider import (
     get_cloudflare_credentials,
     CloudflareError,
     CF_MODEL,
+    CF_TIMEOUT,
 )
 from .gemini_provider import (
     call_gemini_with_rotation,
     get_gemini_api_key,
     get_gemini_model,
+    GEMINI_TIMEOUT,
     GeminiError,
     GeminiRateLimitError,
     GeminiServerError,
@@ -106,9 +127,22 @@ logger = logging.getLogger(__name__)
 # this composes with each provider's own network-level retry.
 MAX_PARSE_RETRY_ATTEMPTS = 4
 
+# Passes spent on a Chinese-recommended-form body before accepting it
+# (`fix-suggestion-retry-budget-hard-failure`). Unlike an unparseable or
+# Japanese-explanation body, this one is readable critique that merely quoted a
+# Chinese form, so the whole retry budget is not worth burning on it: each extra
+# pass costs seconds of the caller's wall clock and one free-tier request per
+# provider, and the models that do this tend to keep doing it.
+MAX_RECOMMENDATION_RETRIES = 1
+
 # Soft stop before Vercel `api/index.py` maxDuration (60s) so we return
 # app-level 503 with pool diagnostics instead of opaque FUNCTION_INVOCATION_TIMEOUT.
 SUGGESTIONS_WALL_CLOCK_S = 55.0
+
+# Fraction of the previous pass's duration that must still fit in the budget
+# before another content retry is started, so a pass is not begun only to be
+# aborted mid-flight (which used to discard an already-usable earlier body).
+RETRY_BUDGET_MARGIN = 1.1
 
 # Appended on language-check retries only (not JSON-parse failures) so the
 # next pass gets an explicit correction signal without changing the base
@@ -150,6 +184,7 @@ class SuggestionsError(Exception):
         gemini_error: Optional[str] = None,
         *,
         rate_limited: bool = False,
+        timed_out: bool = False,
         groq_pool_size: int = 0,
         cf_pool_size: int = 0,
         gemini_pool_size: int = 0,
@@ -159,6 +194,9 @@ class SuggestionsError(Exception):
         self.cf_error = cf_error
         self.gemini_error = gemini_error
         self.rate_limited = rate_limited
+        # Distinguishes "ran out of wall-clock budget" from "every provider
+        # refused", which need different advice (retry vs check keys/quota).
+        self.timed_out = timed_out
         self.groq_pool_size = groq_pool_size
         self.cf_pool_size = cf_pool_size
         self.gemini_pool_size = gemini_pool_size
@@ -278,10 +316,54 @@ def _raise_if_wall_clock_exceeded(
         groq_error=groq_error,
         cf_error=cf_error,
         gemini_error=gemini_error,
+        timed_out=True,
         groq_pool_size=groq_pool_size,
         cf_pool_size=cf_pool_size,
         gemini_pool_size=gemini_pool_size,
     )
+
+
+def _budget_exhausted(deadline_monotonic: float) -> bool:
+    return time.monotonic() >= deadline_monotonic
+
+
+def _allow_model_retry(
+    deadline_monotonic: float,
+    own_timeout: float,
+    next_provider_timeout: float,
+) -> bool:
+    """
+    True if a second in-provider model attempt still leaves the next provider
+    in the chain room to answer inside the wall-clock budget.
+
+    A fresh secondary provider is a better use of the remaining seconds than a
+    sibling model of the one that just failed.
+    """
+    remaining = deadline_monotonic - time.monotonic()
+    return remaining >= own_timeout + next_provider_timeout
+
+
+def _next_provider_timeout(*, after_gemini: bool) -> float:
+    """Timeout of the next configured provider in the chain (0 if none)."""
+    if after_gemini and get_groq_api_key():
+        return GROQ_TIMEOUT
+    cf_account, cf_token = get_cloudflare_credentials()
+    return CF_TIMEOUT if (cf_account and cf_token) else 0.0
+
+
+def _can_afford_another_pass(
+    deadline_monotonic: float,
+    last_pass_seconds: float,
+) -> bool:
+    """
+    True if the wall-clock budget still covers a pass like the previous one.
+
+    Measured rather than assumed: provider latency varies with prompt and model,
+    and the cost of guessing wrong is a pass that gets aborted partway and takes
+    the earlier body down with it.
+    """
+    remaining = deadline_monotonic - time.monotonic()
+    return remaining >= max(last_pass_seconds, 0.0) * RETRY_BUDGET_MARGIN
 
 
 def _unusable_reason(result: ParsedResponse) -> str:
@@ -332,7 +414,15 @@ async def _generate_suggestions_once(
         try:
             logger.info("Attempting Gemini inference...")
             raw_output, gemini_model = _text_and_model(
-                await call_gemini_with_rotation(messages), get_gemini_model()
+                await call_gemini_with_rotation(
+                    messages,
+                    allow_model_retry=_allow_model_retry(
+                        deadline_monotonic,
+                        GEMINI_TIMEOUT,
+                        _next_provider_timeout(after_gemini=True),
+                    ),
+                ),
+                get_gemini_model(),
             )
             # Empty/whitespace content is a successful HTTP response but unusable;
             # fall through to Groq instead of burning parse-retry budget.
@@ -380,6 +470,12 @@ async def _generate_suggestions_once(
 
     groq_key = get_groq_api_key()
     if groq_key:
+        if best_soft is not None and _budget_exhausted(deadline_monotonic):
+            logger.warning(
+                "Wall-clock budget exhausted before Groq salvage; returning the "
+                "soft body Gemini already produced"
+            )
+            return best_soft
         _raise_if_wall_clock_exceeded(
             deadline_monotonic,
             gemini_error=gemini_error,
@@ -387,7 +483,15 @@ async def _generate_suggestions_once(
         try:
             logger.info("Attempting Groq inference...")
             raw_output, groq_model = _text_and_model(
-                await call_groq_with_rotation(messages), get_groq_model()
+                await call_groq_with_rotation(
+                    messages,
+                    allow_model_retry=_allow_model_retry(
+                        deadline_monotonic,
+                        GROQ_TIMEOUT,
+                        _next_provider_timeout(after_gemini=False),
+                    ),
+                ),
+                get_groq_model(),
             )
             if not (raw_output or "").strip():
                 logger.warning(
@@ -432,6 +536,12 @@ async def _generate_suggestions_once(
 
     cf_account, cf_token = get_cloudflare_credentials()
     if cf_account and cf_token:
+        if best_soft is not None and _budget_exhausted(deadline_monotonic):
+            logger.warning(
+                "Wall-clock budget exhausted before Cloudflare salvage; "
+                "returning the best soft body already produced"
+            )
+            return best_soft
         _raise_if_wall_clock_exceeded(
             deadline_monotonic,
             gemini_error=gemini_error,
@@ -532,15 +642,16 @@ async def generate_suggestions(
         The parsed suggestions and overall comment, plus `llmProvider` and
         `llmModel` naming the model that produced them. May be the
         parse-failure placeholder response if every attempt failed to
-        parse (see `parser.is_json_extraction_failure`), or the
-        last-attempted result even if it still fails a content check (see
-        `parser.has_non_chinese_reason`) — either way this degrades
-        gracefully rather than raising.
+        parse (see `parser.is_json_extraction_failure`), or a result that
+        still fails a content check (see `parser.has_non_chinese_reason`) —
+        either way this degrades gracefully rather than raising.
 
     Raises:
         NoProvidersConfiguredError: If no providers are configured.
-        SuggestionsError: If all providers fail at the network level, or
-            the wall-clock budget is exhausted.
+        SuggestionsError: If no pass produced any body at all — every
+            provider failed at the network level, or the wall-clock budget
+            ran out before one answered. Once a body exists it is returned
+            instead, even if it fails a content check.
     """
     if not are_providers_configured():
         raise NoProvidersConfiguredError(
@@ -556,13 +667,26 @@ async def generate_suggestions(
         system_prompt_override,
     )
 
-    last_outcome: Optional[GenerationOutcome] = None
+    best_outcome: Optional[GenerationOutcome] = None
     language_failed_last = False
     parse_failed_last = False
     recommendation_failed_last = False
+    recommendation_failures = 0
+    last_pass_seconds = 0.0
     deadline_monotonic = time.monotonic() + SUGGESTIONS_WALL_CLOCK_S
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
-        _raise_if_wall_clock_exceeded(deadline_monotonic)
+        if attempt > 1 and not _can_afford_another_pass(
+            deadline_monotonic, last_pass_seconds
+        ):
+            logger.warning(
+                "Skipping content retry %s/%s: %.1fs left is under the %.1fs the "
+                "previous pass took; returning the best body already generated",
+                attempt,
+                MAX_PARSE_RETRY_ATTEMPTS,
+                deadline_monotonic - time.monotonic(),
+                last_pass_seconds,
+            )
+            break
         messages = list(base_messages)
         if language_failed_last:
             messages.append({"role": "user", "content": LANGUAGE_RETRY_NUDGE})
@@ -573,10 +697,25 @@ async def generate_suggestions(
                 {"role": "user", "content": RECOMMENDATION_RETRY_NUDGE}
             )
 
-        outcome = await _generate_suggestions_once(
-            messages,
-            deadline_monotonic=deadline_monotonic,
-        )
+        pass_started = time.monotonic()
+        try:
+            outcome = await _generate_suggestions_once(
+                messages,
+                deadline_monotonic=deadline_monotonic,
+            )
+        except SuggestionsError:
+            # A body already in hand beats a 503: the earlier pass failed only a
+            # content check, which the caller can still read and act on.
+            if best_outcome is None:
+                raise
+            logger.warning(
+                "Content retry %s/%s aborted (providers failed or budget "
+                "exhausted); returning the best body already generated",
+                attempt,
+                MAX_PARSE_RETRY_ATTEMPTS,
+            )
+            break
+        last_pass_seconds = time.monotonic() - pass_started
         result = outcome.result
         if _content_usable(result):
             return _with_provenance(outcome)
@@ -592,15 +731,29 @@ async def generate_suggestions(
             and has_non_japanese_recommendation(result)
         )
         reason = _unusable_reason(result)
+        best_outcome = _prefer_outcome(best_outcome, outcome)
+
+        if recommendation_failed_last:
+            recommendation_failures += 1
+            if recommendation_failures > MAX_RECOMMENDATION_RETRIES:
+                # The body is parseable Chinese critique that merely quoted a
+                # Chinese form somewhere; further passes cost the user latency
+                # and provider quota for a body they can already read.
+                logger.warning(
+                    "%s persisted across %s pass(es); accepting the body instead "
+                    "of spending the remaining retry budget on it",
+                    reason,
+                    recommendation_failures,
+                )
+                break
 
         logger.warning(
             f"{reason} on attempt {attempt}/{MAX_PARSE_RETRY_ATTEMPTS}; "
             f"{'retrying' if attempt < MAX_PARSE_RETRY_ATTEMPTS else 'giving up'}"
         )
-        last_outcome = outcome
 
-    # All attempts failed a content check — return the last result rather than
+    # Attempts stopped without a clean body — return the best one rather than
     # raising, matching the pre-existing "degrade gracefully" behavior of
     # surfacing a best-effort/placeholder response rather than a 503.
-    assert last_outcome is not None  # loop runs at least once (MAX_PARSE_RETRY_ATTEMPTS >= 1)
-    return _with_provenance(last_outcome)
+    assert best_outcome is not None  # loop runs at least once (MAX_PARSE_RETRY_ATTEMPTS >= 1)
+    return _with_provenance(best_outcome)

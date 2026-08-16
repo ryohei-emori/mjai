@@ -33,6 +33,25 @@ UNPARSEABLE_LLM_RESPONSE = "I'm sorry, I cannot help with that request."
 NON_CHINESE_LLM_RESPONSE = '''{"指摘": [{"番号": 1, "箇所": "テスト箇所", "コメント": "これは日本語のコメントです"}], "全体講評": "全体的に良いです"}'''
 
 
+class FakeClock:
+    """
+    Controllable stand-in for `time.monotonic`.
+
+    Preferred over a fixed `side_effect` list because the number of clock reads
+    per pass is an implementation detail of the wall-clock budget logic; a test
+    that pins it breaks whenever a new budget check is added.
+    """
+
+    def __init__(self, now: float = 0.0):
+        self.now = now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __call__(self) -> float:
+        return self.now
+
+
 class TestAreProvidersConfigured:
     def test_groq_only(self):
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}, clear=True):
@@ -526,7 +545,13 @@ class TestEmptyGeminiSkipsAndWallClock:
                     mock_groq.assert_called_once()
 
     async def test_wall_clock_budget_raises_before_next_provider(self):
-        """Exhausted deadline before Groq -> SuggestionsError (app 503 path)."""
+        """Exhausted deadline with no body in hand -> SuggestionsError (503)."""
+        clock = FakeClock()
+
+        async def gemini_burns_the_budget(*args, **kwargs):
+            clock.advance(100.0)
+            raise GeminiRateLimitError("Gemini 429", status_code=429)
+
         with patch.dict(
             "os.environ",
             {
@@ -537,23 +562,17 @@ class TestEmptyGeminiSkipsAndWallClock:
         ):
             with patch(
                 "app.llm.suggestions.call_gemini_with_rotation",
-                new_callable=AsyncMock,
-            ) as mock_gem:
+                new=gemini_burns_the_budget,
+            ):
                 with patch(
                     "app.llm.suggestions.call_groq_with_rotation",
                     new_callable=AsyncMock,
                 ) as mock_groq:
-                    with patch(
-                        "app.llm.suggestions.time.monotonic",
-                        side_effect=[0.0, 0.0, 0.0, 100.0],
-                    ):
-                        mock_gem.side_effect = GeminiRateLimitError(
-                            "Gemini 429", status_code=429
-                        )
+                    with patch("app.llm.suggestions.time.monotonic", clock):
                         with pytest.raises(SuggestionsError) as exc_info:
                             await generate_suggestions("原文", "訳文")
                         assert "wall-clock" in str(exc_info.value).lower()
-                        mock_gem.assert_called_once()
+                        assert exc_info.value.timed_out is True
                         mock_groq.assert_not_called()
 
 
@@ -904,9 +923,13 @@ class TestChineseRecommendationRetry:
         retry_messages = mock_groq.call_args_list[1].args[0]
         assert retry_messages[-1]["content"] == RECOMMENDATION_RETRY_NUDGE
 
-    async def test_budget_exhaustion_returns_the_last_result(self):
-        """Unchanged degrade-gracefully behaviour: last body, not a 503."""
-        from app.llm.suggestions import MAX_PARSE_RETRY_ATTEMPTS
+    async def test_persistent_chinese_recommendation_stops_after_one_retry(self):
+        """
+        A model that keeps recommending Chinese forms keeps doing it, so the
+        readable body is accepted after one nudge instead of spending the whole
+        retry budget (and the caller's wall clock) on it.
+        """
+        from app.llm.suggestions import MAX_RECOMMENDATION_RETRIES
 
         with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
             with patch(
@@ -915,8 +938,157 @@ class TestChineseRecommendationRetry:
                 mock_groq.return_value = self.CHINESE_RECOMMENDATION
                 result = await generate_suggestions("原文", "訳文")
 
-        assert mock_groq.call_count == MAX_PARSE_RETRY_ATTEMPTS
+        assert mock_groq.call_count == 1 + MAX_RECOMMENDATION_RETRIES
         assert result["suggestions"][0]["original"] == "論理的に言えば"
+
+
+@pytest.mark.asyncio
+class TestSoftBodySurvivesRetryFailure:
+    """
+    Content retries must never downgrade a readable critique into a 503.
+
+    The production failure this covers: a soft content check kept failing, the
+    retry passes ate the 55s wall-clock budget, and the guard that exists to
+    beat Vercel's 60s limit raised — discarding a body the first pass had
+    already produced and surfacing "All cloud providers failed" instead
+    (`fix-suggestion-retry-budget-hard-failure`).
+    """
+
+    SOFT_BODY = (
+        '{"suggestions":[{"id":"1","original":"論理的に言えば",'
+        '"reason":"这里不够自然，应该改为“理论上”以使语言更为流畅"}],'
+        '"overallComment":"整体质量良好，仍有用词问题"}'
+    )
+
+    async def test_provider_failure_on_retry_returns_the_earlier_body(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.side_effect = [
+                    self.SOFT_BODY,
+                    GroqError("Groq is down"),
+                ]
+                result = await generate_suggestions("原文", "訳文")
+
+        assert mock_groq.call_count == 2
+        assert result["suggestions"][0]["original"] == "論理的に言えば"
+        assert result["llmProvider"] == "groq"
+
+    async def test_exhausted_budget_on_retry_returns_the_earlier_body(self):
+        clock = FakeClock()
+
+        async def slow_soft_body(*args, **kwargs):
+            clock.advance(50.0)
+            return self.SOFT_BODY
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new=slow_soft_body
+            ):
+                with patch("app.llm.suggestions.time.monotonic", clock):
+                    result = await generate_suggestions("原文", "訳文")
+
+        assert result["suggestions"][0]["original"] == "論理的に言えば"
+
+    async def test_retry_is_not_started_without_budget_for_it(self):
+        """A pass that cannot finish is not begun — it would abort mid-flight."""
+        clock = FakeClock()
+        calls = []
+
+        async def slow_soft_body(*args, **kwargs):
+            calls.append(args)
+            clock.advance(50.0)
+            return self.SOFT_BODY
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new=slow_soft_body
+            ):
+                with patch("app.llm.suggestions.time.monotonic", clock):
+                    await generate_suggestions("原文", "訳文")
+
+        assert len(calls) == 1
+
+    async def test_budget_gone_mid_pass_returns_the_primary_soft_body(self):
+        """Gemini's soft body beats a 503 when Groq salvage no longer fits."""
+        clock = FakeClock()
+
+        async def slow_gemini(*args, **kwargs):
+            clock.advance(60.0)
+            return self.SOFT_BODY
+
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_API_KEY": "gem-key", "GROQ_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch(
+                "app.llm.suggestions.call_gemini_with_rotation", new=slow_gemini
+            ):
+                with patch(
+                    "app.llm.suggestions.call_groq_with_rotation",
+                    new_callable=AsyncMock,
+                ) as mock_groq:
+                    with patch("app.llm.suggestions.time.monotonic", clock):
+                        result = await generate_suggestions("原文", "訳文")
+
+        mock_groq.assert_not_called()
+        assert result["suggestions"][0]["original"] == "論理的に言えば"
+        assert result["llmProvider"] == "gemini"
+
+
+class TestModelRetryBudgetGate:
+    """
+    A second model of the provider that just failed must not crowd out the
+    next provider: two Gemini timeouts alone cost 44s of the 55s budget.
+    """
+
+    def test_second_model_allowed_with_a_full_budget(self):
+        from app.llm.suggestions import _allow_model_retry
+
+        deadline = __import__("time").monotonic() + SUGGESTIONS_WALL_CLOCK_S
+        assert _allow_model_retry(deadline, 5.0, 5.0) is True
+
+    def test_second_model_refused_when_the_next_provider_would_not_fit(self):
+        from app.llm.groq_provider import GROQ_TIMEOUT
+        from app.llm.suggestions import _allow_model_retry
+
+        # One Gemini timeout already spent out of the budget.
+        deadline = (
+            __import__("time").monotonic()
+            + SUGGESTIONS_WALL_CLOCK_S
+            - GEMINI_TIMEOUT
+        )
+        assert _allow_model_retry(deadline, GEMINI_TIMEOUT, GROQ_TIMEOUT) is False
+
+    def test_next_provider_timeout_reflects_what_is_configured(self):
+        from app.llm.cloudflare_provider import CF_TIMEOUT
+        from app.llm.groq_provider import GROQ_TIMEOUT
+        from app.llm.suggestions import _next_provider_timeout
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "k"}, clear=True):
+            assert _next_provider_timeout(after_gemini=True) == GROQ_TIMEOUT
+            # Nothing is configured after Groq, so its own retry costs nobody.
+            assert _next_provider_timeout(after_gemini=False) == 0.0
+
+        with patch.dict(
+            "os.environ",
+            {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"},
+            clear=True,
+        ):
+            assert _next_provider_timeout(after_gemini=False) == CF_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_chain_passes_the_gate_to_the_provider(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                await generate_suggestions("原文", "訳文")
+
+        assert mock_groq.call_args.kwargs["allow_model_retry"] is True
 
 
 @pytest.mark.integration
