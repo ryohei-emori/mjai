@@ -53,32 +53,32 @@
 
 ## 8. Frontend settings dialog
 
-- [ ] 8.1 Add `frontend/src/components/ui/dialog.tsx` (shadcn Radix Dialog wrapper — dependency already present) following the existing `sheet.tsx` conventions and MD3 tokens
-- [ ] 8.2 Add `settingsAPI.getPrompt()` / `updatePrompt()` / `resetPrompt()` to `frontend/src/app/api.ts` using the shared authenticated fetch helper, with types for the read shape
-- [ ] 8.3 Build the prompt settings dialog component: scrolling textarea pre-filled with the effective prompt, default-vs-customized indicator with editor and timestamp, character count, live validation, save/reset/cancel, inline error area, success toast, and the note that offline mode uses its own built-in prompt
-- [ ] 8.4 Gate save on changed-and-valid text; keep the user's text on save failure; discard edits on cancel; confirm before reset
-- [ ] 8.5 Enable the top-bar gear button in `frontend/src/app/page.tsx` (remove `disabled` and the "Coming Soon" title, give it an accessible name) and mount the dialog so opening/closing does not touch session state, drafts, or the job queue
+- [x] 8.1 Add `frontend/src/components/ui/dialog.tsx` (shadcn Radix Dialog wrapper — dependency already present) following the existing `sheet.tsx` conventions and MD3 tokens
+- [x] 8.2 Add `settingsAPI.getPrompt()` / `updatePrompt()` / `resetPrompt()` to `frontend/src/app/api.ts` using the shared authenticated fetch helper, with types for the read shape
+- [x] 8.3 Build the prompt settings dialog component: scrolling textarea pre-filled with the effective prompt, default-vs-customized indicator with editor and timestamp, character count, live validation, save/reset/cancel, inline error area, success toast, and the note that offline mode uses its own built-in prompt
+- [x] 8.4 Gate save on changed-and-valid text; keep the user's text on save failure; discard edits on cancel; confirm before reset
+- [x] 8.5 Enable the top-bar gear button in `frontend/src/app/page.tsx` (remove `disabled` and the "Coming Soon" title, give it an accessible name) and mount the dialog so opening/closing does not touch session state, drafts, or the job queue
 
 ## 9. Frontend provenance display
 
-- [ ] 9.1 Add `llmProvider` / `llmModel` to the suggestions response type and the history create/read types in `api.ts`
-- [ ] 9.2 Capture provenance in `processJobAsync`: from the API response for cloud jobs, from the WebLLM model constant for offline jobs; carry it on the queued job and pass it to `createHistory`
-- [ ] 9.3 Set `lastSuggestionSource` on generation completion so the existing クラウドAPI / ローカルAI badge renders, and set the model state alongside it
-- [ ] 9.4 Render the `{model} used` caption in the AI Suggestions panel header with metadata typography and muted colour, wrapping/truncating instead of displacing the count and selection badges, and omitted entirely when the model is unknown
-- [ ] 9.5 Populate the caption from the stored `llmModel` when a saved history round is restored, and show nothing for rounds saved before provenance existed
+- [x] 9.1 Add `llmProvider` / `llmModel` to the suggestions response type and the history create/read types in `api.ts`
+- [x] 9.2 Capture provenance in `processJobAsync`: from the API response for cloud jobs, from the WebLLM model constant for offline jobs; carry it on the queued job and pass it to `createHistory`
+- [x] 9.3 Set `lastSuggestionSource` on generation completion so the existing クラウドAPI / ローカルAI badge renders, and set the model state alongside it
+- [x] 9.4 Render the `{model} used` caption in the AI Suggestions panel header with metadata typography and muted colour, wrapping/truncating instead of displacing the count and selection badges, and omitted entirely when the model is unknown
+- [x] 9.5 Populate the caption from the stored `llmModel` when a saved history round is restored, and show nothing for rounds saved before provenance existed
 
 ## 10. WebLLM offline parity
 
-- [ ] 10.1 Add condensed clauses to `frontend/src/lib/webllm/prompts/system.ts` covering Japanese-only recommended forms, target-only correction scope, and no synonym-preference items — kept to a few clauses for the 7B instruction budget
-- [ ] 10.2 Adjust the WebLLM few-shot if any of its recommended forms or items conflict with 10.1
-- [ ] 10.3 Update the WebLLM prompt jest tests for the new clauses
+- [x] 10.1 Add condensed clauses to `frontend/src/lib/webllm/prompts/system.ts` covering Japanese-only recommended forms, target-only correction scope, and no synonym-preference items — kept to a few clauses for the 7B instruction budget
+- [x] 10.2 Adjust the WebLLM few-shot if any of its recommended forms or items conflict with 10.1
+- [x] 10.3 Update the WebLLM prompt jest tests for the new clauses
 
 ## 11. Frontend tests
 
-- [ ] 11.1 Test the settings dialog: loads the effective prompt, shows customized attribution, save calls `PUT` with the edited text, reset calls `DELETE`, save disabled while unchanged, failure keeps the text and shows the message
-- [ ] 11.2 Test `settingsAPI` request shapes (URL, method, auth header, body)
-- [ ] 11.3 Test the model caption: renders `{model} used` when provenance is known, renders nothing when unknown, and that `createHistory` receives `llmProvider`/`llmModel`
-- [ ] 11.4 Run `npm test` and `npm run lint` in `frontend/` with no new failures
+- [x] 11.1 Test the settings dialog: loads the effective prompt, shows customized attribution, save calls `PUT` with the edited text, reset calls `DELETE`, save disabled while unchanged, failure keeps the text and shows the message
+- [x] 11.2 Test `settingsAPI` request shapes (URL, method, auth header, body)
+- [x] 11.3 Test the model caption: renders `{model} used` when provenance is known, renders nothing when unknown, and that `createHistory` receives `llmProvider`/`llmModel`
+- [x] 11.4 Run `npm test` and `npm run lint` in `frontend/` with no new failures
 
 ## 12. Live validation
 

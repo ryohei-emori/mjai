@@ -137,6 +137,9 @@ export type HistoryAPIResponse = {
   status?: HistoryStatus;
   overallComment?: string;
   provider?: string;
+  /** Inference provenance, distinct from `provider` (the transport). */
+  llmProvider?: string | null;
+  llmModel?: string | null;
   clientJobId?: string;
 };
 
@@ -159,6 +162,8 @@ export const historyAPI = {
     status?: HistoryStatus;
     overallComment?: string;
     provider?: string;
+    llmProvider?: string;
+    llmModel?: string;
     clientJobId?: string;
   }) => {
     return await apiFetch('/histories', {
@@ -243,6 +248,39 @@ export const proposalAPI = {
   },
 };
 
+// 添削プロンプト設定API（全ユーザー共通の1レコード、DBで永続化）
+export type PromptSettingsResponse = {
+  /** Effective prompt: the stored custom body, or the built-in default. */
+  systemPrompt: string;
+  /** Built-in default body, for the reset-to-default comparison. */
+  defaultSystemPrompt: string;
+  isCustomized: boolean;
+  /** Attribution of the stored prompt; null when the default is in effect. */
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+};
+
+export const settingsAPI = {
+  getPrompt: async (): Promise<PromptSettingsResponse> => {
+    return await apiFetch('/settings/prompt');
+  },
+
+  updatePrompt: async (systemPrompt: string): Promise<PromptSettingsResponse> => {
+    return await apiFetch('/settings/prompt', {
+      method: 'PUT',
+      body: JSON.stringify({ systemPrompt }),
+    });
+  },
+
+  // Deletes the stored row so the built-in default applies again — which is
+  // why a later improvement to the default still reaches everyone.
+  resetPrompt: async (): Promise<PromptSettingsResponse> => {
+    return await apiFetch('/settings/prompt', {
+      method: 'DELETE',
+    });
+  },
+};
+
 // AI提案生成API
 // Primary: Cloud LLM (Groq/Cloudflare) via backend.
 // WebLLM is NOT an automatic fallback — only when the user enables オフラインモード.
@@ -257,6 +295,10 @@ export type SuggestionsResponse = {
     sourceExcerpt?: string;
   }>;
   overallComment: string;
+  /** Inference provider that answered: gemini | groq | cloudflare. */
+  llmProvider?: string | null;
+  /** Exact model id, e.g. gemini-3.7-flash (providers rotate per request). */
+  llmModel?: string | null;
 };
 
 export type SuggestionsErrorResponse = {
