@@ -61,9 +61,13 @@ The switch does not fire on generation *start*. A job takes 10–20 seconds duri
 
 ### 5. Section tabs move into the drawer below `md`, and only below `md`
 
-The tabs (`Sessions` / `Dashboard` / `Archive`, the latter two currently placeholders) are the widest discardable thing in the top bar. Below `md` they render in the session drawer, which is already the "where am I" surface, and the top bar keeps the menu trigger, wordmark, new-session and the icon cluster — which fits 320px. `md` rather than `lg` because the tabs *do* fit a 768px tablet top bar, and the drawer copy is rendered `md:hidden` so the two never both exist.
+The tabs (`Sessions` / `Dashboard` / `Archive`, the latter two currently placeholders) are the widest discardable thing in the top bar. Below `md` they render in the session drawer, which is already the "where am I" surface. `md` rather than `lg` because the tabs *do* fit a 768px tablet top bar, and the drawer copy is rendered `md:hidden` so the two never both exist.
 
-Alternative: an overflow "…" menu for the icon cluster. Rejected: it hides sign-out and settings behind an extra tap to save width that moving three placeholder tabs already frees.
+Moving the tabs alone does not reach 320px. Measured, the remainder still wants ~385px: menu 44, wordmark ~65, new-session 36, and a four-icon cluster (bell, settings, avatar, sign-out) at ~188 including gaps. Identity and sign-out therefore follow below `sm`, to the foot of the same drawer — which is where a phone's account controls usually live — leaving the menu trigger, the wordmark and the three things a correction session needs at hand: new session, notifications, settings. With `px-3`/`gap-2` at that size the row fits 320px with roughly 35px to spare.
+
+Both moves are a single `NAV_ITEMS` array rendered in two places rather than two hand-maintained copies, since three buttons duplicated by hand is what drifts.
+
+Alternative: an overflow "…" menu for the icon cluster. Rejected: it hides settings behind an extra tap, and the drawer is a better home than a second disclosure for controls that are not part of the correction loop.
 
 ### 6. Viewport height from `dvh`, with a fallback that is not decoration
 
@@ -87,9 +91,19 @@ By default only the visual viewport shrinks when the on-screen keyboard opens, s
 
 `h-[calc(100vh-12rem)]` on the drawer's session list and `min-h-[calc(100vh-8rem)]` on the empty-session state encode a guess about how much chrome is above them. Both become flex-derived (`flex-1` inside a column, `min-h-full`), which is correct at every viewport and cannot drift when the header changes height.
 
+The prompt dialog had the same shape of problem in `vh` form: a `45vh`/`55vh` textarea that ignored the header, footer and counters around it, so with the keyboard open the save button left the dialog. It becomes `flex-1` with a floor, inside a dialog bounded by `max-h-[90%]` — a percentage, because the dialog is `fixed` and so resolves against the initial containing block, which is the visible viewport — with `overflow-y-auto` as the backstop for when a flexible child has already shrunk to its floor.
+
+### 10. Rows that cannot fit wrap, with the sacrifice chosen per row
+
+Four rows are laid out as one line whose contents need more than 320px: the session heading beside its timing readouts, the offline-mode label beside its provider badge, the diagnostics phase beside the model name, and the exemplar heading beside its "input present" badges. Each gets `flex-wrap`, and what yields is decided per row rather than uniformly.
+
+The session name shrinks and truncates but is given a basis (`basis-48`) it will fight for, so the short fixed readouts wrap to their own line rather than the name being cut to a few characters — the name is what identifies the work. The exemplar heading truncates for the mirror-image reason: it is fixed text the user can predict, where the badges beside it describe their own input.
+
 ### 9. Test what jsdom can actually answer
 
-jsdom evaluates no media queries and lays nothing out, so a test cannot assert that a control is visible at 375px. What it can assert is the part that is real logic: which pane is rendered for a given `mobilePane`, that reviewing a job switches it, that the switch is absent from the desktop path, and that the classes carrying the responsive contract are present. A `matchMedia` stub plus a viewport helper is added for the code that reads `window.innerWidth`. Anything that depends on real layout is verified by hand in a device-sized browser and recorded, not asserted in jsdom — a passing test that cannot fail is worse than no test.
+jsdom evaluates no media queries and lays nothing out, so a test cannot assert that a control is visible at 375px. What it can assert is the part that is not CSS: the switch's own state, that opening a job for review moves it, that it reports the count waiting in the pane the user cannot see, and that it is absent before a session exists. Anything that depends on real layout is verified by hand in a device-sized browser and recorded, not asserted in jsdom — a passing test that cannot fail is worse than no test.
+
+No `matchMedia` stub or viewport helper turned out to be needed, because Decision 3 leaves the breakpoint entirely to CSS: nothing in the pane switch reads a viewport width. Asserting on the `hidden` / `lg:block` class strings was also dropped — it would restate the implementation without being able to detect the failure that matters, which is CSS not resolving the way the class names imply.
 
 ## Risks / Trade-offs
 

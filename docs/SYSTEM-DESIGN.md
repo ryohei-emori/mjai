@@ -206,6 +206,8 @@ AI suggestions are generated via `POST /suggestions` (Gemini → Groq → Cloudf
 
 The frontend is a static-exported Next.js app that: (1) gates the workspace on Supabase session, (2) talks only to the FastAPI JSON API, (3) never opens the database directly. Visual layout and component styling are implementation details of `page.tsx` / `components/ui/`; they are out of scope for this engineering design doc except insofar as they define the client of the APIs above.
 
+**Viewport-dependent presentation carries no state of its own.** Below the `lg` breakpoint the workspace shows one pane at a time (editor or review) instead of both, and the section tabs and account controls move into the session drawer. All of this is presentation: which pane is showing lives in component state that is deliberately not persisted and resets with the session, no request shape changes, and no persisted or server-visible state depends on viewport size. Which breakpoint is in force is decided by CSS rather than a JavaScript viewport reading, so there is no second definition of the breakpoints to keep in sync. See `docs/UI-DESIGN.md` for the breakpoint table and `openspec/changes/responsive-mobile-correction-ui/` for the rationale.
+
 ### 5.5 Deployment and rollout (as-built)
 
 | Piece | Reality |
