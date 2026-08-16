@@ -15,6 +15,7 @@ from typing import Any, Optional, List, Dict, Set
 from .budget import describe_skip, resolve_call_timeout
 from .provider_output import ProviderOutput
 from .key_pool import (
+    PoolAvailability,
     acquire_groq,
     cooldown_status_codes,
     credential_pool_index,
@@ -22,6 +23,14 @@ from .key_pool import (
     is_groq_configured,
     load_groq_credentials,
     mark_cooldown,
+    pool_availability,
+    release_soonest_cooldown,
+)
+from .provider_health import (
+    clamp_cooldown_seconds,
+    observe_refusal,
+    parse_duration_hint,
+    parse_retry_after,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,9 +106,18 @@ QWEN_REASONING_MODELS = {"qwen/qwen3.6-27b"}
 
 class GroqError(Exception):
     """Error from Groq API."""
-    def __init__(self, message: str, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        # Seconds Groq itself asked us to wait, when it said so. Carried on the
+        # error so the caller can size the cooldown without re-reading the
+        # response it no longer has.
+        self.retry_after = retry_after
 
 
 class GroqRateLimitError(GroqError):
@@ -169,6 +187,47 @@ def select_groq_models(n: int = 2) -> List[str]:
     return random.sample(ALLOWED_GROQ_MODELS, n)
 
 
+def _rotation_scopes() -> List[Optional[str]]:
+    """Models a request could pick, which is what cooldowns are scoped to."""
+    if not is_rotation_enabled():
+        return [get_groq_model()]
+    return list(ALLOWED_GROQ_MODELS)
+
+
+def groq_availability() -> PoolAvailability:
+    """
+    Whether calling Groq could plausibly succeed, from cooldown state alone.
+
+    A pool counts as unusable only when every key is cooled down for every model
+    rotation could choose — one model's 429 is not the provider's answer.
+    """
+    return pool_availability(load_groq_credentials(), _rotation_scopes())
+
+
+def release_groq_cooldown() -> Optional[str]:
+    """Free the soonest-recovering Groq key so one attempt can still be made."""
+    return release_soonest_cooldown(load_groq_credentials(), _rotation_scopes())
+
+
+def _retry_hint_seconds(response: httpx.Response) -> Optional[float]:
+    """
+    Seconds Groq asked us to wait, from `Retry-After` or its reset headers.
+
+    Groq reports remaining limits on every response, so a refused request tells
+    us when the limit clears (`x-ratelimit-reset-requests` uses a compact
+    duration form such as `2m59.56s`). None means nothing usable was sent, and
+    the default cooldown applies.
+    """
+    header = parse_retry_after(response.headers.get("retry-after"))
+    if header is not None:
+        return header
+    for name in ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
+        hint = parse_duration_hint(response.headers.get(name))
+        if hint is not None:
+            return hint
+    return None
+
+
 async def _call_groq_once(
     api_key: str,
     messages: list[dict[str, str]],
@@ -213,7 +272,11 @@ async def _call_groq_once(
         raise GroqError(f"Groq request failed: {e}") from e
 
     if response.status_code == 429:
-        raise GroqRateLimitError("Groq rate limit exceeded", status_code=429)
+        raise GroqRateLimitError(
+            "Groq rate limit exceeded",
+            status_code=429,
+            retry_after=_retry_hint_seconds(response),
+        )
 
     if response.status_code >= 500:
         raise GroqServerError(
@@ -324,13 +387,22 @@ async def call_groq(
         except GroqError as e:
             status = e.status_code
             if status in cooldown_codes:
-                mark_cooldown(cred.id, scope=resolved_model)
+                cooldown_s = clamp_cooldown_seconds(getattr(e, "retry_after", None))
+                mark_cooldown(cred.id, cooldown_s, scope=resolved_model)
+                observe_refusal(
+                    "groq",
+                    cred.id,
+                    cooldown_s,
+                    model=resolved_model,
+                    reason=f"HTTP {status}",
+                )
                 logger.warning(
-                    "%s model=%s failed with HTTP %s; cooling down for this "
+                    "%s model=%s failed with HTTP %s; cooling down %.0fs for this "
                     "model and trying next key",
                     cred_ref,
                     resolved_model,
                     status,
+                    cooldown_s,
                 )
                 last_error = e
                 continue

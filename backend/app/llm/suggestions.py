@@ -106,6 +106,8 @@ from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
     get_groq_model,
+    groq_availability,
+    release_groq_cooldown,
     GROQ_MIN_SLICE_S,
     GROQ_TIMEOUT,
     GroqError,
@@ -116,7 +118,9 @@ from .groq_provider import (
 )
 from .cloudflare_provider import (
     call_cloudflare,
+    cloudflare_availability,
     get_cloudflare_credentials,
+    release_cloudflare_cooldown,
     CloudflareError,
     CF_MIN_SLICE_S,
     CF_MODEL,
@@ -124,8 +128,10 @@ from .cloudflare_provider import (
 )
 from .gemini_provider import (
     call_gemini_with_rotation,
+    gemini_availability,
     get_gemini_api_key,
     get_gemini_model,
+    release_gemini_cooldown,
     GEMINI_MIN_SLICE_S,
     GEMINI_TIMEOUT,
     GeminiError,
@@ -318,20 +324,129 @@ def _pool_sizes() -> tuple[int, int, int]:
     )
 
 
-def _later_provider_reserve(*, after: str) -> float:
+CHAIN_ORDER = ("gemini", "groq", "cloudflare")
+
+# Preference order encodes critique quality, so it is fixed. Availability decides
+# which providers are *in* the chain, never in what order they are preferred: a
+# provider is not promoted for being faster, because that would trade output
+# quality for latency without anyone asking (see design.md — Non-Goals).
+_AVAILABILITY_CHECKS = {
+    "gemini": gemini_availability,
+    "groq": groq_availability,
+    "cloudflare": cloudflare_availability,
+}
+_COOLDOWN_RELEASES = {
+    "gemini": release_gemini_cooldown,
+    "groq": release_groq_cooldown,
+    "cloudflare": release_cloudflare_cooldown,
+}
+_PROVIDER_LABELS = {
+    "gemini": "Gemini",
+    "groq": "Groq",
+    "cloudflare": "Cloudflare",
+}
+
+
+class _ProviderPlan(NamedTuple):
+    """Whether this provider is worth calling in this pass, and why not."""
+
+    configured: bool
+    # Set when every credential is already in cooldown, so calling would only
+    # collect the same refusal again.
+    unavailable_reason: Optional[str]
+
+    @property
+    def usable(self) -> bool:
+        return self.configured and self.unavailable_reason is None
+
+
+def _describe_unavailable(provider: str, availability) -> str:
+    """Ops-facing reason a provider was skipped without being called."""
+    label = _PROVIDER_LABELS.get(provider, provider)
+    when = (
+        f"expected usable in {availability.recover_in_s:.0f}s"
+        if availability.recover_in_s is not None
+        else "recovery time unknown"
+    )
+    if availability.carried_over:
+        # Worth saying explicitly: this request never called the provider, so its
+        # absence from the logs is expected rather than a missing attempt.
+        return (
+            f"{label} skipped: every credential was already in cooldown from an "
+            f"earlier request, {when}"
+        )
+    return f"{label} skipped: every credential is in cooldown, {when}"
+
+
+def _plan_providers() -> dict[str, _ProviderPlan]:
+    """
+    Decide which providers this pass will actually call.
+
+    A provider whose whole pool is in cooldown is skipped rather than called for
+    the refusal we already have. The exception is the last resort: if that would
+    leave nothing to call, the cooldown closest to expiring is released so one
+    real attempt still happens. Recorded availability describes the past and can
+    be stale, so it must never be the only reason no provider was tried —
+    otherwise our own cache, not the provider, takes the feature offline.
+    """
+    availability = {name: check() for name, check in _AVAILABILITY_CHECKS.items()}
+    plans = {
+        name: _ProviderPlan(
+            configured=state.configured,
+            unavailable_reason=(
+                _describe_unavailable(name, state) if state.all_cooled else None
+            ),
+        )
+        for name, state in availability.items()
+    }
+    if any(plan.usable for plan in plans.values()):
+        return plans
+
+    cooled = [
+        name
+        for name in CHAIN_ORDER
+        if availability[name].configured and availability[name].all_cooled
+    ]
+    if not cooled:
+        return plans
+    soonest = min(cooled, key=lambda n: availability[n].recover_in_s or float("inf"))
+    if _COOLDOWN_RELEASES[soonest]() is None:
+        return plans
+    logger.info(
+        "Every provider is in cooldown; attempting %s anyway (recovers soonest)",
+        soonest,
+    )
+    plans[soonest] = _ProviderPlan(configured=True, unavailable_reason=None)
+    return plans
+
+
+def _later_provider_reserve(
+    *,
+    after: str,
+    plan: Optional[dict[str, _ProviderPlan]] = None,
+) -> float:
     """
     Seconds the providers *after* `after` need to each get a turn.
 
     Only their minimum useful slice is held back, not their full timeout: the
     point is that a slow primary cannot starve a fast secondary (Groq answers in
     1-3s), not that every provider is guaranteed its maximum.
+
+    A provider that will be skipped holds back nothing — reserving for a call
+    that is not going to happen would shrink the slice of the provider that is.
     """
+
+    def will_be_called(name: str, configured: bool) -> bool:
+        if plan is None:
+            return configured
+        return plan[name].usable
+
     reserve = 0.0
-    if after == "gemini" and get_groq_api_key():
+    if after == "gemini" and will_be_called("groq", bool(get_groq_api_key())):
         reserve += GROQ_MIN_SLICE_S
     if after in ("gemini", "groq"):
         cf_account, cf_token = get_cloudflare_credentials()
-        if cf_account and cf_token:
+        if will_be_called("cloudflare", bool(cf_account and cf_token)):
             reserve += CF_MIN_SLICE_S
     return reserve
 
@@ -340,6 +455,7 @@ def _phase_deadline(
     deadline_monotonic: Optional[float],
     *,
     after: str,
+    plan: Optional[dict[str, _ProviderPlan]] = None,
 ) -> Optional[float]:
     """
     Deadline for one provider's phase of the chain.
@@ -354,7 +470,7 @@ def _phase_deadline(
     """
     if deadline_monotonic is None:
         return None
-    return deadline_monotonic - _later_provider_reserve(after=after)
+    return deadline_monotonic - _later_provider_reserve(after=after, plan=plan)
 
 
 class _PhaseBudget(NamedTuple):
@@ -374,9 +490,10 @@ def _phase_budget(
     after: str,
     provider_timeout: float,
     min_slice: float,
+    plan: Optional[dict[str, _ProviderPlan]] = None,
 ) -> _PhaseBudget:
     """Resolve one provider's share of the request budget."""
-    deadline = _phase_deadline(deadline_monotonic, after=after)
+    deadline = _phase_deadline(deadline_monotonic, after=after, plan=plan)
     call_timeout = resolve_call_timeout(deadline, provider_timeout, min_slice)
     return _PhaseBudget(
         deadline=deadline,
@@ -443,16 +560,20 @@ async def _generate_suggestions_once(
         cf_pool_size,
     )
 
-    gemini_key = get_gemini_api_key()
+    plan = _plan_providers()
     gemini_budget = _phase_budget(
         deadline_monotonic,
         after="gemini",
         provider_timeout=GEMINI_TIMEOUT,
         min_slice=GEMINI_MIN_SLICE_S,
+        plan=plan,
     )
-    if not gemini_key:
+    if not plan["gemini"].configured:
         logger.info("Gemini not configured, trying Groq directly")
         gemini_error = "Gemini API key not configured"
+    elif plan["gemini"].unavailable_reason:
+        gemini_error = plan["gemini"].unavailable_reason
+        logger.info(gemini_error)
     elif gemini_budget.call_timeout is None:
         # Skipped rather than started-and-clamped: a call shorter than the
         # model's own latency would time out and spend seconds Groq still needs.
@@ -513,16 +634,19 @@ async def _generate_suggestions_once(
             logger.error(f"Gemini failed with non-retriable error: {e}")
             gemini_error = str(e)
 
-    groq_key = get_groq_api_key()
     groq_budget = _phase_budget(
         deadline_monotonic,
         after="groq",
         provider_timeout=GROQ_TIMEOUT,
         min_slice=GROQ_MIN_SLICE_S,
+        plan=plan,
     )
-    if not groq_key:
+    if not plan["groq"].configured:
         logger.info("Groq not configured, trying Cloudflare directly")
         groq_error = "Groq API key not configured"
+    elif plan["groq"].unavailable_reason:
+        groq_error = plan["groq"].unavailable_reason
+        logger.info(groq_error)
     elif groq_budget.call_timeout is None:
         groq_error = describe_skip("Groq", groq_budget.deadline, GROQ_MIN_SLICE_S)
         budget_constrained = True
@@ -580,17 +704,19 @@ async def _generate_suggestions_once(
             logger.error(f"Groq failed with non-retriable error: {e}")
             groq_error = str(e)
 
-    cf_account, cf_token = get_cloudflare_credentials()
-    cf_configured = bool(cf_account and cf_token)
     # Last in the chain, so its phase is the whole remaining request budget.
     cf_budget = _phase_budget(
         deadline_monotonic,
         after="cloudflare",
         provider_timeout=CF_TIMEOUT,
         min_slice=CF_MIN_SLICE_S,
+        plan=plan,
     )
-    if not cf_configured:
+    if not plan["cloudflare"].configured:
         cf_error = "Cloudflare credentials not configured"
+    elif plan["cloudflare"].unavailable_reason:
+        cf_error = plan["cloudflare"].unavailable_reason
+        logger.info(cf_error)
     elif cf_budget.call_timeout is None:
         cf_error = describe_skip("Cloudflare", cf_budget.deadline, CF_MIN_SLICE_S)
         budget_constrained = True

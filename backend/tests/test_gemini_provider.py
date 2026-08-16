@@ -37,9 +37,13 @@ def _reset_pool():
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, text="", payload=None):
+    def __init__(self, status_code=200, text="", payload=None, headers=None):
         self.status_code = status_code
         self.text = text
+        # Gemini reports retry timing in a header or in the error body; an empty
+        # mapping is the "told us nothing" case, which falls back to the default
+        # cooldown.
+        self.headers = headers or {}
         self._payload = payload or {
             "candidates": [{"content": {"parts": [{"text": "{}"}]}}]
         }

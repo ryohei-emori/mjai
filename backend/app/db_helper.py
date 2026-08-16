@@ -408,6 +408,88 @@ async def delete_setting(setting_key):
         )
 
 
+async def fetch_setting_and_provider_health(setting_key):
+    """
+    Read the setting row and the still-in-effect provider_health rows together.
+
+    One connection for both: pooler connect time dominates either query, so the
+    generation path pays what it already paid for the prompt lookup alone. Each
+    read tolerates its own table being absent, so a project without migration
+    006 or 008 applied degrades per feature rather than losing both.
+
+    Returns (setting_row_or_None, health_rows).
+    """
+    async with get_db() as conn:
+        setting = None
+        try:
+            row = await conn.fetchrow(
+                '''
+                SELECT
+                    setting_key AS "settingKey",
+                    setting_value AS "settingValue",
+                    updated_at AS "updatedAt",
+                    updated_by AS "updatedBy"
+                FROM app_settings
+                WHERE setting_key = $1
+                ''',
+                setting_key,
+            )
+            setting = dict(row) if row else None
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.warning("app_settings missing; using the built-in default prompt")
+
+        health = []
+        try:
+            rows = await conn.fetch(
+                '''
+                SELECT
+                    provider,
+                    model,
+                    credential_fingerprint AS "credentialFingerprint",
+                    recover_at AS "recoverAt",
+                    reason
+                FROM provider_health
+                WHERE recover_at > NOW()
+                '''
+            )
+            health = [dict(row) for row in rows]
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.warning(
+                "provider_health missing; credential cooldowns stay per-process"
+            )
+
+        return setting, health
+
+
+async def upsert_provider_health(records):
+    """
+    Record when credentials are expected to be usable again.
+
+    Takes every observation from one request so a request that collected several
+    refusals still pays for a single connection. Concurrent invocations may
+    observe the same refusal; GREATEST keeps the later recovery instant so one
+    writer cannot shorten another's cooldown.
+
+    `records` items are (provider, model, credential_fingerprint, recover_at, reason).
+    """
+    if not records:
+        return
+    async with get_db() as conn:
+        await conn.executemany(
+            '''
+            INSERT INTO provider_health (
+                provider, model, credential_fingerprint, recover_at, reason, observed_at
+            )
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (provider, model, credential_fingerprint) DO UPDATE
+                SET recover_at = GREATEST(provider_health.recover_at, EXCLUDED.recover_at),
+                    reason = EXCLUDED.reason,
+                    observed_at = EXCLUDED.observed_at
+            ''',
+            list(records),
+        )
+
+
 # 提案一覧取得（フル field set, camelCase)
 async def fetch_proposals_by_history(history_id):
     async with get_db() as conn:

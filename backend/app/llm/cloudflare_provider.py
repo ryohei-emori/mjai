@@ -13,6 +13,7 @@ from typing import Any, Optional, Tuple, List, Dict, Set
 
 from .budget import describe_skip, resolve_call_timeout
 from .key_pool import (
+    PoolAvailability,
     acquire_cloudflare,
     cooldown_status_codes,
     credential_pool_index,
@@ -20,6 +21,13 @@ from .key_pool import (
     is_cloudflare_configured,
     load_cloudflare_credentials,
     mark_cooldown,
+    pool_availability,
+    release_soonest_cooldown,
+)
+from .provider_health import (
+    clamp_cooldown_seconds,
+    observe_refusal,
+    parse_retry_after,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,9 +46,17 @@ CF_MIN_SLICE_S = 6.0
 
 class CloudflareError(Exception):
     """Error from Cloudflare Workers AI API."""
-    def __init__(self, message: str, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        # Cloudflare rarely sends retry timing; kept for symmetry with the other
+        # providers so the caller does not need per-provider special cases.
+        self.retry_after = retry_after
 
 
 class CloudflareTimeoutError(CloudflareError):
@@ -126,6 +142,7 @@ async def _call_cloudflare_once(
         raise CloudflareRateLimitError(
             "Cloudflare rate limit exceeded",
             status_code=429,
+            retry_after=parse_retry_after(response.headers.get("retry-after")),
         )
     if response.status_code in (401, 403):
         raise CloudflareRateLimitError(
@@ -156,6 +173,21 @@ async def _call_cloudflare_once(
     raise CloudflareError(
         f"Unexpected Cloudflare response content: {type(result).__name__}"
     )
+
+
+def cloudflare_availability() -> PoolAvailability:
+    """
+    Whether calling Cloudflare could plausibly succeed, from cooldown state alone.
+
+    Unlike Gemini and Groq, Cloudflare runs one fixed model, so its cooldowns are
+    credential-wide and there is no per-model scope to consider.
+    """
+    return pool_availability(load_cloudflare_credentials())
+
+
+def release_cloudflare_cooldown() -> Optional[str]:
+    """Free the soonest-recovering CF pair so one attempt can still be made."""
+    return release_soonest_cooldown(load_cloudflare_credentials())
 
 
 async def call_cloudflare(
@@ -229,11 +261,17 @@ async def call_cloudflare(
         except CloudflareError as e:
             status = e.status_code
             if status in cooldown_codes:
-                mark_cooldown(cred.id)
+                cooldown_s = clamp_cooldown_seconds(getattr(e, "retry_after", None))
+                mark_cooldown(cred.id, cooldown_s)
+                observe_refusal(
+                    "cloudflare", cred.id, cooldown_s, reason=f"HTTP {status}"
+                )
                 logger.warning(
-                    "%s failed with HTTP %s; cooling down and trying next credential",
+                    "%s failed with HTTP %s; cooling down %.0fs and trying next "
+                    "credential",
                     cred_ref,
                     status,
+                    cooldown_s,
                 )
                 last_error = e
                 continue

@@ -178,9 +178,13 @@ class TestAcquireAndCooldown:
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, text="", payload=None):
+    def __init__(self, status_code=200, text="", payload=None, headers=None):
         self.status_code = status_code
         self.text = text
+        # Providers read retry-timing headers off a refusal; an empty mapping is
+        # the "provider told us nothing" case, which falls back to the default
+        # cooldown.
+        self.headers = headers or {}
         self._payload = payload or {"choices": [{"message": {"content": "{}"}}]}
 
     def json(self):

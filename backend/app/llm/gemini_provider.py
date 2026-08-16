@@ -16,6 +16,7 @@ import httpx
 from .budget import describe_skip, resolve_call_timeout
 from .provider_output import ProviderOutput
 from .key_pool import (
+    PoolAvailability,
     acquire_gemini,
     cooldown_status_codes,
     credential_pool_index,
@@ -23,6 +24,14 @@ from .key_pool import (
     is_gemini_configured,
     load_gemini_credentials,
     mark_cooldown,
+    pool_availability,
+    release_soonest_cooldown,
+)
+from .provider_health import (
+    clamp_cooldown_seconds,
+    observe_refusal,
+    parse_duration_hint,
+    parse_retry_after,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,9 +81,18 @@ THINKING_LEVEL_OPT_OUT = "none"
 class GeminiError(Exception):
     """Error from Gemini API."""
 
-    def __init__(self, message: str, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        # Seconds Gemini itself asked us to wait, when it said so. Carried on the
+        # error so the caller can size the cooldown without re-reading the
+        # response it no longer has.
+        self.retry_after = retry_after
 
 
 class GeminiRateLimitError(GeminiError):
@@ -128,6 +146,28 @@ def select_gemini_models(n: int = 2) -> List[str]:
         return [get_gemini_model()]
     n = min(n, len(ALLOWED_GEMINI_MODELS))
     return random.sample(ALLOWED_GEMINI_MODELS, n)
+
+
+def _rotation_scopes() -> List[Optional[str]]:
+    """Models a request could pick, which is what cooldowns are scoped to."""
+    if not is_rotation_enabled():
+        return [get_gemini_model()]
+    return list(ALLOWED_GEMINI_MODELS)
+
+
+def gemini_availability() -> PoolAvailability:
+    """
+    Whether calling Gemini could plausibly succeed, from cooldown state alone.
+
+    A pool counts as unusable only when every key is cooled down for every model
+    rotation could choose — one model's 429 is not the provider's answer.
+    """
+    return pool_availability(load_gemini_credentials(), _rotation_scopes())
+
+
+def release_gemini_cooldown() -> Optional[str]:
+    """Free the soonest-recovering Gemini key so one attempt can still be made."""
+    return release_soonest_cooldown(load_gemini_credentials(), _rotation_scopes())
 
 
 def _messages_to_gemini_payload(
@@ -226,6 +266,35 @@ def _extract_text_from_response(data: dict[str, Any]) -> str:
     return "".join(texts)
 
 
+def _retry_hint_seconds(response: httpx.Response) -> Optional[float]:
+    """
+    Seconds Gemini asked us to wait, from `Retry-After` or a `RetryInfo` detail.
+
+    Gemini reports quota timing in the error body rather than only in headers:
+    `error.details[]` may carry `{"@type": ".../RetryInfo", "retryDelay": "37s"}`.
+    None means it told us nothing usable, and the default cooldown applies.
+    """
+    header = parse_retry_after(response.headers.get("retry-after"))
+    if header is not None:
+        return header
+    try:
+        body = response.json()
+    except Exception:
+        return None
+    details = ((body or {}).get("error") or {}).get("details")
+    if not isinstance(details, list):
+        return None
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        if "RetryInfo" not in str(detail.get("@type") or ""):
+            continue
+        hint = parse_duration_hint(detail.get("retryDelay"))
+        if hint is not None:
+            return hint
+    return None
+
+
 async def _call_gemini_once(
     api_key: str,
     messages: list[dict[str, str]],
@@ -260,7 +329,11 @@ async def _call_gemini_once(
         raise GeminiError(f"Gemini request failed: {e}") from e
 
     if response.status_code == 429:
-        raise GeminiRateLimitError("Gemini rate limit exceeded", status_code=429)
+        raise GeminiRateLimitError(
+            "Gemini rate limit exceeded",
+            status_code=429,
+            retry_after=_retry_hint_seconds(response),
+        )
 
     if response.status_code in (401, 403):
         raise GeminiRateLimitError(
@@ -357,13 +430,22 @@ async def call_gemini(
         except GeminiError as e:
             status = e.status_code
             if status in cooldown_codes:
-                mark_cooldown(cred.id, scope=resolved_model)
+                cooldown_s = clamp_cooldown_seconds(getattr(e, "retry_after", None))
+                mark_cooldown(cred.id, cooldown_s, scope=resolved_model)
+                observe_refusal(
+                    "gemini",
+                    cred.id,
+                    cooldown_s,
+                    model=resolved_model,
+                    reason=f"HTTP {status}",
+                )
                 logger.warning(
-                    "%s model=%s failed with HTTP %s; cooling down for this "
+                    "%s model=%s failed with HTTP %s; cooling down %.0fs for this "
                     "model and trying next key",
                     cred_ref,
                     resolved_model,
                     status,
+                    cooldown_s,
                 )
                 last_error = e
                 continue

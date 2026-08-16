@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 
 from app import db_helper, prompt_settings
 from app.llm.prompts import SYSTEM_PROMPT_BODY
+from app.llm import provider_health
+from app.llm.provider_health import load_shared_state
 from app.prompt_settings import (
     MAX_PROMPT_LENGTH,
     PromptValidationError,
     SETTING_KEY,
-    resolve_system_prompt_override,
+    prompt_override_from_row,
     validate_prompt,
 )
 
@@ -224,45 +226,58 @@ class TestAuthorization:
 
 
 class TestGenerationPathResolution:
-    """resolve_system_prompt_override() must never break generation."""
+    """Reading the stored prompt must never break generation."""
 
-    def test_returns_none_when_nothing_stored(self, store):
-        assert asyncio.run(resolve_system_prompt_override()) is None
+    def _resolve(self):
+        row, _health = asyncio.run(load_shared_state(SETTING_KEY))
+        return prompt_override_from_row(row)
 
-    def test_returns_stored_body(self, store):
-        store.rows[SETTING_KEY] = {
+    @pytest.fixture
+    def shared_read(self, monkeypatch):
+        """Stand in for the one combined read the generation path performs."""
+        state = {"setting": None, "health": [], "error": None, "delay": 0.0}
+
+        async def fake(_key):
+            if state["delay"]:
+                await asyncio.sleep(state["delay"])
+            if state["error"]:
+                raise state["error"]
+            return state["setting"], state["health"]
+
+        monkeypatch.setattr(db_helper, "fetch_setting_and_provider_health", fake)
+        return state
+
+    def test_returns_none_when_nothing_stored(self, shared_read):
+        assert self._resolve() is None
+
+    def test_returns_stored_body(self, shared_read):
+        shared_read["setting"] = {
             "settingKey": SETTING_KEY,
             "settingValue": "自定义规则",
             "updatedAt": None,
             "updatedBy": None,
         }
-        assert asyncio.run(resolve_system_prompt_override()) == "自定义规则"
+        assert self._resolve() == "自定义规则"
 
-    def test_blank_stored_value_falls_back_to_default(self, store):
-        store.rows[SETTING_KEY] = {
+    def test_blank_stored_value_falls_back_to_default(self, shared_read):
+        shared_read["setting"] = {
             "settingKey": SETTING_KEY,
             "settingValue": "   ",
             "updatedAt": None,
             "updatedBy": None,
         }
-        assert asyncio.run(resolve_system_prompt_override()) is None
+        assert self._resolve() is None
 
-    def test_store_error_falls_back_to_default(self, monkeypatch):
-        async def boom(_key):
-            raise RuntimeError("connection refused")
-
-        monkeypatch.setattr(prompt_settings, "fetch_setting", boom)
-        assert asyncio.run(resolve_system_prompt_override()) is None
+    def test_store_error_falls_back_to_default(self, shared_read):
+        shared_read["error"] = RuntimeError("connection refused")
+        assert self._resolve() is None
 
     def test_slow_store_times_out_instead_of_eating_the_wall_clock(
-        self, monkeypatch
+        self, shared_read, monkeypatch
     ):
-        async def never(_key):
-            await asyncio.sleep(10)
-
-        monkeypatch.setattr(prompt_settings, "fetch_setting", never)
-        monkeypatch.setattr(prompt_settings, "PROMPT_LOOKUP_TIMEOUT_S", 0.01)
-        assert asyncio.run(resolve_system_prompt_override()) is None
+        shared_read["delay"] = 10
+        monkeypatch.setattr(provider_health, "SHARED_STATE_TIMEOUT_S", 0.01)
+        assert self._resolve() is None
 
 
 class TestSettingsStoreQueries:

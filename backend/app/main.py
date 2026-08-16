@@ -384,7 +384,12 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
         SuggestionsError,
         NoProvidersConfiguredError,
     )
-    from .prompt_settings import resolve_system_prompt_override
+    from .llm.provider_health import (
+        flush_observations,
+        load_shared_state,
+        seed_cooldowns,
+    )
+    from .prompt_settings import SETTING_KEY, prompt_override_from_row
     from fastapi.responses import JSONResponse
 
     # Measured from request entry, not from the first provider call: the stored
@@ -404,15 +409,25 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
         )
     
     try:
-        # A missing/unreadable stored prompt resolves to None => built-in default.
-        system_prompt_override = await resolve_system_prompt_override()
-        result = await generate_suggestions(
-            original_text,
-            target_text,
-            exemplar_translation,
-            system_prompt_override,
-            deadline_monotonic=deadline_monotonic,
-        )
+        # One connection for both: the stored prompt (missing/unreadable => the
+        # built-in default) and what earlier requests learned about which
+        # credentials are rate-limited, so this request can route around them
+        # instead of re-collecting the same 429s.
+        setting_row, health_rows = await load_shared_state(SETTING_KEY)
+        system_prompt_override = prompt_override_from_row(setting_row)
+        seed_cooldowns(health_rows)
+        try:
+            result = await generate_suggestions(
+                original_text,
+                target_text,
+                exemplar_translation,
+                system_prompt_override,
+                deadline_monotonic=deadline_monotonic,
+            )
+        finally:
+            # Refusals seen here are worth the next request's while, whether this
+            # one ended up succeeding on a later provider or failing outright.
+            await flush_observations(deadline_monotonic)
         return result
     except NoProvidersConfiguredError as e:
         return JSONResponse(

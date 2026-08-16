@@ -14,7 +14,6 @@ customized it. Reset therefore deletes the row (see migration 006).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Optional, TypedDict
 
@@ -30,10 +29,6 @@ SETTING_KEY = "correction_system_prompt"
 # Generous enough for the default prompt plus substantial additions, low enough
 # that a paste accident cannot push the prompt past provider context limits.
 MAX_PROMPT_LENGTH = 20000
-
-# The suggestions path must not spend its wall-clock budget waiting on the
-# settings store; a slow lookup falls back to the built-in default instead.
-PROMPT_LOOKUP_TIMEOUT_S = 3.0
 
 
 class PromptValidationError(ValueError):
@@ -141,28 +136,17 @@ async def reset_prompt_settings() -> PromptSettings:
     return _to_settings(None)
 
 
-async def resolve_system_prompt_override() -> Optional[str]:
+def prompt_override_from_row(row: Optional[dict]) -> Optional[str]:
     """
     Return the stored custom prompt body for a generation request, or None.
 
-    None means "use the built-in default", which is also what a store error or
-    a lookup slower than PROMPT_LOOKUP_TIMEOUT_S produces: a settings-store
-    problem must degrade to default-prompt suggestions, never fail generation
-    or eat into the suggestions wall-clock budget.
+    None means "use the built-in default", which is also what an absent row or an
+    unreadable store produces: a settings-store problem must degrade to
+    default-prompt suggestions, never fail generation. The read itself is done by
+    `llm.provider_health.load_shared_state()`, which fetches this row and the
+    credential-availability rows on one connection under one timeout, so
+    consulting either costs the generation path a single round trip.
     """
-    try:
-        row = await asyncio.wait_for(
-            fetch_setting(SETTING_KEY), timeout=PROMPT_LOOKUP_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Prompt lookup exceeded %.1fs; using built-in default prompt",
-            PROMPT_LOOKUP_TIMEOUT_S,
-        )
-        return None
-    except Exception as e:
-        logger.warning("Prompt lookup failed; using built-in default prompt: %s", e)
-        return None
     if not row:
         return None
     value = (row.get("settingValue") or "").strip()
