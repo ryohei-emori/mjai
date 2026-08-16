@@ -135,6 +135,7 @@ Supabase無料プランはアクティビティがないとプロジェクトが
 | `.github/workflows/ci.yml` | push to main, PRs to main | Run backend pytest + frontend jest + lint (optional) |
 | `.github/workflows/supabase-keepalive.yml` | cron (3日ごと), manual | Supabase無料プラン一時停止防止 |
 | `.github/workflows/apply-migrations.yml` | push to main (`backend/supabase/migrations/**`), PRラベル`run-migrations`, manual | Supabase CLIで共有Postgresにマイグレーション適用（下記参照） |
+| `.github/workflows/critique-probe.yml` | PRラベル`run-critique-probe`, manual | 添削品質のliveプローブ（`GEMINI_API_KEYS`が必要。Geminiのクォータを消費するので自動実行しない） |
 | `backend/.github/workflows/migrate-database.yml` | manual only | ⚠️ ライブDBマイグレーション（要確認。`backend/.github/` 配下なのでGitHubからは実行されない） |
 
 ### Deployment (Vercel Git Integration)
@@ -163,7 +164,7 @@ GitHub repoには3つのEnvironmentが存在:
 **不要（削除可能）:**
 - `RENDER_API_KEY`, `RENDER_OWNER_ID` — Render廃止済み
 - `TF_API_TOKEN` — Terraform削除済み（`terraform/`ディレクトリは削除されました）
-- Note: `GEMINI_API_KEY(S)` / `GEMINI_MODEL` are **active** as the primary cloud provider (Vercel env / `conf/.env`); do **not** put them in GitHub Secrets unless a workflow reads them.
+- Note: `GEMINI_API_KEY(S)` / `GEMINI_MODEL` are **active** as the primary cloud provider (Vercel env / `conf/.env`). GitHub Secrets への登録は任意で、**`critique-probe.yml`（添削品質のliveプローブ）を回したいときだけ**`GEMINI_API_KEYS`（または`GEMINI_API_KEY`）を入れる。推論本体は`/api/suggestions`＝Vercel上で動くので、CIに鍵を置かなくても本番は動く。
 
 これらの古いシークレットはGitHub Settings → Secrets and variablesから手動で削除可能。
 
@@ -206,6 +207,16 @@ supabase db push --workdir backend --db-url "$DATABASE_URL"
 **`DATABASE_URL`シークレットは直接接続文字列（IPv6のみ）で、そのままではCIから繋がらない:** 実行で確認済み（2026-08）。値は`db.fqyhrubqkpuyliqojbai.supabase.co`宛てで、このホストは**AAAAレコードしか公開していない**（IPv4は有料アドオン）。GitHub ActionsランナーはIPv6を持たないため、素の`db push`は`dial error … ECONNREFUSED 2406:da14:…`で落ちる。そこで`apply-migrations.yml`は直接URLをSupavisorのsession mode URL（ユーザ`postgres.<ref>`、`aws-N-<region>.pooler.supabase.com:5432`）へ組み替える。リージョンは`ap-northeast-1`（プロジェクトのAAAAがAWSの`2406:da14::/35`に含まれることから判定。移設時は`SUPABASE_REGION`リポジトリ変数で上書き）、クラスタ（`aws-0` / `aws-1`）は判別できないため両方を試して先に繋がった方を使う。**実測では`aws-0-ap-northeast-1`が正**。候補URLは使用前にすべてマスクし、ログにはホスト名しか出さない。
 
 **マイグレーションのファイル名:** 公式規約はタイムスタンプ（`20260816120000_name.sql`）だが、本リポジトリは`001_`連番。CLIは数値順に扱うので`supabase migration new`で作った新しいタイムスタンプ名と混在しても順序は壊れない。
+
+### critique-probe.yml（添削品質のliveプローブ）
+
+手動dispatch、またはPRに`run-critique-probe`ラベルを付けると実行。Geminiのクォータを消費するので自動実行はしない。`GEMINI_API_KEYS`（または`GEMINI_API_KEY`）をGitHub Secretsに置いたときだけ動き、無ければどこに登録するかを示して失敗する。DBには一切触らない。
+
+- **計測対象**: `backend/tests/fixtures/primate_sleep_source_target.py`（報告された「トロント大学・霊長類の睡眠」文）に対する実出力を、報告済みの4欠陥で採点する — `chinese_forms`（修正案を中国語で返す）、`source_items`（中国語原文の側を添削）、`synonym_only`（言い換えのみの指摘）、`numeral_caught`（「９点５時間」という実際の誤りを拾えるか）。あわせて`elapsed_s` / `finishReason` / トークン数を出すので、Gemini 22sタイムアウトとウォールクロック予算の確認にも使える。
+- **条件**: `baseline`（変更前プロンプト。指定コミットから`prompts.py`をimportするので**byte単位で当時のまま**）、`current`、`custom`（`system_prompt_override`経路＝設定ダイアログが書く経路を実際に通す）。
+- **合格ライン**: `TIMEOUT`行が無く、`chinese_forms` / `source_items` / `synonym_only`が0、`numeral_caught`がtrue、`n_suggestions`がbaseline以上。
+- **baselineはマージ前に測るのが確実**: squash mergeでブランチが消えると変更前プロンプトのコミットに到達できなくなる。到達不能な場合はbaselineをスキップして警告を出す（`baseline_ref` inputで指定可能）。
+- 結果は`/tmp/live_critique_quality.json`をartifactとしてアップロードする。
 
 ### migrate-database.yml
 

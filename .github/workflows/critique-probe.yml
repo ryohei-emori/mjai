@@ -1,0 +1,115 @@
+# ============================================================================
+# Live critique-quality probe. Manual / label only — it spends Gemini quota.
+# ============================================================================
+# Scores real model output on the reported primate-sleep passage for the four
+# defects that motivated the prompt rewrite (Chinese recommended forms, items
+# critiquing the Chinese SOURCE, synonym-only items, and whether the real
+# numeral fault is caught), and reports latency and token counts so the Gemini
+# timeout / wall-clock budget can be checked.
+#
+# Runs here rather than on a laptop so the numbers can be produced without a
+# local Python setup, and because a labelled pull request still has the
+# pre-change prompt module in its history — after a squash merge that commit is
+# no longer reachable, so the baseline comparison is easiest before merge.
+#
+# Reads GEMINI_API_KEYS (or GEMINI_API_KEY). Nothing else: the probe calls the
+# provider directly and touches no database.
+# ============================================================================
+
+name: Critique Quality Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: 'Iterations per condition'
+        required: true
+        default: '2'
+        type: string
+      include_baseline:
+        description: 'Also measure the pre-change prompt (A/B)'
+        required: true
+        default: true
+        type: boolean
+      include_custom:
+        description: 'Also measure a stored-custom-prompt override'
+        required: true
+        default: true
+        type: boolean
+      baseline_ref:
+        description: 'Commit holding the pre-change prompts.py'
+        required: true
+        default: 'd2ed392'
+        type: string
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: critique-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'run-critique-probe'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The baseline condition imports the prompt module from an older
+          # commit, so a shallow clone is not enough.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r backend/requirements.txt
+
+      - name: Prepare conditions
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BASELINE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.baseline_ref || 'd2ed392' }}
+          WANT_BASELINE: ${{ github.event_name != 'workflow_dispatch' || inputs.include_baseline }}
+          WANT_CUSTOM: ${{ github.event_name != 'workflow_dispatch' || inputs.include_custom }}
+        run: |
+          if [ -z "${GEMINI_API_KEYS}${GEMINI_API_KEY}" ]; then
+            echo "::error::No Gemini credentials. Add GEMINI_API_KEYS (comma-separated) or GEMINI_API_KEY under Settings -> Secrets and variables -> Actions. The probe calls the provider directly, so no other secret is needed."
+            exit 1
+          fi
+
+          if [ "${WANT_BASELINE}" = 'true' ]; then
+            if git cat-file -e "${BASELINE_REF}:backend/app/llm/prompts.py" 2>/dev/null; then
+              git show "${BASELINE_REF}:backend/app/llm/prompts.py" > /tmp/old_prompts.py
+              echo "CRITIQUE_PROBE_BASELINE_PROMPTS_FILE=/tmp/old_prompts.py" >> "$GITHUB_ENV"
+            else
+              echo "::warning::${BASELINE_REF}:backend/app/llm/prompts.py is not in this clone, so the baseline condition is skipped. Run this from the pull request that changes the prompt, or pass a reachable baseline_ref."
+            fi
+          fi
+
+          if [ "${WANT_CUSTOM}" = 'true' ]; then
+            # Exercises the same system_prompt_override path the settings dialog
+            # writes to: an edited body must reach the provider and the response
+            # must still satisfy the code-owned output contract.
+            PYTHONPATH=backend python -c 'from app.llm.prompts import SYSTEM_PROMPT_BODY; open("/tmp/custom_body.txt", "w", encoding="utf-8").write(SYSTEM_PROMPT_BODY + "\n补充要求：优先指出影响读者理解的问题。\n")'
+            echo "CRITIQUE_PROBE_PROMPT_FILE=/tmp/custom_body.txt" >> "$GITHUB_ENV"
+          fi
+
+      - name: Score conditions
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CRITIQUE_PROBE_ITERS: ${{ github.event_name == 'workflow_dispatch' && inputs.iters || '2' }}
+        run: cd backend && PYTHONPATH=. python scripts/live_critique_quality.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: critique-probe-results
+          path: /tmp/live_critique_quality.json
+          if-no-files-found: warn
