@@ -103,7 +103,9 @@ Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commente
 ## Database constraints
 
 - **Single Supabase Postgres backend**: All app data (sessions, correction histories, AI proposals) is persisted to Supabase Postgres via `asyncpg`. The SQLite dual-path code has been removed.
-- Tables use snake_case columns (`sessions`, `correction_histories`, `ai_proposals`); `backend/app/db_helper.py` maps to camelCase for API responses.
+- Tables use snake_case columns (`sessions`, `correction_histories`, `ai_proposals`, `app_settings`); `backend/app/db_helper.py` maps to camelCase for API responses.
+- **`app_settings`** (`006_app_settings.sql`): global key/value settings shared by every allow-listed user — not per user, not per browser. Only key today is `correction_system_prompt`, the editable rules body of the AI correction prompt. **Absence of a row means "built-in default in effect"**, not a copy of the default text, so improving the default in code still reaches anyone who has not customized it; reset therefore deletes the row rather than writing the default back.
+- **LLM provenance columns** (`007_history_llm_provenance.sql`): `correction_histories.llm_provider` (`gemini` / `groq` / `cloudflare` / `webllm`) and `llm_model` (exact model id). Kept separate from the existing `provider` column, which records the transport (`api` / `webllm`) and drives the クラウドAPI / ローカルAI badge. Rows written before the migration read back `NULL`, and the UI shows no model caption for those.
 - **Suggestion persistence**: Successful AI generation writes a `correction_histories` row with `status=pending` plus full `ai_proposals` immediately (not only after 「確定してコピー・保存」). Confirm/save promotes the same history to `status=confirmed` via `PUT /histories/{id}` and updates proposal selection flags. Apply `backend/supabase/migrations/005_pending_suggestion_histories.sql` to the shared Supabase project before relying on this path in production.
 - Supabase is used for both **Auth** (Google OAuth, JWT) and **app data persistence** — a unified platform.
 - RLS is enabled on all tables with permissive `USING (true)` policies. Tightening to per-user scope is deferred to a future change.
@@ -303,8 +305,9 @@ User Request → POST /api/suggestions (authenticated)
 
 | Module | Purpose |
 |--------|---------|
-| `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
-| `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
+| `prompts.py` | Shared prompt (ported from frontend WebLLM prompts), split into the editable `SYSTEM_PROMPT_BODY` and the code-owned `OUTPUT_CONTRACT` |
+| `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) + `has_non_japanese_recommendation` guard |
+| `provider_output.py` | `ProviderOutput(text, model)` — how rotation wrappers report which model actually answered |
 | `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare + Gemini (env-driven) |
 | `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + key-pool retry + in-provider model retry |
 | `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 20s timeout) with response-shape normalize + key-pool retry |
@@ -347,6 +350,22 @@ WebLLM is retained for:
 2. Users who prefer local inference (privacy, no API dependencies)
 3. Future client-side AI evolution
 
+### Editable shared prompt (`editable-prompt-model-log-and-critique-fix`, 2026-08)
+
+The correction prompt's **rules body** is operator-editable from the top-bar gear (`frontend/src/components/ui/prompt-settings-dialog.tsx`) and stored as one global `app_settings.correction_system_prompt` row — shared by every allow-listed user, persisted across logins, no per-browser copy.
+
+| Endpoint (authenticated `router`, so also served at `/api/...`) | Behavior |
+|---|---|
+| `GET /settings/prompt` | `{ systemPrompt, defaultSystemPrompt, isCustomized, updatedAt, updatedBy }`; attribution is null when the default is in effect |
+| `PUT /settings/prompt` | Body `{ systemPrompt }`. Trim-empty → 400; >20,000 chars → 400 stating the limit. `updated_by` comes from the JWT email |
+| `DELETE /settings/prompt` | Reset: deletes the row (idempotent), so the built-in default applies again |
+
+- **The output contract is code-owned and not editable.** `prompts.py` composes `(stored body or SYSTEM_PROMPT_BODY) [+ EXEMPLAR_REFERENCE_RULES when an exemplar was pasted] + OUTPUT_CONTRACT`, and `OUTPUT_CONTRACT` (JSON-only instruction + `格式：` schema line) is always appended last. A bad edit can lower critique quality; it cannot break parsing. With no override and no exemplar, the composition is byte-identical to `SYSTEM_PROMPT`.
+- **Read path**: `backend/app/prompt_settings.resolve_system_prompt_override()` is called by the `/suggestions` handler *after* the wall-clock deadline is set, with a short timeout, no cache, and never raises — any failure logs a warning and uses the built-in default. A settings outage degrades quality at worst, never availability.
+- **Not versioned**: history rows do not record the prompt in force at generation time. Only the model is attributable (see below).
+- **Offline WebLLM keeps its own built-in prompt** (`frontend/src/lib/webllm/prompts/`), which the dialog states explicitly. Mirror new rules there in condensed form; do not port the full backend rules into the 7B instruction budget.
+- Editing the default in code still reaches everyone who has not customized it, because customization is a row's presence rather than a copy of the default.
+
 ### Prompts (Shared)
 
 Same prompt is used across all providers (backend and WebLLM):
@@ -385,15 +404,29 @@ All providers return the same JSON structure:
   "suggestions": [
     {"id": "1", "original": "指摘箇所", "reason": "修正理由", "sourceExcerpt": "原文中の対応箇所（該当する場合のみ、省略/空文字可）"}
   ],
-  "overallComment": "全体講評"
+  "overallComment": "全体講評",
+  "llmProvider": "gemini",
+  "llmModel": "gemini-3.7-flash"
 }
 ```
+
+`llmProvider` / `llmModel` (added 2026-08, `editable-prompt-model-log-and-critique-fix`) report which inference actually answered — `gemini` / `groq` / `cloudflare` plus the exact model id — because Gemini and Groq pick a model per request and may retry against a sibling. `call_gemini_with_rotation()` / `call_groq_with_rotation()` return `ProviderOutput(text, model)` for this; Cloudflare's plain string is paired with `CF_MODEL`. Reported on the salvage and retry paths too, logged on success, and the 503 error shape is unchanged (pool sizes only). The frontend passes both onto the pending-history create so a round stays attributable, and renders `{model} used` as a caption in the AI Suggestions header (omitted when unknown, e.g. rounds saved before the columns existed).
 
 `sourceExcerpt` (added 2026-08, `highlight-suggestion-text-spans` change) is optional: an excerpt from SOURCE TEXT (原文) corresponding to the flagged TARGET TEXT snippet in `original`, used by the frontend to highlight the matching span in the SOURCE TEXT textarea. Omitted/empty when the model finds no clear correspondence — never fabricated. Not persisted through `POST /proposals`.
 
 `reason` / `overallComment` are Simplified Chinese. Each `reason` should convey problem → recommended JP form (when clear) → accessible why in **natural prose** — do not force spoken machine labels `现状：` / `推荐：` / `現状：` / `推奨：`. Multi-paragraph TARGET should get systematic real-issue coverage (target ≥~5 when that many exist; no padding). Gemini `maxOutputTokens` is 16384 so dense multi-suggestion JSON does not truncate mid-array — but the token ceiling was never the coverage constraint (measured `finishReason` is `STOP`, not `MAX_TOKENS`, at ~1.4k–2.1k completion tokens); the thinking level is. See **Gemini thinking level is the latency/coverage lever** above.
 
 **Prompt maintenance rule (`refine-prompt-instruction-coherence`, 2026-08):** when editing prompt rules, edit the few-shot exemplar to match. Models imitate the example's item count and issue categories more reliably than they obey a numeric target, so the example MUST demonstrate the stated density (≥5 in the backend prompt), cover the categories the rules call highest priority (meaning shift / modality, systematic grammar — not lexical and register items only), keep every item distinct (a restated correction is padding), and include one item that omits `sourceExcerpt` so an always-filled excerpt does not bias the model into inventing one. Exemplar `reason` text is learner-facing critique only — anti-pattern directives belong in the rule sections. Avoid hedges whose side effect is fewer items (a standalone "quality over count" line, or a global brevity cue instead of a per-item length bound). There is no suggestion-count cap in prompts, providers, or the parser; keep it that way.
+
+**Target-language critique rules (`editable-prompt-model-log-and-critique-fix`, 2026-08).** A reported live session returned Chinese words *as the correction* for a Japanese TARGET (改为"对比睡眠数据" / 改为"理论上"), critiqued the Chinese SOURCE (「原文の"完成"を"实现"に」), offered interchangeable synonyms as faults (比較⇄対比, 研究者⇄学者), and proposed a form that does not hold in Japanese (「睡眠が需要だ」) — while missing real faults such as the numeral carryover 「９点５時間」. The rules now state, and the exemplar demonstrates:
+
+- **Recommended forms MUST be written in Japanese.** Chinese is for explanation only, never the corrected form. A learner cannot paste a Chinese word into a Japanese sentence.
+- **Only 添削対象 may be corrected.** The 原文 is the reference for judging meaning, never the object of correction — no item may propose rewriting the source into different Chinese.
+- **Interchangeable near-synonyms are not faults.** A wording item must name a concrete defect (meaning shift, register, collocation, domain term), not a preference.
+- **Any proposed form must be substituted back into the sentence and checked** for grammar and collocation before it is offered.
+- **Explain by meaning transfer**: what a Japanese reader would misunderstand or lose, not which word maps to which.
+
+Mechanical backstop: `parser.has_non_japanese_recommendation()` flags a `reason` only when a recommendation verb is followed by a quoted span that has **no kana** *and* contains a Simplified-only character, so kanji-only Japanese citations (「叙事詩」「学者」) do not trip it. Wired into `_content_usable()` with its own retry nudge, sharing `MAX_PARSE_RETRY_ATTEMPTS` so the attempt ceiling is unchanged. It is script-level only: a script-legal but semantically wrong recommendation (需要 for 必要) is out of its reach by design and is handled by the rules plus the live probe. Reproduce/measure with `backend/scripts/live_critique_quality.py` (fixture: `backend/tests/fixtures/primate_sleep_source_target.py`), which scores Chinese recommended forms, items whose excerpt is not a TARGET span, synonym-only items, and whether 「９点５時間」 is caught. Mirror these rules into the WebLLM prompt in condensed form.
 
 ### How to Get API Keys
 

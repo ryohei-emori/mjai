@@ -216,7 +216,7 @@ Fixed header with navigation tabs and user controls.
 - Leftmost: session pane trigger (`☰`) — see "Session pane: docked ⇄ floating"
 - Logo: "MJAI" text wordmark only (no icon)
 - Nav tabs: `Sessions` (active), `Dashboard`, `Archive` (Coming Soon)
-- Right side: New Session button, notification bell, settings (disabled), avatar, logout
+- Right side: New Session button, notification bell, settings (opens the prompt settings dialog), avatar, logout
 - **Notification bell badge**: Count of **completed** jobs in the current session's Job Queue that still await HITL confirm/save (`status === 'completed'`). Does **not** show active (`queued`/`processing`) count — that remains on the Job Queue panel's "N Active" badge.
 - **Bell click**: Opens a compact dropdown listing those completed-awaiting-HITL jobs (time, target-text snippet, status). Item click runs the same HITL confirm flow as clicking the job in Job Queue. Empty state when none.
 
@@ -411,6 +411,25 @@ The 30-character budget is set by the tightest consumer: the History heading is 
 - Hover: reveals copy/confirm icons
 - **Text-span highlighting** (2026-08): hovering a card previews (and selecting a card persists) a highlight of the card's flagged excerpt inside the actual SOURCE TEXT and TARGET TEXT textareas, using the `--suggestion-highlight` token (see Core Tokens table above). Implemented via `HighlightedTextarea`, a non-interactive overlay layered behind the native `<textarea>` — see `docs/SYSTEM-DESIGN.md` / `openspec/changes/highlight-suggestion-text-spans/design.md` for the technique.
 
+### Model Provenance Caption
+
+The AI Suggestions panel header states which model wrote the suggestions on screen, as metadata rather than as a status badge.
+
+```
+┌────────────────────────────────────────┐
+│ AI SUGGESTIONS              3 Results  │
+│ Select 3+ to save                      │
+│ gemini-3.7-flash used                  │
+│ [選択済み: 0/3+]                        │
+└────────────────────────────────────────┘
+```
+
+- Typography/colour: `text-metadata text-on-surface-variant/80` — dimmer than the surrounding metadata, so it never competes with the count and selection badges
+- Its own line with `break-all`: a long model id wraps instead of displacing the badges below it
+- Raw provider model id, not a friendly name: it is matchable against the Groq/Gemini dashboards, and the pools rotate models per request so a display-name table would go stale
+- Omitted entirely when the model is unknown — including History rounds saved before provenance was recorded. No "unknown" placeholder
+- The neighbouring クラウドAPI / ローカルAI badge (near the offline-mode checkbox) is the transport indicator and is set by the same generation-completion path
+
 ### Confirm / Save Button Loading
 
 "確定してコピー・保存" (`saveCorrections`):
@@ -418,6 +437,32 @@ The 30-character budget is set by the tightest consumer: the History heading is 
 - While in flight (`isSaving`): button **disabled**; leading icon is Material Symbols `progress_activity` with Tailwind `animate-spin` (same ぐるぐる pattern as job `processing` / LATEST live timer). A static `progress_activity` glyph without spin is not allowed.
 - Label while waiting: `保存中...`
 - Interaction: clipboard copy + local UI commit run first; server history/proposal persistence continues in the background with separate success/failure toasts (see OpenSpec change `async-confirm-copy-background-save`).
+
+### Prompt Settings Dialog (centered modal)
+
+The shared AI-correction prompt editor, opened from the TopAppBar gear.
+
+```
+┌──────────────────────────────────────────────┐
+│ 添削プロンプト  [既定|カスタム]            ✕ │
+│ AI提案の指示文です。全ユーザー共通で…        │
+│ 最終更新: owner@example.com / 2026-08-16 …   │
+│ ┌──────────────────────────────────────────┐ │
+│ │ (monospace textarea, 45–55vh, scrolls)   │ │
+│ └──────────────────────────────────────────┘ │
+│ 1,234 / 20,000 文字     オフラインモードは… │
+│ ⚠ inline validation / error                  │
+│         [既定に戻す] [キャンセル] [保存]     │
+└──────────────────────────────────────────────┘
+```
+
+- **New primitive**: `components/ui/dialog.tsx` — a Radix Dialog wrapper sibling to `sheet.tsx`. Sheets are edge-anchored and `w-72`-narrow, which does not suit long-form prose, so this one is centered: `max-w-3xl`, `max-h-[90vh]`, `rounded-lg border-outline-variant bg-surface p-6`, overlay `bg-black/80`
+- Textarea: `font-mono text-body-sm`, `min-h-[45vh] max-h-[55vh] overflow-y-auto`, `bg-surface-container border-outline-variant`
+- Badge in the header shows 既定 (`secondary`) or カスタム (`default`); attribution line below the description uses `text-metadata text-on-surface-variant` and appears only when customized
+- Character count and the offline-mode note share one `text-metadata` row; the note discloses that WebLLM uses its own built-in prompt
+- One `role="alert"` line carries either validation feedback or a request error; a load failure takes precedence over "empty" so the reason the prompt never arrived is not masked
+- Save is disabled until the text both changed and validates; 既定に戻す requires a second click (label becomes 本当に既定に戻す) before it deletes the stored row
+- Loads on open, not on mount, so reopening always reflects what is actually stored
 
 ### Bell Shake Animation
 

@@ -117,9 +117,10 @@ flowchart TB
 
 | Module | Responsibility |
 |---|---|
-| `main.py` | App entry: CORS from env, `/health`, `/keepalive`, authenticated `APIRouter` for sessions/histories/proposals |
+| `main.py` | App entry: CORS from env, `/health`, `/keepalive`, authenticated `APIRouter` for sessions/histories/proposals/settings |
 | `auth.py` | FastAPI dependency `get_current_user`: Bearer JWT verify + email allow-list (`401` / `403`) |
 | `db_helper.py` | Postgres DAO: async Postgres (`asyncpg`, snake_case tables); camelCase API responses |
+| `prompt_settings.py` | Shared editable correction prompt: validation (non-empty, 20,000 chars), read/save/reset, and a short-timeout read for the generation path that falls back to the built-in default |
 
 The `backend/app/llm/` module provides cloud-based AI suggestion generation (Gemini primary → Groq secondary → Cloudflare Workers AI tertiary, each with env-driven key pools). WebLLM remains on the frontend as an offline fallback option (explicit toggle only).
 
@@ -133,7 +134,8 @@ The `backend/app/llm/` module provides cloud-based AI suggestion generation (Gem
 | `app/auth-provider.tsx` | Supabase session restore/subscribe; `signInWithGoogle` / `signOut`; `handleUnauthenticated` for API 401s |
 | `app/login-screen.tsx` | Sign-in UI when unauthenticated |
 | `app/page.tsx` | Correction workspace (sessions sidebar, text inputs, suggestion review) — product UI, not a design-system doc |
-| `app/api.ts` | Sole frontend data layer (`sessionAPI`, `historyAPI`, `proposalAPI`, `suggestionsAPI`); attaches Bearer token |
+| `app/api.ts` | Sole frontend data layer (`sessionAPI`, `historyAPI`, `proposalAPI`, `suggestionsAPI`, `settingsAPI`); attaches Bearer token |
+| `components/ui/prompt-settings-dialog.tsx` | Editor for the shared correction prompt, opened from the top-bar gear; loads on open, saves/resets through `settingsAPI` |
 | `lib/supabaseClient.ts` | Browser Supabase client for **auth only** (not data access) |
 
 #### External services
@@ -151,10 +153,11 @@ Domain: `Session` → `CorrectionHistory` → `AIProposal`.
 | Table | Columns | Notes |
 |---|---|---|
 | `sessions` | `session_id`, `name`, `created_at`, `updated_at`, `correction_count`, `is_open`, `status` | `status` for soft-archive: `active` / `archived` |
-| `correction_histories` | `history_id`, `session_id`, `timestamp`, `original_text`, `instruction_prompt`, `target_text`, `combined_comment`, `selected_proposal_ids`, `custom_proposals`, `status`, `overall_comment`, `provider`, `client_job_id` | `status`: `pending` (generated, unconfirmed) / `confirmed` (after HITL save) / optional `failed` |
+| `correction_histories` | `history_id`, `session_id`, `timestamp`, `original_text`, `instruction_prompt`, `target_text`, `combined_comment`, `selected_proposal_ids`, `custom_proposals`, `status`, `overall_comment`, `provider`, `llm_provider`, `llm_model`, `client_job_id` | `status`: `pending` (generated, unconfirmed) / `confirmed` (after HITL save) / optional `failed`. `provider` is the transport (`api` / `webllm`); `llm_provider` (`gemini` / `groq` / `cloudflare` / `webllm`) and `llm_model` (exact model id) record which inference actually answered, since the cloud pools rotate models per request. Rows written before the provenance migration read back `NULL`. |
 | `ai_proposals` | `proposal_id`, `history_id`, `type`, `original_after_text`, `original_reason`, `modified_after_text`, `modified_reason`, `is_selected`, `is_modified`, `is_custom`, `selected_order`, `created_at` | Full field set aligned with app model; written on generation for pending histories |
+| `app_settings` | `setting_key`, `setting_value`, `updated_at`, `updated_by` | Global key/value settings shared by all allow-listed users (not per user, not per browser). Only key today: `correction_system_prompt`, the editable rules body of the AI correction prompt. **Row absence means "built-in default in effect"** rather than a copy of the default, so a later improvement to the default still reaches anyone who has not customized it — which is why reset deletes the row. |
 
-Schema migrations: `backend/supabase/migrations/001_initial_schema.sql`, `002_add_session_status.sql`, `003_align_ai_proposals_schema.sql`, `004_add_history_archive.sql`, `005_pending_suggestion_histories.sql`.
+Schema migrations: `backend/supabase/migrations/001_initial_schema.sql`, `002_add_session_status.sql`, `003_align_ai_proposals_schema.sql`, `004_add_history_archive.sql`, `005_pending_suggestion_histories.sql`, `006_app_settings.sql`, `007_history_llm_provenance.sql`.
 
 **Historical files**: `backend/db/app.db` is retained for reference (contains historical data from SQLite era) but no longer used by the application. SQLite migration scripts have been removed.
 
@@ -176,11 +179,18 @@ All business routes hang off a FastAPI `APIRouter` with `Depends(get_current_use
 | `GET /histories/{id}/proposals` | List proposals | same |
 | `POST /proposals` | Create proposal (AI or custom) | same |
 | `PUT /proposals/{id}` | Update proposal selection/edit flags | same |
+| `GET /settings/prompt` | Read the effective correction prompt: `{ systemPrompt, defaultSystemPrompt, isCustomized, updatedAt, updatedBy }` | same |
+| `PUT /settings/prompt` | Save `{ systemPrompt }` (trim-empty or >20,000 chars → 400); `updated_by` comes from the JWT email | same |
+| `DELETE /settings/prompt` | Reset to the built-in default by deleting the row; idempotent | same |
 | `GET /keepalive` | Supabase keep-alive endpoint for free-tier DB pause prevention | None |
 
 `POST /suggestions` takes `originalText` and `targetText`, plus an optional `exemplarTranslation` (模範回答訳文 — a known-good translation of the source). The optional field is additive: omitted, empty, or whitespace-only values produce exactly the previous SOURCE/TARGET-only prompt, so older clients stay compatible. When non-empty it is threaded into the prompt as reference calibration only, guarded by rules that forbid citing it as a correction reason or treating "differs from the exemplar" as a defect; it is not persisted to `correction_histories` / `ai_proposals`.
 
 AI suggestions are generated via `POST /suggestions` (Gemini → Groq → Cloudflare failover) or client-side WebLLM (offline mode toggle). On successful generation the frontend immediately persists a `pending` history + proposals; 「確定してコピー・保存」 promotes the same row to `confirmed` (no duplicate history junk). ~10s poll hydrates pending into Job Queue and confirmed into History across shared-DB clients.
+
+**Prompt resolution per generation.** The `/suggestions` handler reads `app_settings.correction_system_prompt` after the wall-clock deadline is established, with a short timeout and no cache, and passes it as `system_prompt_override` into `build_messages()`. The prompt is composed as *rules body* (the stored text, or the built-in `SYSTEM_PROMPT_BODY`) + *exemplar rules when an exemplar was pasted* + *`OUTPUT_CONTRACT`*. The contract — JSON-only instruction and the `格式：` schema line — is appended by code and is not editable, so an edit can lower critique quality but cannot break parsing. Any settings-read failure or timeout logs a warning and falls back to the default, so a settings outage degrades quality at worst, never availability. Offline WebLLM keeps its own built-in prompt (the settings dialog says so); the shared prompt is a cloud-path setting.
+
+**Provenance flow.** Gemini and Groq pick a model per request from an allow-list and may retry against a sibling model, so only the provider's rotation wrapper knows which model produced the text; those wrappers return `ProviderOutput(text, model)` and Cloudflare's plain string is paired with `CF_MODEL`. `generate_suggestions()` returns `llmProvider` / `llmModel` alongside `suggestions` / `overallComment` (including on salvage and retry paths, with the 503 error shape unchanged), `POST /suggestions` returns and logs them, and the frontend carries them onto the pending-history create so the round is attributable later. The 503 body keeps reporting pool sizes only.
 
 ### 5.4 Frontend surface (within system design)
 

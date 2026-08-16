@@ -89,10 +89,10 @@
 
 ## 13. Documentation
 
-- [ ] 13.1 Update `AGENTS.md`: editable prompt behavior and its code-owned contract, `app_settings` table, `llm_provider`/`llm_model` columns, new `/settings/prompt` endpoints, response fields, and the new critique rules in the prompt-maintenance section
-- [ ] 13.2 Update `docs/SYSTEM-DESIGN.md`: data model, API list, prompt resolution flow, provenance flow
-- [ ] 13.3 Update `docs/UI-DESIGN.md`: settings dialog pattern (new `Dialog` primitive) and the metadata caption token usage
-- [ ] 13.4 Run `openspec validate editable-prompt-model-log-and-critique-fix --strict`
+- [x] 13.1 Update `AGENTS.md`: editable prompt behavior and its code-owned contract, `app_settings` table, `llm_provider`/`llm_model` columns, new `/settings/prompt` endpoints, response fields, and the new critique rules in the prompt-maintenance section
+- [x] 13.2 Update `docs/SYSTEM-DESIGN.md`: data model, API list, prompt resolution flow, provenance flow
+- [x] 13.3 Update `docs/UI-DESIGN.md`: settings dialog pattern (new `Dialog` primitive) and the metadata caption token usage
+- [x] 13.4 Run `openspec validate editable-prompt-model-log-and-critique-fix --strict`
 
 ## 14. Manual verification
 
