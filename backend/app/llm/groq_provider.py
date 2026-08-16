@@ -5,12 +5,14 @@ Primary provider for fast inference (~1-3 seconds).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
 import httpx
 from typing import Any, Optional, List, Dict, Set
 
+from .budget import describe_skip, resolve_call_timeout
 from .provider_output import ProviderOutput
 from .key_pool import (
     acquire_groq,
@@ -70,6 +72,11 @@ DEFAULT_GROQ_MODEL = ALLOWED_GROQ_MODELS[0]
 # Epic-length bilingual corpora + ≥5 suggestions regularly need >10s;
 # keep bounded but avoid premature timeout→CF prose fallback.
 GROQ_TIMEOUT = 25.0  # seconds
+
+# Shortest slice worth spending on Groq. Measured 1-3s for this prompt, so Groq
+# stays worth attempting on a nearly spent budget — which is exactly why it must
+# not be crowded out by a slow primary (see budget.resolve_call_timeout).
+GROQ_MIN_SLICE_S = 5.0
 
 # Models whose default behavior on Groq is to emit a <think>...</think>
 # reasoning block INSIDE the message content before the final answer.
@@ -166,8 +173,14 @@ async def _call_groq_once(
     api_key: str,
     messages: list[dict[str, str]],
     resolved_model: str,
+    timeout: float = GROQ_TIMEOUT,
 ) -> str:
-    """Single Groq HTTP attempt with a concrete API key."""
+    """Single Groq HTTP attempt with a concrete API key.
+
+    `timeout` is a hard ceiling on the whole attempt (see
+    `gemini_provider._call_gemini_once` for why httpx's own timeout is not
+    sufficient on its own).
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -189,10 +202,13 @@ async def _call_groq_once(
         payload["reasoning_effort"] = "none"
 
     try:
-        async with httpx.AsyncClient(timeout=GROQ_TIMEOUT) as client:
-            response = await client.post(GROQ_API_URL, headers=headers, json=payload)
-    except httpx.TimeoutException as e:
-        raise GroqTimeoutError(f"Groq request timed out after {GROQ_TIMEOUT}s") from e
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await asyncio.wait_for(
+                client.post(GROQ_API_URL, headers=headers, json=payload),
+                timeout=timeout,
+            )
+    except (httpx.TimeoutException, asyncio.TimeoutError) as e:
+        raise GroqTimeoutError(f"Groq request timed out after {timeout:.1f}s") from e
     except httpx.RequestError as e:
         raise GroqError(f"Groq request failed: {e}") from e
 
@@ -225,7 +241,11 @@ async def _call_groq_once(
         raise GroqError(f"Unexpected Groq response format: {data}") from e
 
 
-async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None) -> str:
+async def call_groq(
+    messages: list[dict[str, str]],
+    model: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
+) -> str:
     """
     Call Groq API with the given messages.
 
@@ -236,6 +256,9 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
         messages: List of message dicts with role and content keys.
         model: Optional model id override. Defaults to get_groq_model()
             (the GROQ_MODEL env var, or DEFAULT_GROQ_MODEL if unset).
+        deadline_monotonic: Optional monotonic deadline bounding every attempt
+            in the key-pool loop, so N pooled keys cannot cost N times
+            GROQ_TIMEOUT and overrun the caller's request budget.
 
     Returns:
         The assistant's response content.
@@ -279,11 +302,25 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
                 status_code=429,
             )
 
+        timeout = resolve_call_timeout(
+            deadline_monotonic, GROQ_TIMEOUT, GROQ_MIN_SLICE_S
+        )
+        if timeout is None:
+            # A failure that already happened explains more than "and then we
+            # ran out of time", so it wins when both are true.
+            if last_error is not None:
+                raise last_error
+            raise GroqTimeoutError(
+                describe_skip("Groq", deadline_monotonic, GROQ_MIN_SLICE_S)
+            )
+
         attempted.add(cred.id)
         idx = credential_pool_index(pool, cred.id)
         cred_ref = format_credential_ref("groq", idx, cred.label)
         try:
-            return await _call_groq_once(cred.api_key, messages, resolved_model)
+            return await _call_groq_once(
+                cred.api_key, messages, resolved_model, timeout
+            )
         except GroqError as e:
             status = e.status_code
             if status in cooldown_codes:
@@ -302,7 +339,7 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
 
 async def call_groq_with_rotation(
     messages: list[dict[str, str]],
-    allow_model_retry: bool = True,
+    deadline_monotonic: Optional[float] = None,
 ) -> ProviderOutput:
     """
     Call Groq API with in-provider model rotation and bounded retry.
@@ -314,10 +351,10 @@ async def call_groq_with_rotation(
     pins a single model, rotation is disabled and this behaves exactly like
     a single call_groq() invocation — no retry, matching prior behavior.
 
-    `allow_model_retry=False` also disables that second attempt, which the
-    failover chain uses when the remaining wall-clock budget would not leave
-    room for the next provider afterwards
-    (`fix-suggestion-retry-budget-hard-failure`).
+    `deadline_monotonic` is the end of Groq's *phase*, which the failover chain
+    sets short of the request deadline by what Cloudflare needs to get a turn.
+    The sibling attempt is skipped exactly when it would starve that turn
+    (`fix-function-invocation-timeout`).
 
     Non-retriable GroqError (e.g. missing API key, malformed response) is
     raised immediately without a retry attempt, since a different model
@@ -335,12 +372,25 @@ async def call_groq_with_rotation(
 
     try:
         return ProviderOutput(
-            await call_groq(messages, model=first_model), first_model
+            await call_groq(
+                messages, model=first_model, deadline_monotonic=deadline_monotonic
+            ),
+            first_model,
         )
     except (GroqRateLimitError, GroqServerError, GroqTimeoutError, GroqJsonValidateError):
-        if len(models) < 2 or not allow_model_retry:
+        if len(models) < 2:
+            raise
+        if (
+            resolve_call_timeout(deadline_monotonic, GROQ_TIMEOUT, GROQ_MIN_SLICE_S)
+            is None
+        ):
+            # Too little of the phase left for a sibling model, and the first
+            # model's failure is the more useful error to report upward.
             raise
         second_model = models[1]
         return ProviderOutput(
-            await call_groq(messages, model=second_model), second_model
+            await call_groq(
+                messages, model=second_model, deadline_monotonic=deadline_monotonic
+            ),
+            second_model,
         )

@@ -61,9 +61,17 @@ Cloudflare attempts) — preferred for Chinese/JSON success, but truncated
 in practice by `SUGGESTIONS_WALL_CLOCK_S` so Vercel does not emit
 FUNCTION_INVOCATION_TIMEOUT (504) before we can return an app-level 503.
 The second in-provider model attempt is also skipped when the remaining budget
-would not leave the next provider room to answer: two Gemini timeouts alone
-cost 44s of the 55s budget, so keeping that attempt could push a request past
-Vercel's 60s limit *and* deny a fast, fresh secondary its turn.
+would not leave the next provider room to answer, so a slow primary cannot
+deny a fast, fresh secondary its turn.
+
+Every provider call is sized to the budget that is actually left rather than to
+its own static timeout (`budget.resolve_call_timeout`), and a provider whose
+remaining slice is shorter than its measured latency is skipped outright with a
+`timed_out` diagnostic. Without that sizing the budget bounded only *when* a
+call could start, not when it could finish: two Gemini timeouts (44s) followed
+by one Groq timeout (25s) passed every check here and still ran 69s into
+Vercel's 60s limit, which is the FUNCTION_INVOCATION_TIMEOUT this module now
+cannot produce (`fix-function-invocation-timeout`).
 """
 
 from __future__ import annotations
@@ -72,6 +80,13 @@ import logging
 import time
 from typing import NamedTuple, Optional
 
+from .budget import (
+    PLATFORM_MAX_DURATION_S,
+    PLATFORM_RESERVE_S,
+    describe_skip,
+    resolve_call_timeout,
+    seconds_left,
+)
 from .prompts import build_messages
 from .parser import (
     parse_model_output,
@@ -91,6 +106,7 @@ from .groq_provider import (
     call_groq_with_rotation,
     get_groq_api_key,
     get_groq_model,
+    GROQ_MIN_SLICE_S,
     GROQ_TIMEOUT,
     GroqError,
     GroqRateLimitError,
@@ -102,6 +118,7 @@ from .cloudflare_provider import (
     call_cloudflare,
     get_cloudflare_credentials,
     CloudflareError,
+    CF_MIN_SLICE_S,
     CF_MODEL,
     CF_TIMEOUT,
 )
@@ -109,6 +126,7 @@ from .gemini_provider import (
     call_gemini_with_rotation,
     get_gemini_api_key,
     get_gemini_model,
+    GEMINI_MIN_SLICE_S,
     GEMINI_TIMEOUT,
     GeminiError,
     GeminiRateLimitError,
@@ -137,7 +155,17 @@ MAX_RECOMMENDATION_RETRIES = 1
 
 # Soft stop before Vercel `api/index.py` maxDuration (60s) so we return
 # app-level 503 with pool diagnostics instead of opaque FUNCTION_INVOCATION_TIMEOUT.
-SUGGESTIONS_WALL_CLOCK_S = 55.0
+#
+#
+# Derived from the platform limit rather than hand-picked: the limit covers the
+# whole invocation while this budget only covers what the handler measures, so
+# the reserve is what makes "obeyed the budget" imply "was not killed at 60s".
+# The previous hand-picked 55s left 5s for cold start and transfer, and a
+# request that obeyed it exactly could still return an opaque 504
+# (`fix-function-invocation-timeout`). The reserve only ever costs time in
+# already-degraded requests: a healthy pass is Gemini (~7-16s) plus at most one
+# fast secondary.
+SUGGESTIONS_WALL_CLOCK_S = PLATFORM_MAX_DURATION_S - PLATFORM_RESERVE_S
 
 # Fraction of the previous pass's duration that must still fit in the budget
 # before another content retry is started, so a pass is not begun only to be
@@ -290,79 +318,85 @@ def _pool_sizes() -> tuple[int, int, int]:
     )
 
 
-def _raise_if_wall_clock_exceeded(
-    deadline_monotonic: float,
+def _later_provider_reserve(*, after: str) -> float:
+    """
+    Seconds the providers *after* `after` need to each get a turn.
+
+    Only their minimum useful slice is held back, not their full timeout: the
+    point is that a slow primary cannot starve a fast secondary (Groq answers in
+    1-3s), not that every provider is guaranteed its maximum.
+    """
+    reserve = 0.0
+    if after == "gemini" and get_groq_api_key():
+        reserve += GROQ_MIN_SLICE_S
+    if after in ("gemini", "groq"):
+        cf_account, cf_token = get_cloudflare_credentials()
+        if cf_account and cf_token:
+            reserve += CF_MIN_SLICE_S
+    return reserve
+
+
+def _phase_deadline(
+    deadline_monotonic: Optional[float],
     *,
-    gemini_error: Optional[str] = None,
-    groq_error: Optional[str] = None,
-    cf_error: Optional[str] = None,
-) -> None:
-    """Raise SuggestionsError when the soft wall-clock budget is exhausted."""
-    if time.monotonic() < deadline_monotonic:
-        return
-    gemini_pool_size, groq_pool_size, cf_pool_size = _pool_sizes()
-    logger.warning(
-        "Suggestions wall-clock budget exhausted (limit=%ss); "
-        "aborting before platform timeout. gemini_pool_size=%s "
-        "groq_pool_size=%s cf_pool_size=%s",
-        SUGGESTIONS_WALL_CLOCK_S,
-        gemini_pool_size,
-        groq_pool_size,
-        cf_pool_size,
-    )
-    raise SuggestionsError(
-        f"Suggestions generation exceeded wall-clock budget "
-        f"({SUGGESTIONS_WALL_CLOCK_S:.0f}s); aborting before platform timeout",
-        groq_error=groq_error,
-        cf_error=cf_error,
-        gemini_error=gemini_error,
-        timed_out=True,
-        groq_pool_size=groq_pool_size,
-        cf_pool_size=cf_pool_size,
-        gemini_pool_size=gemini_pool_size,
-    )
-
-
-def _budget_exhausted(deadline_monotonic: float) -> bool:
-    return time.monotonic() >= deadline_monotonic
-
-
-def _allow_model_retry(
-    deadline_monotonic: float,
-    own_timeout: float,
-    next_provider_timeout: float,
-) -> bool:
+    after: str,
+) -> Optional[float]:
     """
-    True if a second in-provider model attempt still leaves the next provider
-    in the chain room to answer inside the wall-clock budget.
+    Deadline for one provider's phase of the chain.
 
-    A fresh secondary provider is a better use of the remaining seconds than a
-    sibling model of the one that just failed.
+    Short of the request deadline by `_later_provider_reserve()`, so every
+    attempt inside the phase — first model, sibling model, each pooled key — is
+    clamped by `budget.resolve_call_timeout` to time that is genuinely this
+    provider's to spend. Holding the reserve here rather than predicting it
+    up-front is what makes the guarantee hold: the decision is re-taken against
+    the clock before each attempt, so a first attempt that overran cannot leave
+    the chain committed to a call the budget can no longer cover.
     """
-    remaining = deadline_monotonic - time.monotonic()
-    return remaining >= own_timeout + next_provider_timeout
+    if deadline_monotonic is None:
+        return None
+    return deadline_monotonic - _later_provider_reserve(after=after)
 
 
-def _next_provider_timeout(*, after_gemini: bool) -> float:
-    """Timeout of the next configured provider in the chain (0 if none)."""
-    if after_gemini and get_groq_api_key():
-        return GROQ_TIMEOUT
-    cf_account, cf_token = get_cloudflare_credentials()
-    return CF_TIMEOUT if (cf_account and cf_token) else 0.0
+class _PhaseBudget(NamedTuple):
+    """What one provider may spend, and whether the budget pinched it."""
+
+    deadline: Optional[float]
+    # None means "skip this provider": too little time left to be worth calling.
+    call_timeout: Optional[float]
+    # Skipped, or granted less than its own timeout. Either way the request was
+    # time-constrained, which is different advice for the user than bad keys.
+    constrained: bool
+
+
+def _phase_budget(
+    deadline_monotonic: Optional[float],
+    *,
+    after: str,
+    provider_timeout: float,
+    min_slice: float,
+) -> _PhaseBudget:
+    """Resolve one provider's share of the request budget."""
+    deadline = _phase_deadline(deadline_monotonic, after=after)
+    call_timeout = resolve_call_timeout(deadline, provider_timeout, min_slice)
+    return _PhaseBudget(
+        deadline=deadline,
+        call_timeout=call_timeout,
+        constrained=call_timeout is None or call_timeout < provider_timeout,
+    )
 
 
 def _can_afford_another_pass(
-    deadline_monotonic: float,
+    deadline_monotonic: Optional[float],
     last_pass_seconds: float,
 ) -> bool:
     """
     True if the wall-clock budget still covers a pass like the previous one.
 
     Measured rather than assumed: provider latency varies with prompt and model,
-    and the cost of guessing wrong is a pass that gets aborted partway and takes
+    and     the cost of guessing wrong is a pass that gets aborted partway and takes
     the earlier body down with it.
     """
-    remaining = deadline_monotonic - time.monotonic()
+    remaining = seconds_left(deadline_monotonic)
     return remaining >= max(last_pass_seconds, 0.0) * RETRY_BUDGET_MARGIN
 
 
@@ -380,7 +414,7 @@ def _unusable_reason(result: ParsedResponse) -> str:
 async def _generate_suggestions_once(
     messages: list[dict],
     *,
-    deadline_monotonic: float,
+    deadline_monotonic: Optional[float],
 ) -> GenerationOutcome:
     """
     Single generate+parse pass: Gemini → Groq → Cloudflare on network
@@ -400,6 +434,7 @@ async def _generate_suggestions_once(
     cf_error: Optional[str] = None
     gemini_error: Optional[str] = None
     best_soft: Optional[GenerationOutcome] = None
+    budget_constrained = False
     gemini_pool_size, groq_pool_size, cf_pool_size = _pool_sizes()
     logger.info(
         "LLM credential pools: gemini_pool_size=%s groq_pool_size=%s cf_pool_size=%s",
@@ -409,18 +444,31 @@ async def _generate_suggestions_once(
     )
 
     gemini_key = get_gemini_api_key()
-    if gemini_key:
-        _raise_if_wall_clock_exceeded(deadline_monotonic)
+    gemini_budget = _phase_budget(
+        deadline_monotonic,
+        after="gemini",
+        provider_timeout=GEMINI_TIMEOUT,
+        min_slice=GEMINI_MIN_SLICE_S,
+    )
+    if not gemini_key:
+        logger.info("Gemini not configured, trying Groq directly")
+        gemini_error = "Gemini API key not configured"
+    elif gemini_budget.call_timeout is None:
+        # Skipped rather than started-and-clamped: a call shorter than the
+        # model's own latency would time out and spend seconds Groq still needs.
+        gemini_error = describe_skip(
+            "Gemini", gemini_budget.deadline, GEMINI_MIN_SLICE_S
+        )
+        budget_constrained = True
+        logger.warning(gemini_error)
+    else:
+        budget_constrained = budget_constrained or gemini_budget.constrained
         try:
             logger.info("Attempting Gemini inference...")
             raw_output, gemini_model = _text_and_model(
                 await call_gemini_with_rotation(
                     messages,
-                    allow_model_retry=_allow_model_retry(
-                        deadline_monotonic,
-                        GEMINI_TIMEOUT,
-                        _next_provider_timeout(after_gemini=True),
-                    ),
+                    deadline_monotonic=gemini_budget.deadline,
                 ),
                 get_gemini_model(),
             )
@@ -464,32 +512,33 @@ async def _generate_suggestions_once(
         except GeminiError as e:
             logger.error(f"Gemini failed with non-retriable error: {e}")
             gemini_error = str(e)
-    else:
-        logger.info("Gemini not configured, trying Groq directly")
-        gemini_error = "Gemini API key not configured"
 
     groq_key = get_groq_api_key()
-    if groq_key:
-        if best_soft is not None and _budget_exhausted(deadline_monotonic):
-            logger.warning(
-                "Wall-clock budget exhausted before Groq salvage; returning the "
-                "soft body Gemini already produced"
-            )
+    groq_budget = _phase_budget(
+        deadline_monotonic,
+        after="groq",
+        provider_timeout=GROQ_TIMEOUT,
+        min_slice=GROQ_MIN_SLICE_S,
+    )
+    if not groq_key:
+        logger.info("Groq not configured, trying Cloudflare directly")
+        groq_error = "Groq API key not configured"
+    elif groq_budget.call_timeout is None:
+        groq_error = describe_skip("Groq", groq_budget.deadline, GROQ_MIN_SLICE_S)
+        budget_constrained = True
+        logger.warning(groq_error)
+        if best_soft is not None:
+            # Nothing later in the chain can fit either, so stop here with the
+            # body already in hand rather than walking to the final raise.
             return best_soft
-        _raise_if_wall_clock_exceeded(
-            deadline_monotonic,
-            gemini_error=gemini_error,
-        )
+    else:
+        budget_constrained = budget_constrained or groq_budget.constrained
         try:
             logger.info("Attempting Groq inference...")
             raw_output, groq_model = _text_and_model(
                 await call_groq_with_rotation(
                     messages,
-                    allow_model_retry=_allow_model_retry(
-                        deadline_monotonic,
-                        GROQ_TIMEOUT,
-                        _next_provider_timeout(after_gemini=False),
-                    ),
+                    deadline_monotonic=groq_budget.deadline,
                 ),
                 get_groq_model(),
             )
@@ -530,26 +579,29 @@ async def _generate_suggestions_once(
         except GroqError as e:
             logger.error(f"Groq failed with non-retriable error: {e}")
             groq_error = str(e)
-    else:
-        logger.info("Groq not configured, trying Cloudflare directly")
-        groq_error = "Groq API key not configured"
 
     cf_account, cf_token = get_cloudflare_credentials()
-    if cf_account and cf_token:
-        if best_soft is not None and _budget_exhausted(deadline_monotonic):
-            logger.warning(
-                "Wall-clock budget exhausted before Cloudflare salvage; "
-                "returning the best soft body already produced"
-            )
-            return best_soft
-        _raise_if_wall_clock_exceeded(
-            deadline_monotonic,
-            gemini_error=gemini_error,
-            groq_error=groq_error,
-        )
+    cf_configured = bool(cf_account and cf_token)
+    # Last in the chain, so its phase is the whole remaining request budget.
+    cf_budget = _phase_budget(
+        deadline_monotonic,
+        after="cloudflare",
+        provider_timeout=CF_TIMEOUT,
+        min_slice=CF_MIN_SLICE_S,
+    )
+    if not cf_configured:
+        cf_error = "Cloudflare credentials not configured"
+    elif cf_budget.call_timeout is None:
+        cf_error = describe_skip("Cloudflare", cf_budget.deadline, CF_MIN_SLICE_S)
+        budget_constrained = True
+        logger.warning(cf_error)
+    else:
+        budget_constrained = budget_constrained or cf_budget.constrained
         try:
             logger.info("Attempting Cloudflare Workers AI inference...")
-            raw_output = await call_cloudflare(messages)
+            raw_output = await call_cloudflare(
+                messages, deadline_monotonic=cf_budget.deadline
+            )
             logger.info(
                 f"Cloudflare inference successful, raw output length: {len(raw_output)}"
             )
@@ -569,8 +621,6 @@ async def _generate_suggestions_once(
         except CloudflareError as e:
             logger.error(f"Cloudflare failed: {e}")
             cf_error = str(e)
-    else:
-        cf_error = "Cloudflare credentials not configured"
 
     if best_soft is not None:
         # Soft bodies from earlier providers: let outer retry nudge language/JSON.
@@ -581,17 +631,32 @@ async def _generate_suggestions_once(
         or _error_looks_rate_limited(groq_error)
         or _error_looks_rate_limited(cf_error)
     )
-    message = (
-        "All LLM providers rate-limited or quota exhausted"
-        if rate_limited
-        else "All LLM providers failed"
-    )
+    if rate_limited:
+        message = "All LLM providers rate-limited or quota exhausted"
+    elif budget_constrained:
+        message = (
+            f"Suggestions generation ran out of its "
+            f"{SUGGESTIONS_WALL_CLOCK_S:.0f}s wall-clock budget before a "
+            f"provider answered"
+        )
+        logger.warning(
+            "%s. gemini_pool_size=%s groq_pool_size=%s cf_pool_size=%s",
+            message,
+            gemini_pool_size,
+            groq_pool_size,
+            cf_pool_size,
+        )
+    else:
+        message = "All LLM providers failed"
     raise SuggestionsError(
         message,
         groq_error=groq_error,
         cf_error=cf_error,
         gemini_error=gemini_error,
         rate_limited=rate_limited,
+        # Both can be true — a rate-limited primary that also ate the budget.
+        # The flags are reported as facts; the client picks which advice leads.
+        timed_out=budget_constrained,
         groq_pool_size=groq_pool_size,
         cf_pool_size=cf_pool_size,
         gemini_pool_size=gemini_pool_size,
@@ -618,6 +683,7 @@ async def generate_suggestions(
     target_text: str,
     exemplar_translation: Optional[str] = None,
     system_prompt_override: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
 ) -> dict:
     """
     Generate AI correction suggestions for the given text.
@@ -637,6 +703,11 @@ async def generate_suggestions(
             `prompts.SYSTEM_PROMPT_BODY`. The output contract is appended by
             `build_system_prompt()` either way, so an override cannot break
             the JSON response shape.
+        deadline_monotonic: Monotonic instant by which this call must return.
+            Callers serving an HTTP request should pass a deadline measured
+            from when the request arrived, so work done before generation
+            (auth, the stored-prompt lookup) counts against the same platform
+            limit. Defaults to SUGGESTIONS_WALL_CLOCK_S from now.
 
     Returns:
         The parsed suggestions and overall comment, plus `llmProvider` and
@@ -673,7 +744,8 @@ async def generate_suggestions(
     recommendation_failed_last = False
     recommendation_failures = 0
     last_pass_seconds = 0.0
-    deadline_monotonic = time.monotonic() + SUGGESTIONS_WALL_CLOCK_S
+    if deadline_monotonic is None:
+        deadline_monotonic = time.monotonic() + SUGGESTIONS_WALL_CLOCK_S
     for attempt in range(1, MAX_PARSE_RETRY_ATTEMPTS + 1):
         if attempt > 1 and not _can_afford_another_pass(
             deadline_monotonic, last_pass_seconds
@@ -683,7 +755,7 @@ async def generate_suggestions(
                 "previous pass took; returning the best body already generated",
                 attempt,
                 MAX_PARSE_RETRY_ATTEMPTS,
-                deadline_monotonic - time.monotonic(),
+                seconds_left(deadline_monotonic),
                 last_pass_seconds,
             )
             break

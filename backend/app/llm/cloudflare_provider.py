@@ -5,11 +5,13 @@ Fallback provider when Groq is unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import httpx
 from typing import Any, Optional, Tuple, List, Dict, Set
 
+from .budget import describe_skip, resolve_call_timeout
 from .key_pool import (
     acquire_cloudflare,
     cooldown_status_codes,
@@ -27,6 +29,11 @@ logger = logging.getLogger(__name__)
 CF_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # Tertiary path: keep short so Gemini→Groq→CF still fits Vercel maxDuration.
 CF_TIMEOUT = 20.0  # seconds
+
+# Shortest slice worth spending on Cloudflare. Measured 2-5s for this prompt;
+# as the last provider in the chain it is usually the one running on whatever
+# budget the primary and secondary left behind.
+CF_MIN_SLICE_S = 6.0
 
 
 class CloudflareError(Exception):
@@ -67,8 +74,14 @@ async def _call_cloudflare_once(
     account_id: str,
     api_token: str,
     messages: list[dict[str, str]],
+    timeout: float = CF_TIMEOUT,
 ) -> str:
-    """Single Cloudflare Workers AI HTTP attempt."""
+    """Single Cloudflare Workers AI HTTP attempt.
+
+    `timeout` is a hard ceiling on the whole attempt (see
+    `gemini_provider._call_gemini_once` for why httpx's own timeout is not
+    sufficient on its own).
+    """
     api_url = get_cloudflare_api_url(account_id)
 
     headers = {
@@ -97,10 +110,15 @@ async def _call_cloudflare_once(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=CF_TIMEOUT) as client:
-            response = await client.post(api_url, headers=headers, json=payload)
-    except httpx.TimeoutException as e:
-        raise CloudflareTimeoutError(f"Cloudflare request timed out after {CF_TIMEOUT}s") from e
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await asyncio.wait_for(
+                client.post(api_url, headers=headers, json=payload),
+                timeout=timeout,
+            )
+    except (httpx.TimeoutException, asyncio.TimeoutError) as e:
+        raise CloudflareTimeoutError(
+            f"Cloudflare request timed out after {timeout:.1f}s"
+        ) from e
     except httpx.RequestError as e:
         raise CloudflareError(f"Cloudflare request failed: {e}") from e
 
@@ -140,7 +158,10 @@ async def _call_cloudflare_once(
     )
 
 
-async def call_cloudflare(messages: list[dict[str, str]]) -> str:
+async def call_cloudflare(
+    messages: list[dict[str, str]],
+    deadline_monotonic: Optional[float] = None,
+) -> str:
     """
     Call Cloudflare Workers AI API with the given messages.
 
@@ -149,6 +170,9 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
 
     Args:
         messages: List of message dicts with role and content keys.
+        deadline_monotonic: Optional monotonic deadline bounding every attempt
+            in the credential-pool loop, so N pooled pairs cannot cost N times
+            CF_TIMEOUT and overrun the caller's request budget.
 
     Returns:
         The assistant's response content.
@@ -185,12 +209,22 @@ async def call_cloudflare(messages: list[dict[str, str]]) -> str:
                 status_code=429,
             )
 
+        timeout = resolve_call_timeout(deadline_monotonic, CF_TIMEOUT, CF_MIN_SLICE_S)
+        if timeout is None:
+            # A failure that already happened explains more than "and then we
+            # ran out of time", so it wins when both are true.
+            if last_error is not None:
+                raise last_error
+            raise CloudflareTimeoutError(
+                describe_skip("Cloudflare", deadline_monotonic, CF_MIN_SLICE_S)
+            )
+
         attempted.add(cred.id)
         idx = credential_pool_index(pool, cred.id)
         cred_ref = format_credential_ref("cloudflare", idx, cred.label)
         try:
             return await _call_cloudflare_once(
-                cred.account_id, cred.api_token, messages
+                cred.account_id, cred.api_token, messages, timeout
             )
         except CloudflareError as e:
             status = e.status_code

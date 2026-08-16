@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from uuid import uuid4
@@ -378,10 +379,19 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
     WebLLM remains available on frontend as offline fallback.
     """
     from .llm import generate_suggestions
-    from .llm.suggestions import SuggestionsError, NoProvidersConfiguredError
+    from .llm.suggestions import (
+        SUGGESTIONS_WALL_CLOCK_S,
+        SuggestionsError,
+        NoProvidersConfiguredError,
+    )
     from .prompt_settings import resolve_system_prompt_override
     from fastapi.responses import JSONResponse
-    
+
+    # Measured from request entry, not from the first provider call: the stored
+    # prompt lookup runs before generation and its seconds count against the
+    # same Vercel maxDuration as the LLM calls do.
+    deadline_monotonic = time.monotonic() + SUGGESTIONS_WALL_CLOCK_S
+
     original_text = payload.get("originalText", "")
     target_text = payload.get("targetText", "")
     # Optional 模範回答訳文: reference calibration only, never required.
@@ -401,6 +411,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
             target_text,
             exemplar_translation,
             system_prompt_override,
+            deadline_monotonic=deadline_monotonic,
         )
         return result
     except NoProvidersConfiguredError as e:

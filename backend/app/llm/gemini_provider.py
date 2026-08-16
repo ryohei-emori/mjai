@@ -5,6 +5,7 @@ Primary cloud provider for suggestion generation (before Groq / Cloudflare).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import httpx
 
+from .budget import describe_skip, resolve_call_timeout
 from .provider_output import ProviderOutput
 from .key_pool import (
     acquire_gemini,
@@ -43,6 +45,12 @@ DEFAULT_GEMINI_MODEL = ALLOWED_GEMINI_MODELS[0]
 # Keep under Vercel api/index.py maxDuration (60s) and suggestions wall-clock
 # budget so a hung primary call cannot alone cause FUNCTION_INVOCATION_TIMEOUT.
 GEMINI_TIMEOUT = 22.0  # seconds
+
+# Shortest slice worth spending on Gemini. Live probes with thinkingLevel=low
+# measured 7.2-13.8s for a homework-length critique, so a call given less than
+# this is a timeout with extra steps — and the seconds it burns are seconds
+# Groq (1-3s) or Cloudflare (2-5s) could still have used.
+GEMINI_MIN_SLICE_S = 10.0
 
 # Both pooled models advertise outputTokenLimit=65536, so this ceiling cannot
 # be rejected as out-of-range. Live probes consume 1.2k-2.1k completion tokens
@@ -222,8 +230,15 @@ async def _call_gemini_once(
     api_key: str,
     messages: list[dict[str, str]],
     resolved_model: str,
+    timeout: float = GEMINI_TIMEOUT,
 ) -> str:
-    """Single Gemini HTTP attempt with a concrete API key."""
+    """Single Gemini HTTP attempt with a concrete API key.
+
+    `timeout` is a hard ceiling on the whole attempt, enforced with
+    `asyncio.wait_for` rather than left to httpx: httpx applies its timeout per
+    operation, so connect and read can each take the full value and a call sized
+    to the remaining request budget could still overshoot it.
+    """
     url = f"{GEMINI_API_BASE}/{resolved_model}:generateContent"
     headers = {
         "Content-Type": "application/json",
@@ -232,11 +247,14 @@ async def _call_gemini_once(
     payload = _messages_to_gemini_payload(messages)
 
     try:
-        async with httpx.AsyncClient(timeout=GEMINI_TIMEOUT) as client:
-            response = await client.post(url, headers=headers, json=payload)
-    except httpx.TimeoutException as e:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await asyncio.wait_for(
+                client.post(url, headers=headers, json=payload),
+                timeout=timeout,
+            )
+    except (httpx.TimeoutException, asyncio.TimeoutError) as e:
         raise GeminiTimeoutError(
-            f"Gemini request timed out after {GEMINI_TIMEOUT}s"
+            f"Gemini request timed out after {timeout:.1f}s"
         ) from e
     except httpx.RequestError as e:
         raise GeminiError(f"Gemini request failed: {e}") from e
@@ -274,12 +292,19 @@ async def _call_gemini_once(
         raise GeminiError(f"Unexpected Gemini response format: {data}") from e
 
 
-async def call_gemini(messages: list[dict[str, str]], model: Optional[str] = None) -> str:
+async def call_gemini(
+    messages: list[dict[str, str]],
+    model: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
+) -> str:
     """
     Call Gemini generateContent with the given messages.
 
     Uses the API key pool: on 401/403/429, cools down the failing key and
     retries with another eligible key (bounded by pool size).
+
+    `deadline_monotonic` bounds every attempt in that loop, so N pooled keys
+    cannot cost N times GEMINI_TIMEOUT and overrun the caller's request budget.
     """
     if not is_gemini_configured():
         raise GeminiError("GEMINI_API_KEY not configured")
@@ -310,11 +335,25 @@ async def call_gemini(messages: list[dict[str, str]], model: Optional[str] = Non
                 status_code=429,
             )
 
+        timeout = resolve_call_timeout(
+            deadline_monotonic, GEMINI_TIMEOUT, GEMINI_MIN_SLICE_S
+        )
+        if timeout is None:
+            # A failure that already happened explains more than "and then we
+            # ran out of time", so it wins when both are true.
+            if last_error is not None:
+                raise last_error
+            raise GeminiTimeoutError(
+                describe_skip("Gemini", deadline_monotonic, GEMINI_MIN_SLICE_S)
+            )
+
         attempted.add(cred.id)
         idx = credential_pool_index(pool, cred.id)
         cred_ref = format_credential_ref("gemini", idx, cred.label)
         try:
-            return await _call_gemini_once(cred.api_key, messages, resolved_model)
+            return await _call_gemini_once(
+                cred.api_key, messages, resolved_model, timeout
+            )
         except GeminiError as e:
             status = e.status_code
             if status in cooldown_codes:
@@ -333,7 +372,7 @@ async def call_gemini(messages: list[dict[str, str]], model: Optional[str] = Non
 
 async def call_gemini_with_rotation(
     messages: list[dict[str, str]],
-    allow_model_retry: bool = True,
+    deadline_monotonic: Optional[float] = None,
 ) -> ProviderOutput:
     """
     Call Gemini with in-provider model rotation and bounded retry.
@@ -342,11 +381,12 @@ async def call_gemini_with_rotation(
     models from ALLOWED_GEMINI_MODELS. When GEMINI_MODEL pins a model,
     behaves like a single call_gemini() with no model retry.
 
-    `allow_model_retry=False` also disables the second attempt. The failover
-    chain passes that when the remaining wall-clock budget would not leave room
-    for Groq/Cloudflare afterwards: two Gemini timeouts alone cost 44s of a 55s
-    budget, which used to push the whole request past Vercel's 60s function
-    limit (`fix-suggestion-retry-budget-hard-failure`).
+    `deadline_monotonic` is the end of Gemini's *phase*, which the failover
+    chain sets short of the request deadline by what Groq and Cloudflare need to
+    get a turn. The sibling attempt is therefore skipped exactly when it would
+    starve them — decided from the time the first attempt actually spent, which
+    a flag computed before that attempt could not know
+    (`fix-function-invocation-timeout`).
 
     Returns the raw text together with the model that produced it — after a
     retry that is the second model, not the first one attempted.
@@ -356,12 +396,27 @@ async def call_gemini_with_rotation(
 
     try:
         return ProviderOutput(
-            await call_gemini(messages, model=first_model), first_model
+            await call_gemini(
+                messages, model=first_model, deadline_monotonic=deadline_monotonic
+            ),
+            first_model,
         )
     except (GeminiRateLimitError, GeminiServerError, GeminiTimeoutError):
-        if len(models) < 2 or not allow_model_retry:
+        if len(models) < 2:
+            raise
+        if (
+            resolve_call_timeout(
+                deadline_monotonic, GEMINI_TIMEOUT, GEMINI_MIN_SLICE_S
+            )
+            is None
+        ):
+            # Too little of the phase left for a sibling model, and the first
+            # model's failure is the more useful error to report upward.
             raise
         second_model = models[1]
         return ProviderOutput(
-            await call_gemini(messages, model=second_model), second_model
+            await call_gemini(
+                messages, model=second_model, deadline_monotonic=deadline_monotonic
+            ),
+            second_model,
         )

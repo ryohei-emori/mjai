@@ -10,11 +10,28 @@ logger = logging.getLogger(__name__)
 # Supabase Postgres接続設定
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# asyncpg's default connect timeout is 60s — exactly Vercel's api/index.py
+# maxDuration, so an unreachable or paused Supabase project turned every DB
+# route into an opaque FUNCTION_INVOCATION_TIMEOUT (504) with nothing in the
+# response to say the database was the problem. Bounded well below that limit,
+# the same outage surfaces as a fast, legible error instead
+# (`fix-function-invocation-timeout`). A pooler connect is normally sub-second.
+DB_CONNECT_TIMEOUT_S = 8.0
+
+# Ceiling for a single statement. The heaviest query here is the session list
+# aggregate; anything slower than this is a stalled connection, not a slow query.
+DB_COMMAND_TIMEOUT_S = 15.0
+
 @asynccontextmanager
 async def get_db():
     # statement_cache_size=0 is required for Supabase's PgBouncer transaction
     # pooler (port 6543); otherwise asyncpg hits DuplicatePreparedStatementError.
-    conn = await asyncpg.connect(DATABASE_URL, statement_cache_size=0)
+    conn = await asyncpg.connect(
+        DATABASE_URL,
+        statement_cache_size=0,
+        timeout=DB_CONNECT_TIMEOUT_S,
+        command_timeout=DB_COMMAND_TIMEOUT_S,
+    )
     try:
         yield conn
     finally:

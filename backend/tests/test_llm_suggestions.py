@@ -20,7 +20,12 @@ from app.llm.suggestions import (
 )
 from app.llm.groq_provider import GroqError, GroqRateLimitError, GroqServerError, GroqTimeoutError
 from app.llm.cloudflare_provider import CloudflareError
-from app.llm.gemini_provider import GeminiError, GeminiRateLimitError, GEMINI_TIMEOUT
+from app.llm.gemini_provider import (
+    GeminiError,
+    GeminiRateLimitError,
+    GeminiServerError,
+    GEMINI_TIMEOUT,
+)
 
 
 # overallComment/reason ("コメント"/"全体講評") are intentionally pure
@@ -550,7 +555,7 @@ class TestEmptyGeminiSkipsAndWallClock:
 
         async def gemini_burns_the_budget(*args, **kwargs):
             clock.advance(100.0)
-            raise GeminiRateLimitError("Gemini 429", status_code=429)
+            raise GeminiServerError("Gemini 502", status_code=502)
 
         with patch.dict(
             "os.environ",
@@ -574,6 +579,34 @@ class TestEmptyGeminiSkipsAndWallClock:
                         assert "wall-clock" in str(exc_info.value).lower()
                         assert exc_info.value.timed_out is True
                         mock_groq.assert_not_called()
+
+    async def test_rate_limited_primary_that_also_ate_the_budget_reports_both(self):
+        """Both facts are reported; the client decides which advice leads."""
+        clock = FakeClock()
+
+        async def gemini_429_burns_the_budget(*args, **kwargs):
+            clock.advance(100.0)
+            raise GeminiRateLimitError("Gemini 429", status_code=429)
+
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_API_KEY": "gem-key", "GROQ_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch(
+                "app.llm.suggestions.call_gemini_with_rotation",
+                new=gemini_429_burns_the_budget,
+            ):
+                with patch(
+                    "app.llm.suggestions.call_groq_with_rotation",
+                    new_callable=AsyncMock,
+                ):
+                    with patch("app.llm.suggestions.time.monotonic", clock):
+                        with pytest.raises(SuggestionsError) as exc_info:
+                            await generate_suggestions("原文", "訳文")
+
+        assert exc_info.value.rate_limited is True
+        assert exc_info.value.timed_out is True
 
 
 # 15-iteration enforcement harness (enforce-chinese-suggestion-comments).
@@ -1038,49 +1071,49 @@ class TestSoftBodySurvivesRetryFailure:
         assert result["llmProvider"] == "gemini"
 
 
-class TestModelRetryBudgetGate:
+class TestProviderPhaseBudgets:
     """
-    A second model of the provider that just failed must not crowd out the
-    next provider: two Gemini timeouts alone cost 44s of the 55s budget.
+    A slow provider must not consume the turn of the ones after it: two Gemini
+    timeouts alone cost 44s, enough to starve Groq out of a 45s budget.
     """
 
-    def test_second_model_allowed_with_a_full_budget(self):
-        from app.llm.suggestions import _allow_model_retry
-
-        deadline = __import__("time").monotonic() + SUGGESTIONS_WALL_CLOCK_S
-        assert _allow_model_retry(deadline, 5.0, 5.0) is True
-
-    def test_second_model_refused_when_the_next_provider_would_not_fit(self):
-        from app.llm.groq_provider import GROQ_TIMEOUT
-        from app.llm.suggestions import _allow_model_retry
-
-        # One Gemini timeout already spent out of the budget.
-        deadline = (
-            __import__("time").monotonic()
-            + SUGGESTIONS_WALL_CLOCK_S
-            - GEMINI_TIMEOUT
-        )
-        assert _allow_model_retry(deadline, GEMINI_TIMEOUT, GROQ_TIMEOUT) is False
-
-    def test_next_provider_timeout_reflects_what_is_configured(self):
-        from app.llm.cloudflare_provider import CF_TIMEOUT
-        from app.llm.groq_provider import GROQ_TIMEOUT
-        from app.llm.suggestions import _next_provider_timeout
-
-        with patch.dict("os.environ", {"GROQ_API_KEY": "k"}, clear=True):
-            assert _next_provider_timeout(after_gemini=True) == GROQ_TIMEOUT
-            # Nothing is configured after Groq, so its own retry costs nobody.
-            assert _next_provider_timeout(after_gemini=False) == 0.0
+    def test_reserve_covers_only_the_providers_still_to_come(self):
+        from app.llm.cloudflare_provider import CF_MIN_SLICE_S
+        from app.llm.groq_provider import GROQ_MIN_SLICE_S
+        from app.llm.suggestions import _later_provider_reserve
 
         with patch.dict(
             "os.environ",
-            {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "t"},
+            {
+                "GROQ_API_KEY": "k",
+                "CLOUDFLARE_ACCOUNT_ID": "a",
+                "CLOUDFLARE_API_TOKEN": "t",
+            },
             clear=True,
         ):
-            assert _next_provider_timeout(after_gemini=False) == CF_TIMEOUT
+            assert _later_provider_reserve(after="gemini") == (
+                GROQ_MIN_SLICE_S + CF_MIN_SLICE_S
+            )
+            assert _later_provider_reserve(after="groq") == CF_MIN_SLICE_S
+            # Last in the chain: nothing is waiting behind it.
+            assert _later_provider_reserve(after="cloudflare") == 0.0
+
+    def test_unconfigured_providers_are_not_reserved_for(self):
+        from app.llm.suggestions import _later_provider_reserve
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "g"}, clear=True):
+            assert _later_provider_reserve(after="gemini") == 0.0
+
+    def test_phase_deadline_is_short_of_the_request_deadline(self):
+        from app.llm.groq_provider import GROQ_MIN_SLICE_S
+        from app.llm.suggestions import _phase_deadline
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "k"}, clear=True):
+            assert _phase_deadline(100.0, after="gemini") == 100.0 - GROQ_MIN_SLICE_S
+            assert _phase_deadline(None, after="gemini") is None
 
     @pytest.mark.asyncio
-    async def test_chain_passes_the_gate_to_the_provider(self):
+    async def test_chain_hands_its_phase_deadline_to_the_provider(self):
         with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
             with patch(
                 "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
@@ -1088,7 +1121,7 @@ class TestModelRetryBudgetGate:
                 mock_groq.return_value = VALID_LLM_RESPONSE
                 await generate_suggestions("原文", "訳文")
 
-        assert mock_groq.call_args.kwargs["allow_model_retry"] is True
+        assert mock_groq.call_args.kwargs["deadline_monotonic"] is not None
 
 
 @pytest.mark.integration
