@@ -152,7 +152,19 @@ See `proposal.md` for motivation. Constraints that shape the approach:
 - Frontend `npm test`: 266 tests across 21 suites green, including the settings-dialog, `settingsAPI` request-shape, WebLLM-clause, and model-caption/provenance-persistence tests. `npm run lint` reports only the pre-existing `no-page-custom-font` warning; `tsc --noEmit` is clean.
 - Scorer of `backend/scripts/live_critique_quality.py` checked offline against two synthetic critiques: the reported failing output scores `chinese_forms=3` (对比睡眠数据 / 理论上 / 实现), `source_items=1` (完成了逐渐独特的进化 — an excerpt from the Chinese source, not the Japanese target), `synonym_only=3`, `numeral_caught=false`; a compliant critique scores zero on all three and `numeral_caught=true`. So the metrics do discriminate the reported failure mode before any live call is made.
 
-**Live (blocked in this environment — no provider credentials):**
+**End-to-end against a real Postgres (run in this environment):** a local Postgres 16 was created, all seven migrations applied in order (006 and 007 re-applied to confirm idempotence), and the FastAPI app run against it with a self-minted HS256 JWT:
+
+| Check | Result |
+|---|---|
+| `GET /settings/prompt` with no row | `isCustomized: false`, `systemPrompt == defaultSystemPrompt`, attribution `null`, and the `格式：` contract line absent from the editable body (2,694 chars) |
+| `PUT /settings/prompt` | Trims, stores, returns `isCustomized: true` with `updatedBy` from the JWT email and `updatedAt` set; a subsequent independent request reads the stored text back, which is what makes another browser session see it without re-entry |
+| Validation / auth | Whitespace-only → 400 `systemPrompt must not be empty`; 20,001 chars → 400 stating the limit; no token → 401; non-allow-listed email → 403 |
+| Override reaches the prompt | `resolve_system_prompt_override()` returned the stored body, `build_messages()` composed it as the body with `OUTPUT_CONTRACT` still appended and the default body gone, and the no-override composition stayed byte-identical to `SYSTEM_PROMPT` |
+| `DELETE /settings/prompt` | Default restored, attribution back to `null`, row count 0, second delete also 200 (idempotent) |
+| Provenance round trip | `POST /histories` with `llmProvider: gemini` / `llmModel: gemini-3.7-flash` reads back on the session's history list; `PUT /histories/{id}` promoting `pending` → `confirmed` without mentioning provenance preserved both values |
+| No-keys behaviour | `POST /suggestions` still returns the unchanged 503 shape (`error` / `fallback_available` / `message`) |
+
+**Live LLM probe (blocked in this environment — no provider credentials):**
 
 `GEMINI_API_KEY(S)` / `GROQ_API_KEY(S)` are not present and there is no `conf/.env`, so the probe exits 2 (`GEMINI_API_KEY(S) not configured; skipping probe`) rather than producing numbers. Tasks 12.2–12.4 (baseline-vs-current replicates, latency/count budget check, and the custom-prompt override probe) therefore stay open and must be run by an operator who has keys:
 

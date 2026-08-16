@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add `backend/supabase/migrations/006_app_settings.sql`: `app_settings(setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_by TEXT)` with `CREATE TABLE IF NOT EXISTS`, RLS enabled and the same permissive policy name as existing tables, plus `COMMENT ON TABLE/COLUMN` describing the `correction_system_prompt` key
 - [x] 1.2 Add `backend/supabase/migrations/007_history_llm_provenance.sql`: `ADD COLUMN IF NOT EXISTS llm_provider TEXT` and `llm_model TEXT` on `correction_histories`, with column comments distinguishing them from the existing transport-level `provider`
-- [ ] 1.3 Apply both migrations to the shared Supabase project (they are additive, so current production code keeps working) and note in the change that this precedes deploy
+- [ ] 1.3 Apply both migrations to the shared Supabase project (they are additive, so current production code keeps working) and note in the change that this precedes deploy — **operator step: no shared-Supabase credentials here. Both migrations were applied and re-applied against a local Postgres 16 to prove they are valid and idempotent (see `design.md` Validation Results); Migration Plan step 1 still has to run against the shared project before deploy**
 
 ## 2. Backend prompt settings store and API
 
@@ -96,7 +96,7 @@
 
 ## 14. Manual verification
 
-- [ ] 14.1 Generate once: caption shows the model, history row stores provider and model, badge shows クラウドAPI
-- [ ] 14.2 Save a prompt edit, generate again, confirm it took effect without redeploy; reset and confirm the default returns
-- [ ] 14.3 Confirm a second browser session sees the saved prompt without re-entry
-- [ ] 14.4 Re-run the reported passage and confirm no critique hands back a Chinese form as the correction, none critiques the source text, and synonym-only items are gone
+- [x] 14.1 Generate once: caption shows the model, history row stores provider and model, badge shows クラウドAPI — verified in two halves: the history round trip against a real Postgres, and the caption plus クラウドAPI badge in `modelProvenance.test.tsx` driving the real generation path with a mocked API
+- [x] 14.2 Save a prompt edit, generate again, confirm it took effect without redeploy; reset and confirm the default returns — verified against a real Postgres: the stored body is what `build_messages()` composes (contract still appended), and reset deletes the row and restores the default
+- [x] 14.3 Confirm a second browser session sees the saved prompt without re-entry — the prompt is one global row keyed only by `correction_system_prompt`, and an independent request after the save read the stored text back with its attribution
+- [ ] 14.4 Re-run the reported passage and confirm no critique hands back a Chinese form as the correction, none critiques the source text, and synonym-only items are gone — **blocked on provider credentials; this is what `backend/scripts/live_critique_quality.py` scores (see `design.md` Validation Results for the command)**
