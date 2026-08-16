@@ -134,7 +134,7 @@ Supabase無料プランはアクティビティがないとプロジェクトが
 |----------|---------|---------|
 | `.github/workflows/ci.yml` | push to main, PRs to main | Run backend pytest + frontend jest + lint (optional) |
 | `.github/workflows/supabase-keepalive.yml` | cron (3日ごと), manual | Supabase無料プラン一時停止防止 |
-| `.github/workflows/apply-migrations.yml` | manual only | ⚠️ Supabase CLIで共有Postgresにマイグレーション適用（下記参照） |
+| `.github/workflows/apply-migrations.yml` | push to main (`backend/supabase/migrations/**`), PRラベル`run-migrations`, manual | Supabase CLIで共有Postgresにマイグレーション適用（下記参照） |
 | `backend/.github/workflows/migrate-database.yml` | manual only | ⚠️ ライブDBマイグレーション（要確認。`backend/.github/` 配下なのでGitHubからは実行されない） |
 
 ### Deployment (Vercel Git Integration)
@@ -178,12 +178,15 @@ PRがmainにマージされるにはCIテストのパスが必要（GitHub Branc
 
 ### apply-migrations.yml（Supabase CLIでのマイグレーション適用）
 
-起動経路は2つで、どちらも人手のトリガーが必要（自動実行はしない）。
+**`backend/supabase/migrations/`がスキーマの単一の真実であり、mainに入った時点でDBに反映される**（Supabase公式推奨のCI構成）。起動経路は3つ:
 
-1. **手動dispatch**: inputs は `environment`（`DATABASE_URL`シークレットのスコープ選択と監査用）、`mode`（`list` / `dry-run` / `push`）、`repair_versions`。**`mode=list`で現状を見てから`push`する**。
-2. **PRに`run-migrations`ラベルを付ける**: そのブランチのマイグレーションを`push`する（`repair_versions`は下記のベースライン001-005が自動で入る）。`workflow_dispatch`はデフォルトブランチ上の版しか起動できないため、**マイグレーションを追加した変更を自分のマージ前に適用する経路がこれしかない**。ラベルを外して付け直せば再実行され、適用済みなら`Remote database is up to date.`で終わる。
+1. **mainへのpush**（`backend/supabase/migrations/**`に変更があるときだけ）: 新しい版を自動適用する。**これが通常経路**。
+2. **PRに`run-migrations`ラベルを付ける**: そのブランチのマイグレーションをマージ前に適用する（コード側が新スキーマを必要とする変更向け）。`workflow_dispatch`はデフォルトブランチ上の版しか起動できないため、マージ前適用はこの経路しかない。ラベルを外して付け直せば再実行され、適用済みなら`Remote database is up to date.`で終わる。
+3. **手動dispatch**: inputs は `environment`（`DATABASE_URL`シークレットのスコープ選択と監査用）、`mode`（`list` / `dry-run` / `push`）、`repair_versions`。調査や復旧用。
 
-- **`db push`をそのまま叩くと001で落ちる。** 001-005はSQL Editorから手で当てられたため`supabase_migrations.schema_migrations`が空になり得る。CLIは履歴に無い版を全部適用しようとするが、`001_initial_schema.sql`は素の`CREATE TABLE`、`002`は素の`ADD COLUMN`で冪等ではないので`relation "sessions" already exists`で失敗する。→ `mode=list`のremote列が空なら`repair_versions="001 002 003 004 005"`を渡す（repairはSQLを再実行せず履歴に記録するだけ）。003以降は`IF NOT EXISTS`ガード付き。
+`concurrency: supabase-migrations`（cancel-in-progressなし）で同時pushを直列化する。DDL適用中のrunを途中で殺さないため、キャンセルではなく待機。
+
+- **絶対にSQL Editorでremoteのスキーマを直接変えないこと。** 変えると`supabase_migrations.schema_migrations`と実体が乖離し、以後の`db push`が`relation "sessions" already exists`で失敗する（001は素の`CREATE TABLE`、002は素の`ADD COLUMN`で冪等でない。003以降は`IF NOT EXISTS`ガード付き）。復旧は`mode=list`でremote列の欠けを確認し、`repair_versions`に該当版を渡す（repairはSQLを再実行せず履歴に記録するだけ）。**2026-08にCLI管理へ移行した際に001-005で一度だけ必要だった作業で、現在の履歴は001-007まで揃っている。**
 - 接続文字列: poolerの6543（transaction mode）はDDLを流せないため、ワークフローが同ホストの5432（session mode）へ読み替える。アプリ側は6543のまま。
 - マイグレーションは`backend/supabase/migrations/`にあるので、CLIには**`--workdir backend`が必須**。リポジトリ直下の`supabase/.temp/linked-project.json`（ref `fqyhrubqkpuyliqojbai`）は`supabase link`の残骸で、`--db-url`経路では参照されない。
 - ローカルから同じことをする場合（`conf/.env`に`DATABASE_URL`がある前提）:
@@ -198,7 +201,7 @@ supabase db push --workdir backend --db-url "$DATABASE_URL"
 - 検証済み（2026-08）: 上記手順をローカルPostgres 16（001-005のみ手で適用した状態）で実行し、006/007だけが適用されて`app_settings`と`llm_provider`/`llm_model`が作られ、履歴に001-007が記録され、再pushが`Remote database is up to date.`になることを確認した。
 - **共有Supabaseへ適用済み（2026-08-16、run 31936101275）**: remote履歴は空だったため001-005をrepairし、006/007のみを適用。`app_settings`の存在、`correction_histories.llm_provider`/`llm_model`の存在、履歴7件を`psql`で確認済み。以後この共有プロジェクトはCLI管理下にあるので、**SQL Editorで直接スキーマを変えないこと**（また履歴が乖離してrepairが必要になる）。
 
-**なぜ公式推奨の「mainマージで自動push」にしていないか:** Supabase公式（[Managing environments](https://supabase.com/docs/guides/deployment/managing-environments)）は本番マイグレーションをGitHub Actionsで自動デプロイすること（`setup-cli` → `supabase link --project-ref` → `db push`、シークレットは`SUPABASE_ACCESS_TOKEN` / `SUPABASE_DB_PASSWORD` / `SUPABASE_PROJECT_ID`）を推奨している。このリポジトリがそれに従っていないのは、公式が禁じる「remoteをSQL Editorで直接変更する」運用を既に行っており、`supabase_migrations.schema_migrations`が乖離しているため、自動pushは初回に必ず失敗するから。**`migration repair`で履歴を一度揃えた後は、自動push（`--linked`形）へ移行する価値がある** — その時点で`backend/supabase/migrations/`が唯一の真実になり、手作業のSQL Editor運用を廃止できる。移行する場合は`SUPABASE_ACCESS_TOKEN`とDBパスワードのシークレットが必要（project refは`supabase/.temp/linked-project.json`にある）。
+**公式構成との差分:** Supabase公式（[Managing environments](https://supabase.com/docs/guides/deployment/managing-environments)）はmainマージでの自動pushを推奨しており、本リポジトリもそれに従っている。ただし公式サンプルの`supabase link --project-ref` +`SUPABASE_ACCESS_TOKEN` / `SUPABASE_DB_PASSWORD` / `SUPABASE_PROJECT_ID`ではなく、**既に存在する`DATABASE_URL`シークレット1本で動く`--db-url`経路**を採っている（追加シークレットが不要。project refは`supabase/.temp/linked-project.json`にある）。`--linked`形へ寄せたい場合はアクセストークンとDBパスワードをシークレットに追加する必要がある。
 
 **`DATABASE_URL`シークレットは直接接続文字列（IPv6のみ）で、そのままではCIから繋がらない:** 実行で確認済み（2026-08）。値は`db.fqyhrubqkpuyliqojbai.supabase.co`宛てで、このホストは**AAAAレコードしか公開していない**（IPv4は有料アドオン）。GitHub ActionsランナーはIPv6を持たないため、素の`db push`は`dial error … ECONNREFUSED 2406:da14:…`で落ちる。そこで`apply-migrations.yml`は直接URLをSupavisorのsession mode URL（ユーザ`postgres.<ref>`、`aws-N-<region>.pooler.supabase.com:5432`）へ組み替える。リージョンは`ap-northeast-1`（プロジェクトのAAAAがAWSの`2406:da14::/35`に含まれることから判定。移設時は`SUPABASE_REGION`リポジトリ変数で上書き）、クラスタ（`aws-0` / `aws-1`）は判別できないため両方を試して先に繋がった方を使う。**実測では`aws-0-ap-northeast-1`が正**。候補URLは使用前にすべてマスクし、ログにはホスト名しか出さない。
 

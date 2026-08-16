@@ -1,25 +1,35 @@
 # ============================================================================
-# ⚠️  Applies DDL to the shared Supabase Postgres. Never runs on its own.
+# Applies migrations from `backend/supabase/migrations/` to the shared Supabase
+# Postgres. This is Supabase's documented CI setup: migration files are the
+# source of truth and land on the database when they land on main.
 # ============================================================================
-# Two ways in:
-#   * Manual dispatch — pick mode=list to inspect, dry-run, or push.
-#   * Labelling a pull request `run-migrations` — pushes that branch's
-#     migrations. This exists because `workflow_dispatch` only appears once the
-#     workflow is on the default branch, so a change that adds migrations
-#     cannot be applied before its own merge without it.
+# Three ways in:
+#   * Push to main touching the migrations directory — applies what is new.
+#   * Labelling a pull request `run-migrations` — applies that branch's
+#     migrations before merge, for a change whose code needs the new schema.
+#     `workflow_dispatch` cannot do this: it only appears for the version of a
+#     workflow that is already on the default branch.
+#   * Manual dispatch — mode=list to inspect, dry-run, or push, plus a
+#     `repair_versions` input.
 #
-# Why `repair` is part of the flow: migrations 001-005 were applied through the
-# SQL Editor, so `supabase_migrations.schema_migrations` can be empty even
-# though the tables exist. `db push` then starts at 001 and fails with
-# `relation "sessions" already exists`, because 001 and 002 are not idempotent.
-# `migration repair` records versions without running their SQL, and is safe to
-# repeat. Once the shared project's history is complete, Supabase's documented
-# setup (push automatically on merge to main) becomes the better fit.
+# `repair_versions` exists because `db push` compares against
+# `supabase_migrations.schema_migrations`, which stays empty for schema changes
+# made in the SQL Editor. Pushing then starts at 001 and fails with
+# `relation "sessions" already exists`, since 001 and 002 are not idempotent.
+# Repair records versions without running their SQL. It was needed once, when
+# this project switched from the SQL Editor to the CLI (2026-08); the shared
+# history is complete now, so leave the input empty unless a `list` run shows
+# gaps. The rule that keeps it that way: never change the remote schema outside
+# these migration files.
 # ============================================================================
 
-name: Apply Supabase Migrations (Manual Only)
+name: Supabase Migrations
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/supabase/migrations/**'
   workflow_dispatch:
     inputs:
       environment:
@@ -47,10 +57,17 @@ on:
   pull_request:
     types: [labeled]
 
+# One push at a time: concurrent `db push` runs against the same project would
+# race on the migration history. Queue instead of cancelling, so a run that is
+# already applying DDL is never killed halfway.
+concurrency:
+  group: supabase-migrations
+  cancel-in-progress: false
+
 jobs:
   migrate:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name != 'pull_request' ||
       github.event.label.name == 'run-migrations'
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
@@ -66,17 +83,14 @@ jobs:
         env:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_REPAIR: ${{ inputs.repair_versions }}
-          # Versions applied by hand through the SQL Editor before the CLI was
-          # used. Recording them is what lets a push apply only what is new.
-          # Harmless once the remote history already lists them.
-          BASELINE_VERSIONS: '001 002 003 004 005'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "MODE=${INPUT_MODE}" >> "$GITHUB_ENV"
             echo "REPAIR=${INPUT_REPAIR}" >> "$GITHUB_ENV"
           else
+            # Push to main and the PR label both mean "apply what is new".
             echo "MODE=push" >> "$GITHUB_ENV"
-            echo "REPAIR=${BASELINE_VERSIONS}" >> "$GITHUB_ENV"
+            echo "REPAIR=" >> "$GITHUB_ENV"
           fi
 
       - name: Resolve connection string

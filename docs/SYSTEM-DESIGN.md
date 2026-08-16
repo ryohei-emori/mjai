@@ -159,6 +159,8 @@ Domain: `Session` → `CorrectionHistory` → `AIProposal`.
 
 Schema migrations: `backend/supabase/migrations/001_initial_schema.sql`, `002_add_session_status.sql`, `003_align_ai_proposals_schema.sql`, `004_add_history_archive.sql`, `005_pending_suggestion_histories.sql`, `006_app_settings.sql`, `007_history_llm_provenance.sql`.
 
+These files are the single source of truth for the schema. `.github/workflows/apply-migrations.yml` applies them with the Supabase CLI when a push to `main` touches that directory, so schema and code land together; the same job can be run early on a pull request by labelling it `run-migrations`, or manually for inspection and recovery. Changing the remote schema outside these files (SQL Editor, Table Editor) desynchronizes `supabase_migrations.schema_migrations` and breaks subsequent pushes — recovery is `supabase migration repair`, which was needed once when this project moved from SQL-Editor changes to the CLI (2026-08).
+
 **Historical files**: `backend/db/app.db` is retained for reference (contains historical data from SQLite era) but no longer used by the application. SQLite migration scripts have been removed.
 
 ### 5.3 APIs
