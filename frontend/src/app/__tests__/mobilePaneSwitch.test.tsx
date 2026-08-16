@@ -175,3 +175,47 @@ test("confirming a completed job brings the review pane forward", async () => {
   // The switch also reports what is waiting in the pane that is off screen.
   expect(paneButton("添削案")).toHaveTextContent("1")
 })
+
+test("a proposal can be selected with one activation, and deselected with another", async () => {
+  routeApi()
+  await startSession()
+  await generateAndConfirm()
+
+  // Double-click remains the desktop route; this is the one a thumb can take.
+  const select = screen.getByRole("button", { name: "この提案を選択" })
+  expect(select).toHaveAttribute("aria-pressed", "false")
+
+  fireEvent.click(select)
+  const deselect = screen.getByRole("button", { name: "この提案の選択を解除" })
+  expect(deselect).toHaveAttribute("aria-pressed", "true")
+  // Selection order is what the save step reads, so it has to be assigned.
+  expect(screen.getByText("選択済み: 1/3+")).toBeInTheDocument()
+
+  fireEvent.click(deselect)
+  expect(screen.getByRole("button", { name: "この提案を選択" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  )
+  expect(screen.getByText("選択済み: 0/3+")).toBeInTheDocument()
+})
+
+test("the drawer carries the section tabs, and choosing one closes it", async () => {
+  routeApi()
+  // The session pane docks into the layout at lg and above, where the menu
+  // button collapses that column instead of opening a drawer. jsdom reports a
+  // 1024px window by default, so narrow it first to get the drawer.
+  Object.defineProperty(window, "innerWidth", { value: 375, configurable: true })
+  await startSession()
+
+  fireEvent.click(screen.getByRole("button", { name: "セッション一覧を開く" }))
+  const drawer = await screen.findByRole("dialog")
+
+  // Both copies of the tab list are in the DOM at once — which one is on screen
+  // is a CSS question — so the drawer's copy is addressed through the drawer.
+  fireEvent.click(within(drawer).getByRole("button", { name: "Archive" }))
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  expect(
+    screen.getByText("この機能は現在開発中です。今後のアップデートをお待ちください。"),
+  ).toBeInTheDocument()
+})
