@@ -63,6 +63,59 @@ describe("prompts exports", () => {
     expect(SYSTEM_PROMPT).toMatch(/今后/);
   });
 
+  describe("target-language critique rules", () => {
+    // editable-prompt-model-log-and-critique-fix: a reported cloud session
+    // handed back Chinese words as the correction ("改为对比睡眠数据") and
+    // critiqued the 原文 instead of the 添削対象. The offline prompt carries the
+    // same three guards, condensed for the 7B instruction budget.
+    it("requires recommended forms to be written in Japanese", () => {
+      expect(SYSTEM_PROMPT).toMatch(/推荐形必须用日语|必须用日语写出/);
+      expect(SYSTEM_PROMPT).toContain("理论上");
+    });
+
+    it("scopes correction to the target text, not the source", () => {
+      expect(SYSTEM_PROMPT).toContain("只添削");
+      expect(SYSTEM_PROMPT).toMatch(/原文是判断依据|不是添削对象/);
+    });
+
+    it("rejects interchangeable-synonym items and unchecked collocations", () => {
+      expect(SYSTEM_PROMPT).toMatch(/可互换|近义/);
+      expect(SYSTEM_PROMPT).toContain("不算错误");
+      expect(SYSTEM_PROMPT).toMatch(/代入原句|搭配/);
+    });
+
+    it("stays condensed rather than importing the backend rules verbatim", () => {
+      // The 7B budget is the constraint; the full rules live in
+      // backend/app/llm/prompts.py.
+      expect(SYSTEM_PROMPT.length).toBeLessThan(2600);
+    });
+  });
+
+  describe("few-shot obeys the target-language rules", () => {
+    const parsed = JSON.parse(
+      FEW_SHOT_EXAMPLES.slice(FEW_SHOT_EXAMPLES.indexOf("{", FEW_SHOT_EXAMPLES.indexOf("输出：")))
+    ) as { suggestions: { reason: string }[] };
+
+    it("never quotes a recommended form in Chinese", () => {
+      // Same shape as the backend guard: a kanji-only Japanese form such as
+      // 「叙事詩」 is fine, a Simplified-only form such as “对比” is not.
+      const simplifiedOnly = /[对现实论语说标脑为义习书东车马鸟岛时间问题类结经给应认识讲译记词让过还进运达边连远选适观见规视觉确转释变处众优华汉们这单复备关键层术无较仅从叶]/;
+      const recommended = parsed.suggestions
+        .flatMap((s) => Array.from(s.reason.matchAll(/宜改为「([^」]+)」|宜补全为「([^」]+)」/g)))
+        .map((m) => m[1] ?? m[2]);
+      expect(recommended.length).toBeGreaterThan(0);
+      for (const form of recommended) {
+        expect(form).not.toMatch(simplifiedOnly);
+      }
+    });
+
+    it("names a concrete defect for each wording item", () => {
+      // でも→しかし is a register defect, not a free synonym swap.
+      const reasons = parsed.suggestions.map((s) => s.reason).join(" ");
+      expect(reasons).toMatch(/语域|规范译词|意义偏移|情态/);
+    });
+  });
+
   it("exports FEW_SHOT_EXAMPLES with Gemini-shaped structure", () => {
     expect(FEW_SHOT_EXAMPLES).toBeDefined();
     expect(typeof FEW_SHOT_EXAMPLES).toBe("string");

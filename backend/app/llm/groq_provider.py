@@ -11,6 +11,7 @@ import random
 import httpx
 from typing import Any, Optional, List, Dict, Set
 
+from .provider_output import ProviderOutput
 from .key_pool import (
     acquire_groq,
     cooldown_status_codes,
@@ -299,7 +300,9 @@ async def call_groq(messages: list[dict[str, str]], model: Optional[str] = None)
             raise
 
 
-async def call_groq_with_rotation(messages: list[dict[str, str]]) -> str:
+async def call_groq_with_rotation(
+    messages: list[dict[str, str]],
+) -> ProviderOutput:
     """
     Call Groq API with in-provider model rotation and bounded retry.
 
@@ -314,6 +317,9 @@ async def call_groq_with_rotation(messages: list[dict[str, str]]) -> str:
     raised immediately without a retry attempt, since a different model
     would not fix it.
 
+    Returns the raw text together with the model that produced it — after a
+    retry that is the second model, not the first one attempted.
+
     Raises:
         GroqError and subclasses: the final attempt's error, if all
             attempted models fail.
@@ -322,9 +328,13 @@ async def call_groq_with_rotation(messages: list[dict[str, str]]) -> str:
     first_model = models[0]
 
     try:
-        return await call_groq(messages, model=first_model)
+        return ProviderOutput(
+            await call_groq(messages, model=first_model), first_model
+        )
     except (GroqRateLimitError, GroqServerError, GroqTimeoutError, GroqJsonValidateError):
         if len(models) < 2:
             raise
         second_model = models[1]
-        return await call_groq(messages, model=second_model)
+        return ProviderOutput(
+            await call_groq(messages, model=second_model), second_model
+        )

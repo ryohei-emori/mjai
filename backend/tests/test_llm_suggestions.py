@@ -700,6 +700,225 @@ class TestGenerateSuggestionsExemplarTranslation:
         assert result["overallComment"] == "整体质量良好"
 
 
+@pytest.mark.asyncio
+class TestSystemPromptOverride:
+    """editable-prompt-model-log-and-critique-fix — stored prompt threading."""
+
+    CUSTOM_BODY = "自定义规则：只报意义偏移。"
+
+    @staticmethod
+    def _system_message(mock_groq) -> str:
+        return mock_groq.call_args.args[0][0]["content"]
+
+    async def test_override_replaces_the_rules_body(self):
+        from app.llm.prompts import SYSTEM_PROMPT_BODY
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                await generate_suggestions(
+                    "原文", "訳文", None, self.CUSTOM_BODY
+                )
+
+        system = self._system_message(mock_groq)
+        assert system.startswith(self.CUSTOM_BODY)
+        assert SYSTEM_PROMPT_BODY not in system
+
+    async def test_override_still_carries_the_output_contract(self):
+        from app.llm.prompts import OUTPUT_CONTRACT
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                await generate_suggestions(
+                    "原文", "訳文", None, "随便写点什么，完全不提 JSON。"
+                )
+
+        assert self._system_message(mock_groq).endswith(OUTPUT_CONTRACT)
+
+    async def test_absent_override_matches_the_default_prompt(self):
+        from app.llm.prompts import build_messages
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                for absent in (None, "", "   "):
+                    await generate_suggestions("原文", "訳文", None, absent)
+                    assert mock_groq.call_args.args[0] == build_messages("原文", "訳文")
+
+    async def test_override_composes_with_an_exemplar(self):
+        from app.llm.prompts import EXEMPLAR_REFERENCE_RULES, OUTPUT_CONTRACT
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = VALID_LLM_RESPONSE
+                await generate_suggestions(
+                    "原文", "訳文", "模範の訳文", self.CUSTOM_BODY
+                )
+
+        system = self._system_message(mock_groq)
+        assert system.startswith(self.CUSTOM_BODY)
+        assert EXEMPLAR_REFERENCE_RULES.strip() in system
+        assert system.endswith(OUTPUT_CONTRACT)
+
+
+@pytest.mark.asyncio
+class TestProviderModelProvenance:
+    """The winning provider and its exact model must reach the caller."""
+
+    async def test_gemini_success_reports_gemini_and_its_model(self):
+        from app.llm.provider_output import ProviderOutput
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "gem-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_gemini_with_rotation", new_callable=AsyncMock
+            ) as mock_gemini:
+                mock_gemini.return_value = ProviderOutput(
+                    VALID_LLM_RESPONSE, "gemini-3.6-flash"
+                )
+                result = await generate_suggestions("原文", "訳文")
+
+        assert result["llmProvider"] == "gemini"
+        assert result["llmModel"] == "gemini-3.6-flash"
+
+    async def test_groq_success_reports_the_rotated_model(self):
+        from app.llm.provider_output import ProviderOutput
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = ProviderOutput(
+                    VALID_LLM_RESPONSE, "openai/gpt-oss-20b"
+                )
+                result = await generate_suggestions("原文", "訳文")
+
+        assert result["llmProvider"] == "groq"
+        assert result["llmModel"] == "openai/gpt-oss-20b"
+
+    async def test_failover_reports_the_provider_that_answered(self):
+        from app.llm.provider_output import ProviderOutput
+
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_API_KEY": "gem-key", "GROQ_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch(
+                "app.llm.suggestions.call_gemini_with_rotation", new_callable=AsyncMock
+            ) as mock_gemini:
+                with patch(
+                    "app.llm.suggestions.call_groq_with_rotation",
+                    new_callable=AsyncMock,
+                ) as mock_groq:
+                    mock_gemini.side_effect = GeminiRateLimitError(
+                        "rate limited", status_code=429
+                    )
+                    mock_groq.return_value = ProviderOutput(
+                        VALID_LLM_RESPONSE, "openai/gpt-oss-120b"
+                    )
+                    result = await generate_suggestions("原文", "訳文")
+
+        assert result["llmProvider"] == "groq"
+        assert result["llmModel"] == "openai/gpt-oss-120b"
+
+    async def test_cloudflare_success_reports_its_fixed_model(self):
+        from app.llm.cloudflare_provider import CF_MODEL
+
+        with patch.dict(
+            "os.environ",
+            {"CLOUDFLARE_ACCOUNT_ID": "acc", "CLOUDFLARE_API_TOKEN": "tok"},
+            clear=True,
+        ):
+            with patch(
+                "app.llm.suggestions.call_cloudflare", new_callable=AsyncMock
+            ) as mock_cf:
+                mock_cf.return_value = VALID_LLM_RESPONSE
+                result = await generate_suggestions("原文", "訳文")
+
+        assert result["llmProvider"] == "cloudflare"
+        assert result["llmModel"] == CF_MODEL
+
+    async def test_provenance_present_on_the_give_up_path(self):
+        """Exhausting the content-check budget still reports the model used."""
+        from app.llm.provider_output import ProviderOutput
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = ProviderOutput(
+                    NON_CHINESE_LLM_RESPONSE, "openai/gpt-oss-20b"
+                )
+                result = await generate_suggestions("原文", "訳文")
+
+        assert result["llmProvider"] == "groq"
+        assert result["llmModel"] == "openai/gpt-oss-20b"
+
+
+@pytest.mark.asyncio
+class TestChineseRecommendationRetry:
+    """A Chinese recommended form is unusable content, so the pass retries."""
+
+    CHINESE_RECOMMENDATION = (
+        '{"suggestions":[{"id":"1","original":"論理的に言えば",'
+        '"reason":"这里不够自然，应该改为“理论上”以使语言更为流畅"}],'
+        '"overallComment":"整体质量良好，仍有用词问题"}'
+    )
+
+    async def test_retries_then_accepts_a_japanese_recommendation(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.side_effect = [
+                    self.CHINESE_RECOMMENDATION,
+                    VALID_LLM_RESPONSE,
+                ]
+                result = await generate_suggestions("原文", "訳文")
+
+        assert mock_groq.call_count == 2
+        assert result["overallComment"] == "整体质量良好"
+
+    async def test_retry_carries_the_japanese_recommendation_nudge(self):
+        from app.llm.suggestions import RECOMMENDATION_RETRY_NUDGE
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.side_effect = [
+                    self.CHINESE_RECOMMENDATION,
+                    VALID_LLM_RESPONSE,
+                ]
+                await generate_suggestions("原文", "訳文")
+
+        retry_messages = mock_groq.call_args_list[1].args[0]
+        assert retry_messages[-1]["content"] == RECOMMENDATION_RETRY_NUDGE
+
+    async def test_budget_exhaustion_returns_the_last_result(self):
+        """Unchanged degrade-gracefully behaviour: last body, not a 503."""
+        from app.llm.suggestions import MAX_PARSE_RETRY_ATTEMPTS
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            with patch(
+                "app.llm.suggestions.call_groq_with_rotation", new_callable=AsyncMock
+            ) as mock_groq:
+                mock_groq.return_value = self.CHINESE_RECOMMENDATION
+                result = await generate_suggestions("原文", "訳文")
+
+        assert mock_groq.call_count == MAX_PARSE_RETRY_ATTEMPTS
+        assert result["suggestions"][0]["original"] == "論理的に言えば"
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     __import__("os").environ.get("GROQ_API_KEY") in (None, ""),

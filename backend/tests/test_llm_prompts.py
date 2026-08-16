@@ -5,7 +5,9 @@ Tests for backend/app/llm/prompts.py framing and language rules.
 from app.llm.prompts import (
     CORRECTION_TASK_BRIEF,
     EXEMPLAR_REFERENCE_RULES,
+    OUTPUT_CONTRACT,
     SYSTEM_PROMPT,
+    SYSTEM_PROMPT_BODY,
     FEW_SHOT_EXAMPLE,
     build_system_prompt,
     build_user_prompt,
@@ -277,9 +279,12 @@ class TestOptionalExemplarTranslation:
         assert "模範回答訳文（参考・校准用，禁止直接当作理由或原样照搬）：模範の訳文C" in prompt
 
     def test_exemplar_rules_appended_to_system_prompt_only_when_present(self):
+        # Exemplar rules land between the rules body and the output contract,
+        # so the JSON schema stays the last thing the model reads.
         with_exemplar = build_system_prompt("模範の訳文C")
-        assert with_exemplar.startswith(SYSTEM_PROMPT)
+        assert with_exemplar.startswith(SYSTEM_PROMPT_BODY)
         assert EXEMPLAR_REFERENCE_RULES.strip() in with_exemplar
+        assert with_exemplar.endswith(OUTPUT_CONTRACT)
         assert EXEMPLAR_REFERENCE_RULES.strip() not in SYSTEM_PROMPT
 
     def test_exemplar_rules_forbid_copying_and_citing_the_exemplar(self):
@@ -318,3 +323,108 @@ class TestNoDownstreamSuggestionCap:
         }
         result = parse_model_output(json.dumps(payload, ensure_ascii=False))
         assert len(result["suggestions"]) == 12
+
+
+class TestEditablePromptComposition:
+    """editable-prompt-model-log-and-critique-fix — body vs code-owned contract."""
+
+    def test_default_prompt_is_body_plus_contract(self):
+        assert SYSTEM_PROMPT == f"{SYSTEM_PROMPT_BODY}\n{OUTPUT_CONTRACT}"
+
+    def test_contract_carries_the_json_only_rule_and_schema(self):
+        assert "只输出 JSON" in OUTPUT_CONTRACT
+        assert "格式：" in OUTPUT_CONTRACT
+        assert '"suggestions"' in OUTPUT_CONTRACT
+        assert '"overallComment"' in OUTPUT_CONTRACT
+        # The editable half must not carry the machine contract with it.
+        assert "格式：" not in SYSTEM_PROMPT_BODY
+
+    def test_override_replaces_only_the_body(self):
+        composed = build_system_prompt(None, "自定义规则正文")
+        assert composed == f"自定义规则正文\n{OUTPUT_CONTRACT}"
+        assert SYSTEM_PROMPT_BODY not in composed
+
+    def test_override_that_never_mentions_json_still_gets_the_contract(self):
+        composed = build_system_prompt(None, "随便写点什么。")
+        assert "只输出 JSON" in composed
+        assert composed.endswith(OUTPUT_CONTRACT)
+
+    def test_blank_override_falls_back_to_the_default_prompt(self):
+        for blank in (None, "", "   ", "\n\t "):
+            assert build_system_prompt(None, blank) == SYSTEM_PROMPT
+
+    def test_override_is_trimmed_before_composition(self):
+        assert build_system_prompt(None, "  规则  ") == f"规则\n{OUTPUT_CONTRACT}"
+
+    def test_build_messages_threads_the_override_into_the_system_message(self):
+        messages = build_messages("原文", "対象", None, "自定义规则正文")
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == f"自定义规则正文\n{OUTPUT_CONTRACT}"
+        # Only the system message changes; the few-shot and user turns do not.
+        assert messages[1:] == build_messages("原文", "対象")[1:]
+
+    def test_build_messages_without_override_matches_the_three_arg_form(self):
+        assert build_messages("o", "t", None, None) == build_messages("o", "t")
+
+
+class TestTargetLanguageCritiqueRules:
+    """The rules a reported session showed the previous prompt not enforcing."""
+
+    def test_recommended_forms_must_be_japanese(self):
+        assert "推荐形必须是日语" in SYSTEM_PROMPT
+        assert "理论上" in SYSTEM_PROMPT  # the reported Chinese-recommendation case
+        assert "推荐形" in build_user_prompt("原文", "対象")
+
+    def test_only_the_target_text_may_be_corrected(self):
+        assert "原文是判断依据，不是添削对象" in SYSTEM_PROMPT
+        assert "禁止改写原文" in build_user_prompt("原文", "対象")
+
+    def test_interchangeable_synonyms_are_not_faults(self):
+        assert "近义互换不是错误" in SYSTEM_PROMPT
+        assert "比較⇄対比" in SYSTEM_PROMPT
+        assert "研究者⇄学者" in SYSTEM_PROMPT
+        assert "近义替换" in build_user_prompt("原文", "対象")
+
+    def test_wording_items_must_name_a_defect_category(self):
+        assert "更准确/更自然/更正式/更简洁" in SYSTEM_PROMPT
+
+    def test_recommended_form_must_be_substituted_and_checked(self):
+        assert "代入原句" in SYSTEM_PROMPT
+        assert "睡眠が需要だ" in SYSTEM_PROMPT  # the reported broken recommendation
+
+    def test_explanations_must_frame_meaning_transfer_not_word_mapping(self):
+        assert "日语读者会读成什么" in SYSTEM_PROMPT
+        assert "不是逐词替换" in SYSTEM_PROMPT
+
+    def test_digit_and_notation_faults_are_a_named_category(self):
+        assert "９点５時間" in SYSTEM_PROMPT
+        assert "9.5時間" in SYSTEM_PROMPT
+
+
+class TestFewShotObeysTargetLanguageRules:
+    @staticmethod
+    def _suggestions():
+        from app.llm.parser import parse_model_output
+
+        return parse_model_output(FEW_SHOT_EXAMPLE)["suggestions"]
+
+    def test_no_recommended_form_is_chinese(self):
+        from app.llm.parser import has_non_japanese_recommendation, parse_model_output
+
+        assert has_non_japanese_recommendation(parse_model_output(FEW_SHOT_EXAMPLE)) is False
+
+    def test_every_item_states_a_reader_facing_consequence(self):
+        reasons = self._suggestions()
+        consequence_cues = ("读者", "读成", "读不通", "读到", "误")
+        for suggestion in reasons:
+            assert any(cue in suggestion["reason"] for cue in consequence_cues), (
+                f"item {suggestion['id']} explains no reader-facing consequence"
+            )
+
+    def test_demonstrates_the_notation_category(self):
+        reasons = " ".join(s["reason"] for s in self._suggestions())
+        assert "9.5時間" in reasons
+
+    def test_intro_states_recommendations_are_japanese_and_not_synonym_swaps(self):
+        assert "推荐形都用日语给出" in FEW_SHOT_EXAMPLE
+        assert "近义替换" in FEW_SHOT_EXAMPLE

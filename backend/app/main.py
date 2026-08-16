@@ -215,6 +215,10 @@ async def create_history(payload: dict = Body(...)):
             'status': payload.get('status', 'confirmed'),
             'overall_comment': payload.get('overallComment'),
             'provider': payload.get('provider'),
+            # Inference provenance (gemini/groq/cloudflare/webllm + exact model
+            # id), distinct from `provider` which records the transport.
+            'llm_provider': payload.get('llmProvider'),
+            'llm_model': payload.get('llmModel'),
             'client_job_id': payload.get('clientJobId'),
         }
         # 必須項目チェック
@@ -328,6 +332,43 @@ async def get_session(session_id: str):
         }
     return {"error": "Session not found", "sessionId": session_id}
 
+# AI添削プロンプト設定（全ユーザー共通の1レコード）
+@router.get("/settings/prompt")
+async def get_prompt_setting_route():
+    """Return the effective correction prompt, the built-in default, and attribution."""
+    from .prompt_settings import get_prompt_settings
+    return await get_prompt_settings()
+
+
+@router.put("/settings/prompt")
+async def put_prompt_setting_route(
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    """Save the shared custom correction prompt (validated, attributed to the caller)."""
+    from .prompt_settings import (
+        PromptStoreUnavailableError,
+        PromptValidationError,
+        save_prompt_settings,
+    )
+    try:
+        return await save_prompt_settings(
+            payload.get("systemPrompt"),
+            updated_by=(user.get("email") if isinstance(user, dict) else None),
+        )
+    except PromptValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PromptStoreUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.delete("/settings/prompt")
+async def delete_prompt_setting_route():
+    """Reset to the built-in default prompt by deleting the stored row."""
+    from .prompt_settings import reset_prompt_settings
+    return await reset_prompt_settings()
+
+
 # AI提案生成エンドポイント
 @router.post("/suggestions")
 async def generate_ai_suggestions(payload: dict = Body(...)):
@@ -338,6 +379,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
     """
     from .llm import generate_suggestions
     from .llm.suggestions import SuggestionsError, NoProvidersConfiguredError
+    from .prompt_settings import resolve_system_prompt_override
     from fastapi.responses import JSONResponse
     
     original_text = payload.get("originalText", "")
@@ -352,8 +394,13 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
         )
     
     try:
+        # A missing/unreadable stored prompt resolves to None => built-in default.
+        system_prompt_override = await resolve_system_prompt_override()
         result = await generate_suggestions(
-            original_text, target_text, exemplar_translation
+            original_text,
+            target_text,
+            exemplar_translation,
+            system_prompt_override,
         )
         return result
     except NoProvidersConfiguredError as e:

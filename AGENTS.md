@@ -103,7 +103,10 @@ Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commente
 ## Database constraints
 
 - **Single Supabase Postgres backend**: All app data (sessions, correction histories, AI proposals) is persisted to Supabase Postgres via `asyncpg`. The SQLite dual-path code has been removed.
-- Tables use snake_case columns (`sessions`, `correction_histories`, `ai_proposals`); `backend/app/db_helper.py` maps to camelCase for API responses.
+- Tables use snake_case columns (`sessions`, `correction_histories`, `ai_proposals`, `app_settings`); `backend/app/db_helper.py` maps to camelCase for API responses.
+- **`app_settings`** (`006_app_settings.sql`): global key/value settings shared by every allow-listed user — not per user, not per browser. Only key today is `correction_system_prompt`, the editable rules body of the AI correction prompt. **Absence of a row means "built-in default in effect"**, not a copy of the default text, so improving the default in code still reaches anyone who has not customized it; reset therefore deletes the row rather than writing the default back.
+- **LLM provenance columns** (`007_history_llm_provenance.sql`): `correction_histories.llm_provider` (`gemini` / `groq` / `cloudflare` / `webllm`) and `llm_model` (exact model id). Kept separate from the existing `provider` column, which records the transport (`api` / `webllm`) and drives the クラウドAPI / ローカルAI badge. Rows written before the migration read back `NULL`, and the UI shows no model caption for those.
+- **Deploy order is not load-bearing for these two migrations.** Because migrations are applied to the shared project by hand, a deploy can land first, so the code probes for both additions instead of assuming them: `db_helper._has_provenance_columns()` checks `information_schema` once per process and drops `llm_provider` / `llm_model` from every history read and write when they are absent (otherwise a missing column would 500 the whole workspace, not just the model caption), and a missing `app_settings` table makes `GET /settings/prompt` serve the built-in default while `PUT` returns a 503 naming `006_app_settings.sql`. **Still apply both migrations** — this is a safety net for the window between deploy and migration, not a reason to skip them: until 007 runs, no provenance is recorded at all.
 - **Suggestion persistence**: Successful AI generation writes a `correction_histories` row with `status=pending` plus full `ai_proposals` immediately (not only after 「確定してコピー・保存」). Confirm/save promotes the same history to `status=confirmed` via `PUT /histories/{id}` and updates proposal selection flags. Apply `backend/supabase/migrations/005_pending_suggestion_histories.sql` to the shared Supabase project before relying on this path in production.
 - Supabase is used for both **Auth** (Google OAuth, JWT) and **app data persistence** — a unified platform.
 - RLS is enabled on all tables with permissive `USING (true)` policies. Tightening to per-user scope is deferred to a future change.
@@ -131,7 +134,9 @@ Supabase無料プランはアクティビティがないとプロジェクトが
 |----------|---------|---------|
 | `.github/workflows/ci.yml` | push to main, PRs to main | Run backend pytest + frontend jest + lint (optional) |
 | `.github/workflows/supabase-keepalive.yml` | cron (3日ごと), manual | Supabase無料プラン一時停止防止 |
-| `backend/.github/workflows/migrate-database.yml` | manual only | ⚠️ ライブDBマイグレーション（要確認） |
+| `.github/workflows/apply-migrations.yml` | push to main (`backend/supabase/migrations/**`), PRラベル`run-migrations`, manual | Supabase CLIで共有Postgresにマイグレーション適用（下記参照） |
+| `.github/workflows/critique-probe.yml` | PRラベル`run-critique-probe`, manual | 添削品質のliveプローブ（`GEMINI_API_KEYS`が必要。Geminiのクォータを消費するので自動実行しない） |
+| `backend/.github/workflows/migrate-database.yml` | manual only | ⚠️ ライブDBマイグレーション（要確認。`backend/.github/` 配下なのでGitHubからは実行されない） |
 
 ### Deployment (Vercel Git Integration)
 
@@ -153,13 +158,13 @@ GitHub repoには3つのEnvironmentが存在:
 ### GitHub Secrets
 
 **必須（現在使用中）:**
-- `DATABASE_URL` — Supabase Postgres接続文字列（`migrate-database.yml`用、Vercel envは別途設定）
+- `DATABASE_URL` — Supabase Postgres接続文字列（`apply-migrations.yml`と`migrate-database.yml`用、Vercel envは別途設定）。環境スコープの場合は`apply-migrations.yml`の`environment` inputで対応する環境を選ぶこと
 - `SUPABASE_ACCESS_TOKEN`, `SUPABASE_ORG_ID` — Supabase管理用（将来のインフラ自動化用）
 
 **不要（削除可能）:**
 - `RENDER_API_KEY`, `RENDER_OWNER_ID` — Render廃止済み
 - `TF_API_TOKEN` — Terraform削除済み（`terraform/`ディレクトリは削除されました）
-- Note: `GEMINI_API_KEY(S)` / `GEMINI_MODEL` are **active** as the primary cloud provider (Vercel env / `conf/.env`); do **not** put them in GitHub Secrets unless a workflow reads them.
+- Note: `GEMINI_API_KEY(S)` / `GEMINI_MODEL` are **active** as the primary cloud provider (Vercel env / `conf/.env`). GitHub Secrets への登録は任意で、**`critique-probe.yml`（添削品質のliveプローブ）を回したいときだけ**`GEMINI_API_KEYS`（または`GEMINI_API_KEY`）を入れる。推論本体は`/api/suggestions`＝Vercel上で動くので、CIに鍵を置かなくても本番は動く。
 
 これらの古いシークレットはGitHub Settings → Secrets and variablesから手動で削除可能。
 
@@ -171,6 +176,47 @@ GitHub repoには3つのEnvironmentが存在:
 3. **lint**: ESLint + ruff（`continue-on-error: true`、警告のみ）
 
 PRがmainにマージされるにはCIテストのパスが必要（GitHub Branch Protection Rulesで設定推奨）。
+
+### apply-migrations.yml（Supabase CLIでのマイグレーション適用）
+
+**`backend/supabase/migrations/`がスキーマの単一の真実であり、mainに入った時点でDBに反映される**（Supabase公式推奨のCI構成）。起動経路は3つ:
+
+1. **mainへのpush**（`backend/supabase/migrations/**`に変更があるときだけ）: 新しい版を自動適用する。**これが通常経路**。
+2. **PRに`run-migrations`ラベルを付ける**: そのブランチのマイグレーションをマージ前に適用する（コード側が新スキーマを必要とする変更向け）。`workflow_dispatch`はデフォルトブランチ上の版しか起動できないため、マージ前適用はこの経路しかない。ラベルを外して付け直せば再実行され、適用済みなら`Remote database is up to date.`で終わる。
+3. **手動dispatch**: inputs は `environment`（`DATABASE_URL`シークレットのスコープ選択と監査用）、`mode`（`list` / `dry-run` / `push`）、`repair_versions`。調査や復旧用。
+
+`concurrency: supabase-migrations`（cancel-in-progressなし）で同時pushを直列化する。DDL適用中のrunを途中で殺さないため、キャンセルではなく待機。
+
+- **絶対にSQL Editorでremoteのスキーマを直接変えないこと。** 変えると`supabase_migrations.schema_migrations`と実体が乖離し、以後の`db push`が`relation "sessions" already exists`で失敗する（001は素の`CREATE TABLE`、002は素の`ADD COLUMN`で冪等でない。003以降は`IF NOT EXISTS`ガード付き）。復旧は`mode=list`でremote列の欠けを確認し、`repair_versions`に該当版を渡す（repairはSQLを再実行せず履歴に記録するだけ）。**2026-08にCLI管理へ移行した際に001-005で一度だけ必要だった作業で、現在の履歴は001-007まで揃っている。**
+- 接続文字列: poolerの6543（transaction mode）はDDLを流せないため、ワークフローが同ホストの5432（session mode）へ読み替える。アプリ側は6543のまま。
+- マイグレーションは`backend/supabase/migrations/`にあるので、CLIには**`--workdir backend`が必須**。リポジトリ直下の`supabase/.temp/linked-project.json`（ref `fqyhrubqkpuyliqojbai`）は`supabase link`の残骸で、`--db-url`経路では参照されない。
+- ローカルから同じことをする場合（`conf/.env`に`DATABASE_URL`がある前提）:
+
+```bash
+supabase migration list --workdir backend --db-url "$DATABASE_URL"
+# ↑のremote列が空のときだけ（既に当たっている版を履歴に記録する。SQLは再実行されない）
+supabase migration repair --status applied 001 002 003 004 005 --workdir backend --db-url "$DATABASE_URL"
+supabase db push --workdir backend --db-url "$DATABASE_URL"
+```
+
+- 検証済み（2026-08）: 上記手順をローカルPostgres 16（001-005のみ手で適用した状態）で実行し、006/007だけが適用されて`app_settings`と`llm_provider`/`llm_model`が作られ、履歴に001-007が記録され、再pushが`Remote database is up to date.`になることを確認した。
+- **共有Supabaseへ適用済み（2026-08-16、run 31936101275）**: remote履歴は空だったため001-005をrepairし、006/007のみを適用。`app_settings`の存在、`correction_histories.llm_provider`/`llm_model`の存在、履歴7件を`psql`で確認済み。以後この共有プロジェクトはCLI管理下にあるので、**SQL Editorで直接スキーマを変えないこと**（また履歴が乖離してrepairが必要になる）。
+
+**公式構成との差分:** Supabase公式（[Managing environments](https://supabase.com/docs/guides/deployment/managing-environments)）はmainマージでの自動pushを推奨しており、本リポジトリもそれに従っている。ただし公式サンプルの`supabase link --project-ref` +`SUPABASE_ACCESS_TOKEN` / `SUPABASE_DB_PASSWORD` / `SUPABASE_PROJECT_ID`ではなく、**既に存在する`DATABASE_URL`シークレット1本で動く`--db-url`経路**を採っている（追加シークレットが不要。project refは`supabase/.temp/linked-project.json`にある）。`--linked`形へ寄せたい場合はアクセストークンとDBパスワードをシークレットに追加する必要がある。
+
+**`DATABASE_URL`シークレットは直接接続文字列（IPv6のみ）で、そのままではCIから繋がらない:** 実行で確認済み（2026-08）。値は`db.fqyhrubqkpuyliqojbai.supabase.co`宛てで、このホストは**AAAAレコードしか公開していない**（IPv4は有料アドオン）。GitHub ActionsランナーはIPv6を持たないため、素の`db push`は`dial error … ECONNREFUSED 2406:da14:…`で落ちる。そこで`apply-migrations.yml`は直接URLをSupavisorのsession mode URL（ユーザ`postgres.<ref>`、`aws-N-<region>.pooler.supabase.com:5432`）へ組み替える。リージョンは`ap-northeast-1`（プロジェクトのAAAAがAWSの`2406:da14::/35`に含まれることから判定。移設時は`SUPABASE_REGION`リポジトリ変数で上書き）、クラスタ（`aws-0` / `aws-1`）は判別できないため両方を試して先に繋がった方を使う。**実測では`aws-0-ap-northeast-1`が正**。候補URLは使用前にすべてマスクし、ログにはホスト名しか出さない。
+
+**マイグレーションのファイル名:** 公式規約はタイムスタンプ（`20260816120000_name.sql`）だが、本リポジトリは`001_`連番。CLIは数値順に扱うので`supabase migration new`で作った新しいタイムスタンプ名と混在しても順序は壊れない。
+
+### critique-probe.yml（添削品質のliveプローブ）
+
+手動dispatch、またはPRに`run-critique-probe`ラベルを付けると実行。Geminiのクォータを消費するので自動実行はしない。`GEMINI_API_KEYS`（または`GEMINI_API_KEY`）をGitHub Secretsに置いたときだけ動き、無ければどこに登録するかを示して失敗する。DBには一切触らない。
+
+- **計測対象**: `backend/tests/fixtures/primate_sleep_source_target.py`（報告された「トロント大学・霊長類の睡眠」文）に対する実出力を、報告済みの4欠陥で採点する — `chinese_forms`（修正案を中国語で返す）、`source_items`（中国語原文の側を添削）、`synonym_only`（言い換えのみの指摘）、`numeral_caught`（「９点５時間」という実際の誤りを拾えるか）。あわせて`elapsed_s` / `finishReason` / トークン数を出すので、Gemini 22sタイムアウトとウォールクロック予算の確認にも使える。
+- **条件**: `baseline`（変更前プロンプト。指定コミットから`prompts.py`をimportするので**byte単位で当時のまま**）、`current`、`custom`（`system_prompt_override`経路＝設定ダイアログが書く経路を実際に通す）。
+- **合格ライン**: `TIMEOUT`行が無く、`chinese_forms` / `source_items` / `synonym_only`が0、`numeral_caught`がtrue、`n_suggestions`がbaseline以上。
+- **baselineはマージ前に測るのが確実**: squash mergeでブランチが消えると変更前プロンプトのコミットに到達できなくなる。到達不能な場合はbaselineをスキップして警告を出す（`baseline_ref` inputで指定可能）。
+- 結果は`/tmp/live_critique_quality.json`をartifactとしてアップロードする。
 
 ### migrate-database.yml
 
@@ -303,8 +349,9 @@ User Request → POST /api/suggestions (authenticated)
 
 | Module | Purpose |
 |--------|---------|
-| `prompts.py` | Shared prompt (ported from frontend WebLLM prompts) |
-| `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) |
+| `prompts.py` | Shared prompt (ported from frontend WebLLM prompts), split into the editable `SYSTEM_PROMPT_BODY` and the code-owned `OUTPUT_CONTRACT` |
+| `parser.py` | Hardened JSON parser (trailing commas, truncated JSON, markdown fences) + `has_non_japanese_recommendation` guard |
+| `provider_output.py` | `ProviderOutput(text, model)` — how rotation wrappers report which model actually answered |
 | `key_pool.py` | Multi-credential load/select/cooldown for Groq + Cloudflare + Gemini (env-driven) |
 | `groq_provider.py` | Groq API client, 25s timeout, JSON-object mode, model rotation pool (`ALLOWED_GROQ_MODELS`) + key-pool retry + in-provider model retry |
 | `cloudflare_provider.py` | Cloudflare Workers AI client (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 20s timeout) with response-shape normalize + key-pool retry |
@@ -347,6 +394,22 @@ WebLLM is retained for:
 2. Users who prefer local inference (privacy, no API dependencies)
 3. Future client-side AI evolution
 
+### Editable shared prompt (`editable-prompt-model-log-and-critique-fix`, 2026-08)
+
+The correction prompt's **rules body** is operator-editable from the top-bar gear (`frontend/src/components/ui/prompt-settings-dialog.tsx`) and stored as one global `app_settings.correction_system_prompt` row — shared by every allow-listed user, persisted across logins, no per-browser copy.
+
+| Endpoint (authenticated `router`, so also served at `/api/...`) | Behavior |
+|---|---|
+| `GET /settings/prompt` | `{ systemPrompt, defaultSystemPrompt, isCustomized, updatedAt, updatedBy }`; attribution is null when the default is in effect |
+| `PUT /settings/prompt` | Body `{ systemPrompt }`. Trim-empty → 400; >20,000 chars → 400 stating the limit. `updated_by` comes from the JWT email |
+| `DELETE /settings/prompt` | Reset: deletes the row (idempotent), so the built-in default applies again |
+
+- **The output contract is code-owned and not editable.** `prompts.py` composes `(stored body or SYSTEM_PROMPT_BODY) [+ EXEMPLAR_REFERENCE_RULES when an exemplar was pasted] + OUTPUT_CONTRACT`, and `OUTPUT_CONTRACT` (JSON-only instruction + `格式：` schema line) is always appended last. A bad edit can lower critique quality; it cannot break parsing. With no override and no exemplar, the composition is byte-identical to `SYSTEM_PROMPT`.
+- **Read path**: `backend/app/prompt_settings.resolve_system_prompt_override()` is called by the `/suggestions` handler *after* the wall-clock deadline is set, with a short timeout, no cache, and never raises — any failure logs a warning and uses the built-in default. A settings outage degrades quality at worst, never availability.
+- **Not versioned**: history rows do not record the prompt in force at generation time. Only the model is attributable (see below).
+- **Offline WebLLM keeps its own built-in prompt** (`frontend/src/lib/webllm/prompts/`), which the dialog states explicitly. Mirror new rules there in condensed form; do not port the full backend rules into the 7B instruction budget.
+- Editing the default in code still reaches everyone who has not customized it, because customization is a row's presence rather than a copy of the default.
+
 ### Prompts (Shared)
 
 Same prompt is used across all providers (backend and WebLLM):
@@ -385,15 +448,29 @@ All providers return the same JSON structure:
   "suggestions": [
     {"id": "1", "original": "指摘箇所", "reason": "修正理由", "sourceExcerpt": "原文中の対応箇所（該当する場合のみ、省略/空文字可）"}
   ],
-  "overallComment": "全体講評"
+  "overallComment": "全体講評",
+  "llmProvider": "gemini",
+  "llmModel": "gemini-3.7-flash"
 }
 ```
+
+`llmProvider` / `llmModel` (added 2026-08, `editable-prompt-model-log-and-critique-fix`) report which inference actually answered — `gemini` / `groq` / `cloudflare` plus the exact model id — because Gemini and Groq pick a model per request and may retry against a sibling. `call_gemini_with_rotation()` / `call_groq_with_rotation()` return `ProviderOutput(text, model)` for this; Cloudflare's plain string is paired with `CF_MODEL`. Reported on the salvage and retry paths too, logged on success, and the 503 error shape is unchanged (pool sizes only). The frontend passes both onto the pending-history create so a round stays attributable, and renders `{model} used` as a caption in the AI Suggestions header (omitted when unknown, e.g. rounds saved before the columns existed).
 
 `sourceExcerpt` (added 2026-08, `highlight-suggestion-text-spans` change) is optional: an excerpt from SOURCE TEXT (原文) corresponding to the flagged TARGET TEXT snippet in `original`, used by the frontend to highlight the matching span in the SOURCE TEXT textarea. Omitted/empty when the model finds no clear correspondence — never fabricated. Not persisted through `POST /proposals`.
 
 `reason` / `overallComment` are Simplified Chinese. Each `reason` should convey problem → recommended JP form (when clear) → accessible why in **natural prose** — do not force spoken machine labels `现状：` / `推荐：` / `現状：` / `推奨：`. Multi-paragraph TARGET should get systematic real-issue coverage (target ≥~5 when that many exist; no padding). Gemini `maxOutputTokens` is 16384 so dense multi-suggestion JSON does not truncate mid-array — but the token ceiling was never the coverage constraint (measured `finishReason` is `STOP`, not `MAX_TOKENS`, at ~1.4k–2.1k completion tokens); the thinking level is. See **Gemini thinking level is the latency/coverage lever** above.
 
 **Prompt maintenance rule (`refine-prompt-instruction-coherence`, 2026-08):** when editing prompt rules, edit the few-shot exemplar to match. Models imitate the example's item count and issue categories more reliably than they obey a numeric target, so the example MUST demonstrate the stated density (≥5 in the backend prompt), cover the categories the rules call highest priority (meaning shift / modality, systematic grammar — not lexical and register items only), keep every item distinct (a restated correction is padding), and include one item that omits `sourceExcerpt` so an always-filled excerpt does not bias the model into inventing one. Exemplar `reason` text is learner-facing critique only — anti-pattern directives belong in the rule sections. Avoid hedges whose side effect is fewer items (a standalone "quality over count" line, or a global brevity cue instead of a per-item length bound). There is no suggestion-count cap in prompts, providers, or the parser; keep it that way.
+
+**Target-language critique rules (`editable-prompt-model-log-and-critique-fix`, 2026-08).** A reported live session returned Chinese words *as the correction* for a Japanese TARGET (改为"对比睡眠数据" / 改为"理论上"), critiqued the Chinese SOURCE (「原文の"完成"を"实现"に」), offered interchangeable synonyms as faults (比較⇄対比, 研究者⇄学者), and proposed a form that does not hold in Japanese (「睡眠が需要だ」) — while missing real faults such as the numeral carryover 「９点５時間」. The rules now state, and the exemplar demonstrates:
+
+- **Recommended forms MUST be written in Japanese.** Chinese is for explanation only, never the corrected form. A learner cannot paste a Chinese word into a Japanese sentence.
+- **Only 添削対象 may be corrected.** The 原文 is the reference for judging meaning, never the object of correction — no item may propose rewriting the source into different Chinese.
+- **Interchangeable near-synonyms are not faults.** A wording item must name a concrete defect (meaning shift, register, collocation, domain term), not a preference.
+- **Any proposed form must be substituted back into the sentence and checked** for grammar and collocation before it is offered.
+- **Explain by meaning transfer**: what a Japanese reader would misunderstand or lose, not which word maps to which.
+
+Mechanical backstop: `parser.has_non_japanese_recommendation()` flags a `reason` only when a recommendation verb is followed by a quoted span that has **no kana** *and* contains a Simplified-only character, so kanji-only Japanese citations (「叙事詩」「学者」) do not trip it. Wired into `_content_usable()` with its own retry nudge, sharing `MAX_PARSE_RETRY_ATTEMPTS` so the attempt ceiling is unchanged. It is script-level only: a script-legal but semantically wrong recommendation (需要 for 必要) is out of its reach by design and is handled by the rules plus the live probe. Reproduce/measure with `backend/scripts/live_critique_quality.py` (fixture: `backend/tests/fixtures/primate_sleep_source_target.py`), which scores Chinese recommended forms, items whose excerpt is not a TARGET span, synonym-only items, and whether 「９点５時間」 is caught. Mirror these rules into the WebLLM prompt in condensed form.
 
 ### How to Get API Keys
 

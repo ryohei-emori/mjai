@@ -1,0 +1,194 @@
+# ============================================================================
+# Applies migrations from `backend/supabase/migrations/` to the shared Supabase
+# Postgres. This is Supabase's documented CI setup: migration files are the
+# source of truth and land on the database when they land on main.
+# ============================================================================
+# Three ways in:
+#   * Push to main touching the migrations directory — applies what is new.
+#   * Labelling a pull request `run-migrations` — applies that branch's
+#     migrations before merge, for a change whose code needs the new schema.
+#     `workflow_dispatch` cannot do this: it only appears for the version of a
+#     workflow that is already on the default branch.
+#   * Manual dispatch — mode=list to inspect, dry-run, or push, plus a
+#     `repair_versions` input.
+#
+# `repair_versions` exists because `db push` compares against
+# `supabase_migrations.schema_migrations`, which stays empty for schema changes
+# made in the SQL Editor. Pushing then starts at 001 and fails with
+# `relation "sessions" already exists`, since 001 and 002 are not idempotent.
+# Repair records versions without running their SQL. It was needed once, when
+# this project switched from the SQL Editor to the CLI (2026-08); the shared
+# history is complete now, so leave the input empty unless a `list` run shows
+# gaps. The rule that keeps it that way: never change the remote schema outside
+# these migration files.
+# ============================================================================
+
+name: Supabase Migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/supabase/migrations/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (selects which DATABASE_URL secret applies)'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      mode:
+        description: 'list = show remote history only, dry-run = show what would apply, push = apply'
+        required: true
+        default: 'list'
+        type: choice
+        options:
+          - list
+          - dry-run
+          - push
+      repair_versions:
+        description: 'Space-separated versions to record as already applied, e.g. "001 002 003 004 005". Leave empty to skip.'
+        required: false
+        default: ''
+        type: string
+  pull_request:
+    types: [labeled]
+
+# One push at a time: concurrent `db push` runs against the same project would
+# race on the migration history. Queue instead of cancelling, so a run that is
+# already applying DDL is never killed halfway.
+concurrency:
+  group: supabase-migrations
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-migrations'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Resolve run parameters
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_REPAIR: ${{ inputs.repair_versions }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "MODE=${INPUT_MODE}" >> "$GITHUB_ENV"
+            echo "REPAIR=${INPUT_REPAIR}" >> "$GITHUB_ENV"
+          else
+            # Push to main and the PR label both mean "apply what is new".
+            echo "MODE=push" >> "$GITHUB_ENV"
+            echo "REPAIR=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Resolve connection string
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Supabase's direct host `db.<ref>.supabase.co` publishes only an AAAA
+          # record unless the paid IPv4 add-on is on, and GitHub runners have no
+          # IPv6, so a direct URL has to be rewritten to a Supavisor pooler host.
+          # The region below is the project's: its AAAA sits in AWS 2406:da14::/35
+          # (ap-northeast-1). Set the SUPABASE_REGION repository variable if the
+          # project ever moves. Which cluster (aws-0 / aws-1) serves the tenant is
+          # not derivable, so both are tried and the first that connects wins.
+          SUPABASE_REGION: ${{ vars.SUPABASE_REGION || 'ap-northeast-1' }}
+        run: |
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "::error::DATABASE_URL secret is empty for this environment. Add it under Settings -> Secrets and variables -> Actions (repository secret, or an environment secret on 'production')."
+            exit 1
+          fi
+          python3 - > /tmp/candidates <<'PY'
+          import os
+          import re
+          from urllib.parse import urlsplit, urlunsplit
+
+          url = urlsplit(os.environ["DATABASE_URL"])
+          host = url.hostname or ""
+          candidates = []
+
+          direct = re.fullmatch(r"db\.([a-z0-9]+)\.supabase\.co", host)
+          if direct:
+              ref = direct.group(1)
+              region = os.environ["SUPABASE_REGION"]
+              userinfo = url.netloc.rsplit("@", 1)[0]
+              password = userinfo.split(":", 1)[1] if ":" in userinfo else ""
+              for cluster in ("aws-0", "aws-1"):
+                  netloc = f"postgres.{ref}:{password}@{cluster}-{region}.pooler.supabase.com:5432"
+                  candidates.append(urlunsplit(url._replace(netloc=netloc)))
+              # Last resort: the direct host itself, in case IPv4 is available.
+              candidates.append(urlunsplit(url))
+          else:
+              # Port 6543 on the pooler is transaction mode, which cannot run DDL;
+              # 5432 on the same host is session mode and takes the same
+              # credentials. The app keeps using 6543 — this only affects DDL here.
+              if host.endswith("pooler.supabase.com") and url.port == 6543:
+                  url = url._replace(netloc=url.netloc.replace(":6543", ":5432"))
+              candidates.append(urlunsplit(url))
+
+          print("\n".join(candidates))
+          PY
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] && echo "::add-mask::${candidate}"
+          done < /tmp/candidates
+
+          selected=''
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            host="$(python3 -c 'import sys; from urllib.parse import urlsplit; print(urlsplit(sys.argv[1]).hostname)' "$candidate")"
+            printf 'Trying %s ... ' "$host"
+            if PGCONNECT_TIMEOUT=10 psql "$candidate" -tAc 'SELECT 1' >/dev/null 2>&1; then
+              echo 'connected'
+              selected="$candidate"
+              break
+            fi
+            echo 'no'
+          done < /tmp/candidates
+          rm -f /tmp/candidates
+
+          if [ -z "$selected" ]; then
+            echo "::error::No usable connection. Put the Session pooler string (Dashboard -> Connect -> Session pooler) in the DATABASE_URL secret, or set the SUPABASE_REGION variable if the project is not in ${SUPABASE_REGION}."
+            exit 1
+          fi
+          echo "MIGRATION_DB_URL=${selected}" >> "$GITHUB_ENV"
+
+      - name: Show remote migration history
+        run: supabase migration list --workdir backend --db-url "$MIGRATION_DB_URL"
+
+      - name: Record already-applied versions
+        if: env.REPAIR != ''
+        run: |
+          supabase migration repair --status applied $REPAIR \
+            --workdir backend --db-url "$MIGRATION_DB_URL"
+          supabase migration list --workdir backend --db-url "$MIGRATION_DB_URL"
+
+      - name: Dry run
+        if: env.MODE != 'list'
+        run: supabase db push --workdir backend --db-url "$MIGRATION_DB_URL" --dry-run
+
+      - name: Apply migrations
+        if: env.MODE == 'push'
+        run: supabase db push --workdir backend --db-url "$MIGRATION_DB_URL" --yes
+
+      - name: Verify schema
+        if: env.MODE == 'push'
+        run: |
+          psql "$MIGRATION_DB_URL" -v ON_ERROR_STOP=1 -c "
+            SELECT to_regclass('app_settings') IS NOT NULL AS app_settings_exists;
+            SELECT column_name FROM information_schema.columns
+             WHERE table_name = 'correction_histories'
+               AND column_name IN ('llm_provider', 'llm_model')
+             ORDER BY column_name;
+            SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;
+          "

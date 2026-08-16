@@ -289,7 +289,7 @@ class TestProviderKeyFallback:
                     [{"role": "user", "content": "hi"}]
                 )
 
-        assert result == "{}"
+        assert result == ("{}", "openai/gpt-oss-20b")
         assert mock_client.post.call_count == 3
         models = [
             c.kwargs["json"]["model"] for c in mock_client.post.call_args_list

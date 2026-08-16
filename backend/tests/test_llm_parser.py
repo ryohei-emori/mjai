@@ -13,6 +13,7 @@ from app.llm.parser import (
     extract_json,
     safe_json_parse,
     has_non_chinese_reason,
+    has_non_japanese_recommendation,
     has_weak_critique_reason,
     has_japanese_corner_quotes_in_critique,
 )
@@ -820,3 +821,74 @@ class TestHasWeakCritiqueReason:
 
     def test_empty_suggestions_not_weak(self):
         assert has_weak_critique_reason({"suggestions": [], "overallComment": ""}) is False
+
+
+class TestHasNonJapaneseRecommendation:
+    """editable-prompt-model-log-and-critique-fix — the corrected form must be
+    Japanese. The reported session handed back Chinese words as the correction
+    (改为“理论上”), which a learner cannot write into a Japanese sentence."""
+
+    @staticmethod
+    def _result(reason: str, overall: str = "整体质量良好"):
+        return {
+            "suggestions": [{"id": "1", "original": "箇所", "reason": reason}],
+            "overallComment": overall,
+        }
+
+    def test_fires_on_chinese_recommended_form(self):
+        assert has_non_japanese_recommendation(
+            self._result("这里不够自然，应该改为“理论上”以使语言更为流畅")
+        ) is True
+
+    def test_fires_on_chinese_phrase_recommendation(self):
+        assert has_non_japanese_recommendation(
+            self._result("原文是“对比”，所以应该改为“对比睡眠数据”以更好地传达原意")
+        ) is True
+
+    def test_fires_with_ascii_and_corner_quote_styles(self):
+        assert has_non_japanese_recommendation(
+            self._result('“データ”可以改成"指标"，这样更自然')
+        ) is True
+        assert has_non_japanese_recommendation(
+            self._result("「体型や脳容量」宜改为「体型、脑容量等」，读起来更流畅")
+        ) is True
+
+    def test_does_not_fire_on_kana_bearing_japanese_recommendation(self):
+        assert has_non_japanese_recommendation(
+            self._result("搭配不成立，应写成「紙に印刷された文字」，否则读者看不出是印刷品")
+        ) is False
+
+    def test_does_not_fire_on_kanji_only_japanese_recommendation(self):
+        # 「叙事詩」/「学者」 share every character with Japanese kanji, so a
+        # script check cannot and must not reject them.
+        assert has_non_japanese_recommendation(
+            self._result("专名不规范，必须换成「叙事詩」，否则读者要先猜体裁")
+        ) is False
+        assert has_non_japanese_recommendation(
+            self._result("这里宜改为「学者」，因为学术文体更常用")
+        ) is False
+
+    def test_does_not_fire_on_digit_notation_recommendation(self):
+        assert has_non_japanese_recommendation(
+            self._result("「９点５時間」是照搬中文写法，应写成「9.5時間」")
+        ) is False
+
+    def test_does_not_fire_without_a_recommendation_verb(self):
+        # Chinese quoted inside plain explanation is normal critique prose.
+        assert has_non_japanese_recommendation(
+            self._result("原文的“对比”强调两者相较，这里的译法把这层意思丢了")
+        ) is False
+
+    def test_does_not_fire_on_the_few_shot_exemplar(self):
+        from app.llm.parser import parse_model_output
+        from app.llm.prompts import FEW_SHOT_EXAMPLE
+
+        exemplar = parse_model_output(
+            FEW_SHOT_EXAMPLE[FEW_SHOT_EXAMPLE.index("输出：") + len("输出："):]
+        )
+        assert has_non_japanese_recommendation(exemplar) is False
+
+    def test_empty_suggestions_are_not_flagged(self):
+        assert has_non_japanese_recommendation(
+            {"suggestions": [], "overallComment": ""}
+        ) is False

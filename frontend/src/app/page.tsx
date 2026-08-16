@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { HighlightedTextarea, type TextHighlight } from "@/components/ui/highlighted-textarea"
 import { ExemplarTextCard } from "@/components/ui/exemplar-text-card"
 import { JobQueueCarousel } from "@/components/ui/job-queue-carousel"
+import { PromptSettingsDialog } from "@/components/ui/prompt-settings-dialog"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -29,7 +30,7 @@ import { LoginScreen } from "./login-screen"
 // Cold path: never statically import `@/lib/webllm` or `@/lib/webllm/engine`
 // (those pull `@mlc-ai/web-llm`). Engine loads only via dynamic import below.
 import { checkWebGPUSupport } from "@/lib/webllm/webgpu"
-import { WEBLLM_MODEL_DISPLAY_NAME } from "@/lib/webllm/config"
+import { WEBLLM_MODEL_DISPLAY_NAME, WEBLLM_MODEL_ID } from "@/lib/webllm/config"
 import {
   formatElapsedTime,
   formatDownloadProgress,
@@ -100,6 +101,9 @@ type SavedData = {
   timestamp: Date
   confirmed?: boolean
   historyId?: string
+  // Absent for rounds saved before provenance was recorded.
+  llmProvider?: string
+  llmModel?: string
 }
 
 type QueuedJob = {
@@ -118,6 +122,9 @@ type QueuedJob = {
   queuedAt: Date
   completedAt?: Date
   source?: 'api' | 'webllm'
+  // 生成に実際に使われた推論プロバイダ/モデル（source は転送経路の区別）。
+  llmProvider?: string
+  llmModel?: string
   // 生成成功後に DB へ書いた pending history（確定時は PUT で promote）
   historyId?: string
 }
@@ -420,7 +427,12 @@ export default function TextCorrectionApp() {
   const [webgpuSupported, setWebgpuSupported] = useState<boolean | null>(null)
   const [webgpuUnsupportedReason, setWebgpuUnsupportedReason] = useState<string | null>(null)
   const [offlineMode, setOfflineMode] = useState(false)
-  const [lastSuggestionSource] = useState<"api" | "webllm" | null>(null)
+  const [lastSuggestionSource, setLastSuggestionSource] = useState<"api" | "webllm" | null>(null)
+  // Which model produced the suggestions currently on screen (cloud model id or
+  // the WebLLM model), shown as an unobtrusive caption. null = unknown, e.g. a
+  // History round saved before provenance was recorded.
+  const [lastSuggestionModel, setLastSuggestionModel] = useState<string | null>(null)
+  const [promptSettingsOpen, setPromptSettingsOpen] = useState(false)
   const [jobQueue, setJobQueue] = useState<QueuedJob[]>([])
   // 「確定してコピー・保存」の二重送信を防止し、1生成ラウンドにつき
   // 添削データ(History)エントリが1件だけ作成されることを保証する
@@ -656,6 +668,8 @@ export default function TextCorrectionApp() {
       let suggestions: CorrectionSuggestion[] = []
       let overallComment = ''
       let source: 'api' | 'webllm' = 'api'
+      let llmProvider: string | undefined
+      let llmModel: string | undefined
 
       if (offlineMode) {
         // WebLLM ONLY when オフラインモード is explicitly ON (no API auto-fallback).
@@ -670,6 +684,8 @@ export default function TextCorrectionApp() {
         )
         suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
         overallComment = data.overallComment
+        llmProvider = 'webllm'
+        llmModel = WEBLLM_MODEL_ID
       } else {
         // Cloud API only — failures surface as failed jobs; never call WebLLM.
         try {
@@ -682,6 +698,8 @@ export default function TextCorrectionApp() {
           suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
           overallComment = data.overallComment
           source = 'api'
+          llmProvider = data.llmProvider || undefined
+          llmModel = data.llmModel || undefined
         } catch (apiError) {
           if (isSuggestionsAPIError(apiError) && apiError.rateLimited) {
             console.warn("[suggestions] Rate-limited / quota exhausted:", apiError)
@@ -708,11 +726,16 @@ export default function TextCorrectionApp() {
               suggestions,
               overallComment,
               source,
+              llmProvider,
+              llmModel,
               originalText,
               completedAt: new Date() 
             } 
           : j
       ))
+
+      setLastSuggestionSource(source)
+      setLastSuggestionModel(llmModel ?? null)
 
       // Trigger bell shake animation on job completion
       setBellShake(true)
@@ -740,6 +763,8 @@ export default function TextCorrectionApp() {
             overallComment,
             status: "pending",
             provider: source,
+            ...(llmProvider ? { llmProvider } : {}),
+            ...(llmModel ? { llmModel } : {}),
             clientJobId: jobId,
           })
           if (!savedHistory?.historyId) {
@@ -964,6 +989,8 @@ export default function TextCorrectionApp() {
             queuedAt: ts,
             completedAt: ts,
             source: history.provider === "webllm" ? "webllm" : "api",
+            llmProvider: history.llmProvider || undefined,
+            llmModel: history.llmModel || undefined,
             historyId: history.historyId,
           })
           continue
@@ -980,6 +1007,8 @@ export default function TextCorrectionApp() {
           timestamp: ts,
           confirmed: true,
           historyId: history.historyId,
+          llmProvider: history.llmProvider || undefined,
+          llmModel: history.llmModel || undefined,
         })
       }
 
@@ -1379,6 +1408,8 @@ export default function TextCorrectionApp() {
     
     setShowCustomForm(true)
     setSelectionCounter(preservedCustomSuggestions.filter((s) => s.selected).length)
+    setLastSuggestionSource(job.source ?? null)
+    setLastSuggestionModel(job.llmModel ?? null)
     
     // 確認中のジョブIDを記録（ジョブキュー用）
     // Note: useEffect handles scrolling reactively when this is set
@@ -1855,6 +1886,14 @@ export default function TextCorrectionApp() {
             status: "confirmed" as const,
             selectedProposalIds: selectedIdsJson,
             customProposals: customJson,
+            // No pending row to promote (restored round, or the generation-time
+            // save failed), so carry the provenance of the round on screen.
+            ...(lastSuggestionModel
+              ? {
+                  llmProvider: lastSuggestionSource === "webllm" ? "webllm" : "api",
+                  llmModel: lastSuggestionModel,
+                }
+              : {}),
           }
 
           const savedHistory = await historyAPI.createHistory(historyData)
@@ -1937,6 +1976,12 @@ export default function TextCorrectionApp() {
     // 選択カウンターを復元
     const selectedCount = savedData.aiSuggestions.filter((s) => s.selected).length
     setSelectionCounter(selectedCount)
+
+    // Rounds saved before provenance existed have no model to show.
+    setLastSuggestionSource(
+      savedData.llmProvider === "webllm" ? "webllm" : savedData.llmProvider ? "api" : null,
+    )
+    setLastSuggestionModel(savedData.llmModel ?? null)
 
     setShowCustomForm(true)
 
@@ -2330,11 +2375,12 @@ export default function TextCorrectionApp() {
             )}
           </div>
 
-          {/* Settings Icon (disabled placeholder) */}
+          {/* Settings (shared AI correction prompt) */}
           <button
-            className="p-2 rounded-full hover:bg-surface-container transition-colors opacity-50 cursor-default"
-            title="Settings (Coming Soon)"
-            disabled
+            onClick={() => setPromptSettingsOpen(true)}
+            className="p-2 rounded-full hover:bg-surface-container transition-colors"
+            title="設定"
+            aria-label="設定"
           >
             <span className="material-symbols-outlined md-24 text-on-surface-variant">settings</span>
           </button>
@@ -2774,6 +2820,17 @@ export default function TextCorrectionApp() {
                       <CardDescription className="text-metadata text-on-surface-variant mt-1">
                         Select 3+ to save
                       </CardDescription>
+                      {/* Which model wrote these suggestions. Its own line so a
+                          long model id wraps instead of pushing the count and
+                          selection badges around. */}
+                      {lastSuggestionModel && (
+                        <p
+                          data-testid="suggestion-model-caption"
+                          className="text-metadata text-on-surface-variant/80 mt-1 break-all"
+                        >
+                          {lastSuggestionModel} used
+                        </p>
+                      )}
                       <div className="flex items-center gap-2 flex-wrap mt-2">
                         <Badge className={canSave ? "bg-session-complete text-white" : "bg-surface-container text-on-surface-variant"}>
                           選択済み: {selectedCount}/3+
@@ -3048,6 +3105,14 @@ export default function TextCorrectionApp() {
           </div>
         </div>
       )}
+
+      {/* Shared prompt editor. Mounted outside the workspace tree so opening or
+          closing it cannot touch session state, drafts, or the job queue. */}
+      <PromptSettingsDialog
+        open={promptSettingsOpen}
+        onOpenChange={setPromptSettingsOpen}
+        onSaved={(description) => toast({ title: "設定", description })}
+      />
     </div>
   )
 }
