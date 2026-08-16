@@ -1,3 +1,25 @@
+const plugin = require('tailwindcss/plugin')
+
+/**
+ * `can-hover:` — only where the pointer can actually hover.
+ *
+ * Keyed on what the pointer can do, not on how wide the screen is: a narrow
+ * window on a laptop can still hover, and a 1280px tablet cannot, so a
+ * breakpoint would get both of those wrong.
+ *
+ * Its purpose is to make hiding an action until hover safe. Because the variant
+ * does not apply to the base class, a reveal written as
+ * `can-hover:opacity-0 can-hover:group-hover:opacity-100` is visible by
+ * default and quiet only where there is a pointer to reveal it.
+ *
+ * The counterpart — a finger-sized target where the pointer cannot hover — is
+ * `.touch-target` in globals.css, which needs centering as well as a minimum
+ * size and so is more than a variant can express.
+ */
+const pointerCapabilityVariants = plugin(function ({ addVariant }) {
+  addVariant('can-hover', '@media (hover: hover) and (pointer: fine)')
+})
+
 module.exports = {
     darkMode: ["class"],
     content: [
@@ -100,5 +122,5 @@ module.exports = {
   		}
   	}
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [require("tailwindcss-animate"), pointerCapabilityVariants],
 }

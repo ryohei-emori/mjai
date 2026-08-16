@@ -42,13 +42,25 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-1/2 top-1/2 z-50 flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-lg border border-outline-variant bg-surface p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        // `max-h-[90%]` rather than `90vh`: this element is `fixed`, so a
+        // percentage resolves against the initial containing block, which is
+        // the viewport the browser is actually showing (and which shrinks for
+        // the on-screen keyboard — see layout.tsx `interactiveWidget`). `vh`
+        // reports the largest possible viewport, so on a phone the dialog's
+        // footer ended up below the fold with nothing to scroll it into view.
+        // `overflow-y-auto` is the backstop for the case the two above cannot
+        // cover: once a flexible child has shrunk to its own floor there is
+        // nothing left to give, and without a scroll the footer's buttons would
+        // simply be unreachable.
+        "fixed left-1/2 top-1/2 z-50 flex max-h-[90%] w-[calc(100vw-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-y-auto rounded-lg border border-outline-variant bg-surface p-4 sm:p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
         className
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
+      {/* A 16px glyph is not a finger-sized target, so `touch-target` gives it
+          the 44px minimum where the pointer cannot hover. */}
+      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none touch-target">
         <X className="h-4 w-4" />
         <span className="sr-only">閉じる</span>
       </DialogPrimitive.Close>

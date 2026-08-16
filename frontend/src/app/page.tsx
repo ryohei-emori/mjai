@@ -69,6 +69,14 @@ async function generateWebLLMSuggestions(
 
 type ActiveNav = 'sessions' | 'dashboard' | 'archive'
 
+// Rendered twice — as tabs in the top bar, and as rows in the session drawer
+// for the narrow viewports where the top bar has no room for them.
+const NAV_ITEMS: readonly { id: ActiveNav; label: string }[] = [
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'archive', label: 'Archive' },
+]
+
 // Right pane resizing constants
 const RIGHT_PANE_MIN_WIDTH = 280 // px
 const RIGHT_PANE_MAX_WIDTH = 600 // px
@@ -347,7 +355,8 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
   return (
     <div className={`p-3 border rounded-lg ${bgClass}`}>
       {/* Header: Model info + current phase */}
-      <div className="flex items-center justify-between mb-2">
+      {/* 折り返し可。narrowなペーンではフェーズ名とモデル名が1行に収まらない。 */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-2">
         <div className="flex items-center gap-2">
           <span className={`material-symbols-outlined md-18 animate-spin ${textClass}`}>progress_activity</span>
           <span className={`text-body-sm font-medium ${textClass}`}>
@@ -445,6 +454,10 @@ export default function TextCorrectionApp() {
   const [rightPaneWidth, setRightPaneWidth] = useState(RIGHT_PANE_DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [isLgScreen, setIsLgScreen] = useState(false)
+  // Below lg there is not enough width to show the editor and the review panes
+  // side by side, and not enough height to stack them, so only one is on screen
+  // at a time (design.md Decision 3). Ignored at lg and above, where both are.
+  const [mobilePane, setMobilePane] = useState<'editor' | 'review'>('editor')
   // Hover-preview trigger for suggestion-card text-span highlighting
   // (see highlight-suggestion-text-spans design.md Decision 2).
   const [hoveredSuggestionId, setHoveredSuggestionId] = useState<string | null>(null)
@@ -1215,6 +1228,11 @@ export default function TextCorrectionApp() {
       currentSession.suggestions.length > 0
     ) {
       lastScrolledJobIdRef.current = confirmingJobId
+      // Below lg the suggestions card is not merely further down the page, it is
+      // in the pane that is currently hidden — so bringing it into view means
+      // switching panes first. The scroll below then still positions the card
+      // within that pane.
+      setMobilePane('review')
       // Small delay to ensure DOM is updated after React render
       const timeoutId = setTimeout(() => {
         const suggestionsCard = document.querySelector('[data-suggestions-card]')
@@ -1228,6 +1246,12 @@ export default function TextCorrectionApp() {
     // reference, to avoid re-scrolling on every selection/edit (see comment above)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmingJobId, currentSession?.suggestions?.length])
+
+  // A pane choice belongs to the session it was made in: carrying "review" over
+  // to a session with nothing to review would open on an empty pane.
+  useEffect(() => {
+    setMobilePane('editor')
+  }, [currentSessionId])
 
   // 「実際にレビュー作業をしている」ジョブID（add-suggestion-generation-timer
   // 改訂、design.md Decision 7）。以下の全てを満たす場合のみ非nullになる:
@@ -2095,7 +2119,8 @@ export default function TextCorrectionApp() {
                 e.stopPropagation()
                 deleteSession(s.id)
               }}
-              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 h-auto"
+              aria-label={`セッション「${s.name}」を削除`}
+              className="can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity p-1 h-auto touch-target"
             >
               <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
             </Button>
@@ -2129,6 +2154,9 @@ export default function TextCorrectionApp() {
   // Job Queueと同じヘルパーを使い「最新」の定義が2箇所でズレないようにする。
   const completedJobs = useMemo(() => sortCompletedJobsNewestFirst(jobQueue), [jobQueue])
   const completedJobCount = completedJobs.length
+  // Shown on the pane switch below lg, where the review pane is off screen: the
+  // proposals under review, or failing that the work that will produce them.
+  const reviewPaneCount = currentSession?.suggestions?.length || activeJobCount
 
   // 生成タイマー表示用の派生値（add-suggestion-generation-timer改訂、design.md
   // Decision 7参照）。「最新」はキュー待機/AI処理時間を含まない、レビュー
@@ -2192,7 +2220,7 @@ export default function TextCorrectionApp() {
   // 認証状態を確認中はローディング表示
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-container-low">
+      <div className="min-h-viewport flex items-center justify-center bg-surface-container-low">
         <span className="material-symbols-outlined md-48 animate-spin text-md3-primary">progress_activity</span>
       </div>
     )
@@ -2204,16 +2232,16 @@ export default function TextCorrectionApp() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-surface-container-low">
+    <div className="h-viewport flex flex-col bg-surface-container-low">
       {/* TopAppBar */}
-      <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
+      <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-3 sm:px-4 gap-2 sm:gap-4 flex-shrink-0 z-50">
         {/* Session pane trigger — 全ブレークポイントで常に見えるので一覧が
             迷子にならない。ドッキング中に押すとカラムをたたんで作業領域を
             広げ、フローティング中はオーバーレイを開閉する。 */}
         <button
           type="button"
           onClick={toggleSessionPane}
-          className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary"
+          className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
           title={
             isSessionPaneDocked
               ? 'セッション一覧をたたむ'
@@ -2238,38 +2266,24 @@ export default function TextCorrectionApp() {
         {/* Logo/Title - Text wordmark only, no icon */}
         <h1 className="text-headline-lg text-on-surface">MJAI</h1>
 
-        {/* Navigation Tabs */}
-        <nav className="flex items-center gap-1 ml-4">
-          <button
-            onClick={() => setActiveNav('sessions')}
-            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
-              activeNav === 'sessions'
-                ? 'bg-primary-container text-on-primary-container font-semibold'
-                : 'text-on-surface-variant hover:bg-surface-container font-normal'
-            }`}
-          >
-            Sessions
-          </button>
-          <button
-            onClick={() => setActiveNav('dashboard')}
-            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
-              activeNav === 'dashboard'
-                ? 'bg-primary-container text-on-primary-container font-semibold'
-                : 'text-on-surface-variant hover:bg-surface-container font-normal'
-            }`}
-          >
-            Dashboard
-          </button>
-          <button
-            onClick={() => setActiveNav('archive')}
-            className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
-              activeNav === 'archive'
-                ? 'bg-primary-container text-on-primary-container font-semibold'
-                : 'text-on-surface-variant hover:bg-surface-container font-normal'
-            }`}
-          >
-            Archive
-          </button>
+        {/* Navigation Tabs — below md the bar cannot hold three of these plus
+            the account and action icons, so they move into the session drawer
+            rather than overflowing off the right edge. */}
+        <nav className="hidden md:flex items-center gap-1 ml-4" aria-label="セクション">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setActiveNav(item.id)}
+              aria-current={activeNav === item.id ? 'page' : undefined}
+              className={`px-4 py-2 text-body-sm rounded-lg transition-colors ${
+                activeNav === item.id
+                  ? 'bg-primary-container text-on-primary-container font-semibold'
+                  : 'text-on-surface-variant hover:bg-surface-container font-normal'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
 
         {/* New Session Button */}
@@ -2295,7 +2309,7 @@ export default function TextCorrectionApp() {
           <div className="relative" ref={bellPanelRef}>
             <button
               type="button"
-              className={`p-2 rounded-full hover:bg-surface-container transition-colors relative ${bellShake ? 'bell-shake' : ''}`}
+              className={`p-2 rounded-full hover:bg-surface-container transition-colors relative touch-target ${bellShake ? 'bell-shake' : ''}`}
               title="完了通知"
               aria-label="完了通知"
               aria-expanded={bellPanelOpen}
@@ -2370,35 +2384,40 @@ export default function TextCorrectionApp() {
           {/* Settings (shared AI correction prompt) */}
           <button
             onClick={() => setPromptSettingsOpen(true)}
-            className="p-2 rounded-full hover:bg-surface-container transition-colors"
+            className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
             title="設定"
             aria-label="設定"
           >
             <span className="material-symbols-outlined md-24 text-on-surface-variant">settings</span>
           </button>
 
-          {/* User Avatar */}
-          {avatarUrl ? (
-            <Image
-              src={avatarUrl}
-              alt="User avatar"
-              width={32}
-              height={32}
-              className="rounded-full border border-outline-variant"
-              unoptimized
-            />
-          ) : (
-            <span className="material-symbols-outlined md-24 text-on-surface-variant">account_circle</span>
-          )}
+          {/* Identity and sign-out. Below sm this is the pair that has to give
+              way for the bar to fit a 320px screen, so it moves to the foot of
+              the session drawer — where a phone's account controls usually are
+              anyway — rather than being dropped. */}
+          <div className="hidden sm:flex items-center gap-2">
+            {avatarUrl ? (
+              <Image
+                src={avatarUrl}
+                alt="User avatar"
+                width={32}
+                height={32}
+                className="rounded-full border border-outline-variant"
+                unoptimized
+              />
+            ) : (
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">account_circle</span>
+            )}
 
-          {/* Logout Button */}
-          <button
-            onClick={() => signOut()}
-            className="p-2 rounded-full hover:bg-surface-container transition-colors"
-            title="ログアウト"
-          >
-            <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
-          </button>
+            <button
+              onClick={() => signOut()}
+              className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
+              title="ログアウト"
+              aria-label="ログアウト"
+            >
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2406,15 +2425,18 @@ export default function TextCorrectionApp() {
           Sheetがバックドロップ・Esc・フォーカストラップ・トリガーへの
           フォーカス復帰を提供する（design.md Decision 2）。 */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-80 p-0 bg-surface">
-          <SheetHeader className="p-4 pr-12 border-b border-outline-variant">
+        {/* 320px端末では w-80 が画面幅と同じになり、閉じるための背景タップ域が
+            消えるので 85vw で頭打ちにする。高さはSheetが fixed inset-y-0 なので
+            ICB基準で、モバイルのブラウザUIを跨がない。 */}
+        <SheetContent side="left" className="w-[min(20rem,85vw)] p-0 bg-surface flex flex-col">
+          <SheetHeader className="p-4 pr-12 border-b border-outline-variant flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
               <SheetTitle className="text-headline-md text-on-surface">セッション</SheetTitle>
               {isLgScreen && (
                 <button
                   type="button"
                   onClick={dockSessionPane}
-                  className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary"
+                  className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
                   title="セッション一覧を左に固定する"
                   aria-label="セッション一覧を左に固定する"
                 >
@@ -2425,9 +2447,64 @@ export default function TextCorrectionApp() {
               )}
             </div>
           </SheetHeader>
-          <div className="p-4">
-            <div className="mb-4">{sessionSearchInput}</div>
-            <ScrollArea className="h-[calc(100vh-12rem)]">{sessionListItems}</ScrollArea>
+          {/* セクション切り替え。md未満ではトップバーにタブを置く幅がないため、
+              一覧と同じドロワーが行き先になる（design.md Decision 5）。選択後は
+              ドロワーが本文を覆い続けないよう閉じる。 */}
+          <nav
+            className="md:hidden px-4 pt-4 flex flex-col gap-1 flex-shrink-0"
+            aria-label="セクション"
+          >
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveNav(item.id)
+                  setSidebarOpen(false)
+                }}
+                aria-current={activeNav === item.id ? 'page' : undefined}
+                className={`px-3 py-2.5 text-body-sm rounded-lg text-left transition-colors ${
+                  activeNav === item.id
+                    ? 'bg-primary-container text-on-primary-container font-semibold'
+                    : 'text-on-surface-variant hover:bg-surface-container font-normal'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+          <div className="p-4 flex-1 min-h-0 flex flex-col">
+            <div className="mb-4 flex-shrink-0">{sessionSearchInput}</div>
+            {/* 高さはflexから導く。`calc(100vh-12rem)` はヘッダー等の高さを
+                決め打ちしていたため、ブラウザUIの分だけ下端が切れていた。 */}
+            <ScrollArea className="flex-1 min-h-0">{sessionListItems}</ScrollArea>
+          </div>
+          {/* sm未満でトップバーから外したアカウント操作の行き先。 */}
+          <div className="sm:hidden border-t border-outline-variant p-4 flex items-center gap-3 flex-shrink-0">
+            {avatarUrl ? (
+              <Image
+                src={avatarUrl}
+                alt="User avatar"
+                width={32}
+                height={32}
+                className="rounded-full border border-outline-variant flex-shrink-0"
+                unoptimized
+              />
+            ) : (
+              <span className="material-symbols-outlined md-24 text-on-surface-variant flex-shrink-0">
+                account_circle
+              </span>
+            )}
+            <span className="text-body-sm text-on-surface-variant truncate min-w-0 flex-1">
+              {user?.email ?? ''}
+            </span>
+            <button
+              onClick={() => signOut()}
+              className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target flex-shrink-0"
+              title="ログアウト"
+              aria-label="ログアウト"
+            >
+              <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
+            </button>
           </div>
         </SheetContent>
       </Sheet>
@@ -2452,11 +2529,58 @@ export default function TextCorrectionApp() {
 
           {/* Center + Right Pane Container */}
           <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+            {/* Pane switch — only below lg, where one pane is on screen at a
+                time. Rendered inside the flex-col container so it takes its own
+                row above whichever pane is showing, and removed from layout at
+                lg where both panes are visible and the switch would be a lie. */}
+            {currentSession && (
+              <div
+                className="lg:hidden flex-shrink-0 flex gap-1 border-b border-outline-variant bg-surface px-3 py-2"
+                role="group"
+                aria-label="表示するペーン"
+              >
+                <button
+                  type="button"
+                  onClick={() => setMobilePane('editor')}
+                  aria-pressed={mobilePane === 'editor'}
+                  className={`flex-1 rounded-lg px-3 py-2 text-body-sm transition-colors ${
+                    mobilePane === 'editor'
+                      ? 'bg-primary-container text-on-primary-container font-semibold'
+                      : 'text-on-surface-variant hover:bg-surface-container font-normal'
+                  }`}
+                >
+                  編集
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobilePane('review')}
+                  aria-pressed={mobilePane === 'review'}
+                  className={`flex-1 rounded-lg px-3 py-2 text-body-sm transition-colors inline-flex items-center justify-center gap-1.5 ${
+                    mobilePane === 'review'
+                      ? 'bg-primary-container text-on-primary-container font-semibold'
+                      : 'text-on-surface-variant hover:bg-surface-container font-normal'
+                  }`}
+                >
+                  添削案
+                  {/* What is waiting in the pane you cannot currently see. */}
+                  {reviewPaneCount > 0 && (
+                    <Badge className="bg-surface-container text-on-surface-variant text-xs font-medium">
+                      {reviewPaneCount}
+                    </Badge>
+                  )}
+                </button>
+              </div>
+            )}
+
             {/* Center Pane - Editor */}
-            <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+            <main
+              className={`flex-1 min-h-0 overflow-y-auto p-4 lg:p-6 ${
+                mobilePane === 'editor' ? 'block' : 'hidden'
+              } lg:block`}
+            >
               {!currentSession ? (
-                <div className="flex items-center justify-center min-h-[calc(100vh-8rem)]">
-                  <Card className="max-w-md w-full mx-4 bg-surface border-outline-variant">
+                <div className="flex items-center justify-center min-h-full">
+                  <Card className="max-w-md w-full bg-surface border-outline-variant">
                     <CardHeader className="text-center">
                       <span className="material-symbols-outlined md-48 mx-auto mb-4 text-md3-primary">description</span>
                       <CardTitle className="text-headline-md text-on-surface">セッションを開始</CardTitle>
@@ -2473,13 +2597,20 @@ export default function TextCorrectionApp() {
                 </div>
               ) : (
                 <div className="space-y-6">
-                  {/* Session Header */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-headline-lg text-on-surface">{currentSession.name}</h2>
-                      <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
+                  {/* Session Header。名前と計測値を1行に収めるには narrow端末の
+                      幅が足りず、以前は日時が右へはみ出していた。名前側を縮め
+                      させ、入り切らない計測値は次の行へ回す。 */}
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                    {/* `basis-48` gives the name a width it is willing to fight
+                        for: with a zero basis it would always yield and be
+                        truncated to a few characters, when the session name is
+                        what identifies the work and the timings are short. Below
+                        that width the timings wrap to their own line instead. */}
+                    <div className="min-w-0 flex-1 basis-48">
+                      <h2 className="text-headline-lg text-on-surface truncate">{currentSession.name}</h2>
+                      <p className="text-metadata text-on-surface-variant truncate">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                       {/* レビュー作業時間タイマー＋平均（add-suggestion-generation-timer
                           改訂、design.md Decision 7）。LATESTはレビュー中のジョブの
                           累計レビュー時間（キュー待機/AI処理時間を含まない）。
@@ -2528,8 +2659,9 @@ export default function TextCorrectionApp() {
                           </CardTitle>
                           <button
                             onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText, "原文がクリップボードにコピーされました")}
-                            className="p-1.5 rounded hover:bg-surface-container transition-colors"
+                            className="p-1.5 rounded hover:bg-surface-container transition-colors touch-target"
                             title="コピー"
+                            aria-label="原文をコピー"
                           >
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                           </button>
@@ -2566,8 +2698,9 @@ export default function TextCorrectionApp() {
                           </CardTitle>
                           <button
                             onClick={() => currentSession?.targetText && copyToClipboard(currentSession.targetText, "添削対象テキストがクリップボードにコピーされました")}
-                            className="p-1.5 rounded hover:bg-surface-container transition-colors"
+                            className="p-1.5 rounded hover:bg-surface-container transition-colors touch-target"
                             title="コピー"
+                            aria-label="添削対象テキストをコピー"
                           >
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                           </button>
@@ -2583,8 +2716,9 @@ export default function TextCorrectionApp() {
                           highlights={targetHighlights}
                         />
                         
-                        {/* Offline mode toggle */}
-                        <div className="flex items-center justify-between p-3 bg-surface-container border border-outline-variant rounded-lg">
+                        {/* Offline mode toggle。ラベルとバッジを1行に収めるには
+                            narrow端末の幅が足りないので折り返させる。 */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-surface-container border border-outline-variant rounded-lg">
                           <div className="flex items-center gap-2">
                             <Checkbox
                               id="offline-mode"
@@ -2622,7 +2756,8 @@ export default function TextCorrectionApp() {
                           <AIDiagnosticsPanel status={webllmStatus} />
                         )}
                         
-                        {/* Generate Button */}
+                        {/* Generate Button。narrow端末では中央に置いた小さな的を
+                            狙わせるより、幅いっぱいのほうが親指で押しやすい。 */}
                         <div className="flex justify-center">
                           <Button
                             onClick={handleGenerateClick}
@@ -2631,7 +2766,7 @@ export default function TextCorrectionApp() {
                               !currentSession.originalText.trim() ||
                               (offlineMode && webgpuSupported === false)
                             }
-                            className="bg-on-surface text-surface hover:bg-on-surface/90 rounded-full px-6 py-2"
+                            className="w-full sm:w-auto bg-on-surface text-surface hover:bg-on-surface/90 rounded-full px-6 py-2"
                           >
                             {(() => {
                               const processingCount = jobQueue.filter(j => j.status === 'processing').length
@@ -2674,8 +2809,10 @@ export default function TextCorrectionApp() {
             </div>
 
             {/* Right Pane - Job Queue + Suggestions (Desktop: side panel with resizable width, Mobile: below editor) */}
-            <aside 
-              className="w-full lg:flex-shrink-0 bg-surface border-t lg:border-t-0 border-outline-variant overflow-y-auto"
+            <aside
+              className={`w-full flex-1 min-h-0 lg:flex-none bg-surface border-outline-variant overflow-y-auto ${
+                mobilePane === 'review' ? 'block' : 'hidden'
+              } lg:block`}
               style={isLgScreen ? { width: rightPaneWidth } : undefined}
             >
               <div className="p-4 lg:p-6 space-y-card-gap">
@@ -2853,7 +2990,7 @@ export default function TextCorrectionApp() {
                               ? 'bg-primary-container border-md3-primary'
                               : 'border-outline-variant hover:bg-surface-container'
                           }`}
-                          title="ダブルクリックで選択/選択解除"
+                          title="ダブルクリック、または右上の選択ボタンで選択/選択解除"
                         >
                           <div className="flex-1 min-w-0 space-y-2">
                             <div className="flex items-center justify-between">
@@ -2868,15 +3005,18 @@ export default function TextCorrectionApp() {
                                   </Badge>
                                 )}
                               </div>
-                              {/* Hover-reveal action icons */}
-                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {/* Quiet until hover on a mouse; always present on
+                                  touch, where the select button below is also
+                                  the single-tap alternative to double-click. */}
+                              <div className="flex items-center gap-1 can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity">
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "提案内容がクリップボードにコピーされました")
                                   }}
-                                  className="p-1 rounded hover:bg-surface-container-high"
+                                  className="p-1 rounded hover:bg-surface-container-high touch-target"
                                   title="コピー"
+                                  aria-label="この提案をコピー"
                                 >
                                   <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                                 </button>
@@ -2885,8 +3025,10 @@ export default function TextCorrectionApp() {
                                     e.stopPropagation()
                                     toggleSuggestionSelection(suggestion.id)
                                   }}
-                                  className="p-1 rounded hover:bg-surface-container-high"
+                                  className="p-1 rounded hover:bg-surface-container-high touch-target"
                                   title={suggestion.selected ? "選択解除" : "選択"}
+                                  aria-label={suggestion.selected ? "この提案の選択を解除" : "この提案を選択"}
+                                  aria-pressed={suggestion.selected}
                                 >
                                   <span className={`material-symbols-outlined md-18 ${suggestion.selected ? 'text-session-complete' : 'text-on-surface-variant'}`}>
                                     {suggestion.selected ? 'check_circle' : 'radio_button_unchecked'}
@@ -3067,8 +3209,9 @@ export default function TextCorrectionApp() {
                                 <Button 
                                   variant={data.confirmed ? "ghost" : "outline"} 
                                   size="sm"
-                                  className="h-8 px-2"
+                                  className="h-8 px-2 touch-target"
                                   title="確認"
+                                  aria-label="この履歴を確認"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleRestore()
@@ -3081,8 +3224,9 @@ export default function TextCorrectionApp() {
                                 <Button
                                   variant="outline"
                                   size="sm"
-                                  className="h-8 px-2"
+                                  className="h-8 px-2 touch-target"
                                   title="アーカイブ"
+                                  aria-label="この履歴をアーカイブ"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     archiveHistoryRound(data, index)

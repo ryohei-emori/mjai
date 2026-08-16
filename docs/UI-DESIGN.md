@@ -485,13 +485,62 @@ CSS animation triggered when a job **completes** (transitions to `completed` / b
 
 ## Mobile Responsive Behavior
 
-At breakpoints below `lg` (1024px):
+Three breakpoints are load-bearing, each deciding one thing (OpenSpec change `responsive-mobile-correction-ui`):
 
-- TopAppBar remains visible
-- Left pane (session list) is always the floating slide-out Sheet — the docked column is `lg`+ only. The Sheet itself is **not** mobile-only any more; it is the floating presentation at every width (see "Session pane: docked ⇄ floating")
-- The Sheet's dock button is hidden below `lg`, since there is nothing to dock to
-- Center and right panes stack vertically
-- New Session button becomes icon-only
+| Breakpoint | What it decides |
+|---|---|
+| `sm` (640px) | Below it, identity and sign-out move from the TopAppBar to the foot of the session drawer, and the New Session button becomes icon-only |
+| `md` (768px) | Below it, the section tabs (`Sessions` / `Dashboard` / `Archive`) move from the TopAppBar into the session drawer |
+| `lg` (1024px) | Below it, one workspace pane is on screen at a time (see below) and the session list is always the floating Sheet — the docked column is `lg`+ only |
+
+The TopAppBar is visible at every width. At 320px it holds the menu trigger, the wordmark and the three controls a correction session needs at hand: new session, notifications, settings.
+
+### One pane at a time below `lg`
+
+Above `lg` the editor and review panes sit side by side. Below it they used to stack, which put two independently scrolling regions inside one fixed-height container and let a long proposal list squeeze the editor to nothing. Instead:
+
+```
+below lg                              lg and above
+┌──────────────────────┐              ┌─────────┬────────┐
+│ ☰  MJAI    + 🔔 ⚙    │              │ Editor  │ Queue  │
+├──────────┬───────────┤              │         │ + AI   │
+│  編集    │ 添削案 ③  │  ← switch    │         │        │
+├──────────┴───────────┤              │         │        │
+│ Editor  (full height)│              │         │        │
+└──────────────────────┘              └─────────┴────────┘
+```
+
+- Which pane shows is `mobilePane` state, deliberately **not** persisted: a stored pane would reopen the app on the review side of a session the user has since left. It resets when the session changes
+- Whether the switch is in force is left entirely to CSS (`lg:` classes show and hide the panes), so there is no second definition of `lg` in JS to drift from Tailwind's
+- The 添削案 button carries a count of what is waiting in the pane that is off screen: proposals under review, or failing that the generations that will produce them
+- Opening a completed job for review brings the review pane forward — the same effect that scrolls the suggestions card into view on desktop
+
+### Viewport height
+
+The shell uses `.h-viewport` / `.min-h-viewport` from `globals.css`, each a `100vh` declaration followed by `100dvh`, rather than `h-screen` or `h-dvh`:
+
+- `dvh` tracks the viewport the browser is actually showing, shrinking for mobile address bars where `vh` reports the largest possible viewport and leaves the bottom of the app behind browser chrome
+- The `vh` line is a real fallback, not decoration: the panes take their height from the shell, so a browser that dropped an unknown unit would collapse the workspace rather than degrade it
+- A declaration pair rather than two utilities, because which of `h-screen` / `h-dvh` wins depends on ordering in the generated sheet
+- `layout.tsx` sets `interactiveWidget: 'resizes-content'` so the layout viewport — and therefore `dvh` — also shrinks for the on-screen keyboard
+- `maximumScale` / `userScalable` are deliberately absent. Suppressing pinch zoom is the routine collateral damage of a mobile pass, and this app shows dense CJK text people need to magnify
+
+Prefer flex-derived heights over `calc(100vh - …)`, which encodes a guess about how much chrome sits above an element and drifts when the header changes. For `fixed` elements a percentage (`max-h-[90%]`) resolves against the initial containing block, which is the visible viewport — that is what bounds the prompt dialog.
+
+### Pointer capability, not screen size
+
+Affordances that depend on hovering are gated on whether the pointer can hover, not on width — a narrow desktop window can hover, a 1280px tablet cannot:
+
+| Mechanism | Where | Meaning |
+|---|---|---|
+| `can-hover:` variant (`tailwind.config.js`) | `can-hover:opacity-0 can-hover:group-hover:opacity-100` | `@media (hover: hover) and (pointer: fine)`. Quiet-until-hover reveals apply only where hovering is possible; elsewhere the control is simply present |
+| `.touch-target` class (`globals.css`) | Icon-only buttons | Under `@media (hover: none)`, a 44px minimum with flex centering. A 18px glyph in `p-1` is a 26px target, and a minimum size alone would strand the glyph in a corner |
+
+Both add rules inside a media query and never alter the base class, so desktop density is untouched. Where a hover-revealed control was the only route to an action — selecting a proposal, previously double-click only — the visible control is also a single-activation route.
+
+### Rows that cannot fit a narrow viewport
+
+Rows whose contents need more than 320px get `flex-wrap`, with what yields chosen per row rather than uniformly. The session name keeps a `basis-48` it will fight for so the short timing readouts wrap instead of the name being cut to a few characters; the exemplar card heading truncates for the mirror-image reason, being fixed text the user can predict next to badges that describe their own input.
 
 ---
 
@@ -499,9 +548,9 @@ At breakpoints below `lg` (1024px):
 
 | File | Purpose |
 |---|---|
-| `frontend/src/app/globals.css` | CSS custom properties (design tokens) |
-| `frontend/tailwind.config.js` | Tailwind theme extensions |
-| `frontend/src/app/layout.tsx` | Font loading (Inter, Material Symbols) |
+| `frontend/src/app/globals.css` | CSS custom properties (design tokens), `.h-viewport` / `.min-h-viewport`, `.touch-target` |
+| `frontend/tailwind.config.js` | Tailwind theme extensions, `can-hover` variant |
+| `frontend/src/app/layout.tsx` | Font loading (Inter, Material Symbols), `viewport` export (keyboard-aware layout, zoom left enabled) |
 | `frontend/components.json` | shadcn/ui component library config |
 
 When updating design tokens, modify these source files first, then update this document to match.

@@ -163,7 +163,11 @@ export function PromptSettingsDialog({
           }}
           disabled={isLoading || isSaving}
           spellCheck={false}
-          className="min-h-[45vh] max-h-[55vh] overflow-y-auto font-mono text-body-sm leading-relaxed bg-surface-container border-outline-variant"
+          // Takes whatever height the dialog has left rather than claiming a
+          // share of the viewport: `45vh`/`55vh` ignored the header, footer and
+          // counters above and below it, which on a phone with the keyboard open
+          // pushed the save button out of the dialog entirely.
+          className="flex-1 min-h-[8rem] overflow-y-auto font-mono text-body-sm leading-relaxed bg-surface-container border-outline-variant"
         />
 
         <div className="flex items-center justify-between gap-2 flex-wrap">

@@ -104,7 +104,7 @@ Optional/legacy: `SUPABASE_SERVICE_ROLE_KEY` may appear in `conf/.env` (commente
 - Backend: Python 3.12 (Vercel Python runtime), deps in `backend/requirements.txt` and root `requirements.txt` (FastAPI, uvicorn, asyncpg, pytest, python-dotenv). Runs via `uvicorn app.main:app` locally, listens on `${PORT:-8000}`, has a `/health` endpoint. On Vercel, served as a serverless function at `/api/*`.
 - Frontend: Next.js 15 / React 19. No Dockerfile — frontend is deployed via Vercel (see Deployment section).
 - **Build-time vs runtime**: all `NEXT_PUBLIC_*` vars are baked into the frontend at `npm run build` time. On Vercel, configure these in Project Settings → Environment Variables. Locally, set them in `conf/.env` before running `npm run build`.
-- `frontend/next.config.js` uses Vercel's native Next.js build (no explicit `output` mode). The former `output: 'export'` and `frontend/Dockerfile` have been removed.
+- `frontend/next.config.js` still sets `output: 'export'` (plus `trailingSlash: true`, `images.unoptimized`), so `npm run build` produces a static export in `frontend/out/`. An earlier revision of this file claimed the explicit output mode had been removed — it had not. `frontend/Dockerfile` **is** gone. Note `frontend/out/` contains 18 tracked files from before `out/` was added to `.gitignore`; a local build overwrites them, so do not commit (or delete) that churn.
 - Backend `.env` file discovery order (`backend/app/main.py`): `${APP_ROOT}/../conf/.env`, then `${APP_ROOT}/.env`, then `/conf/.env`. `APP_ROOT` defaults to `/app` (container path).
 - **Vercel entrypoint**: `api/index.py` at repo root imports `app` from `backend.app.main` for Vercel's Python runtime detection.
 

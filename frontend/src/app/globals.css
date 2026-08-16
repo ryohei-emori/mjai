@@ -169,6 +169,43 @@ a {
 }
 
 @layer utilities {
+  /* Shell height. `dvh` tracks the viewport the browser is actually showing —
+     it shrinks for mobile address bars and, with
+     `interactive-widget=resizes-content` (see layout.tsx), for the on-screen
+     keyboard — where `vh` reports the largest possible viewport and leaves the
+     bottom of the app behind browser chrome.
+
+     The `vh` declaration is a real fallback, not decoration: the shell is a
+     flex column whose panes take their height from it, so a browser that drops
+     an unknown `dvh` value would collapse the workspace rather than degrade it.
+     Written as a declaration pair instead of Tailwind's `h-screen h-dvh`
+     because that pair's winner depends on utility ordering in the generated
+     sheet, which is not something the shell's height should rest on. */
+  .h-viewport {
+    height: 100vh;
+    height: 100dvh;
+  }
+  .min-h-viewport {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* Icon-only controls in this app are sized for a cursor (an 18px glyph in
+     `p-1` is a 26px target). Where the pointer cannot hover it is also a
+     finger, so those controls get the 44px minimum. Scoped to `hover: none` so
+     desktop density is untouched, and applied with flex centering because a
+     minimum size alone would leave the glyph in the corner of a larger box.
+     The hover-capable counterpart is the `can-hover:` variant (tailwind.config.js). */
+  @media (hover: none) {
+    .touch-target {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+    }
+  }
+
   /* Used by HighlightedTextarea's backdrop layer: scrollTop/scrollLeft are
      mirrored from the real textarea via JS, so no visible/interactive
      scrollbar is needed on this layer. */
