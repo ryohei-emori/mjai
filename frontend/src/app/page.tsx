@@ -355,7 +355,8 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
   return (
     <div className={`p-3 border rounded-lg ${bgClass}`}>
       {/* Header: Model info + current phase */}
-      <div className="flex items-center justify-between mb-2">
+      {/* 折り返し可。narrowなペーンではフェーズ名とモデル名が1行に収まらない。 */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-2">
         <div className="flex items-center gap-2">
           <span className={`material-symbols-outlined md-18 animate-spin ${textClass}`}>progress_activity</span>
           <span className={`text-body-sm font-medium ${textClass}`}>
@@ -2596,13 +2597,15 @@ export default function TextCorrectionApp() {
                 </div>
               ) : (
                 <div className="space-y-6">
-                  {/* Session Header */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-headline-lg text-on-surface">{currentSession.name}</h2>
-                      <p className="text-metadata text-on-surface-variant">作成日: {currentSession.createdAt.toLocaleString()}</p>
+                  {/* Session Header。名前と計測値を1行に収めるには narrow端末の
+                      幅が足りず、以前は日時が右へはみ出していた。名前側を縮め
+                      させ、入り切らない計測値は次の行へ回す。 */}
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-headline-lg text-on-surface truncate">{currentSession.name}</h2>
+                      <p className="text-metadata text-on-surface-variant truncate">作成日: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                       {/* レビュー作業時間タイマー＋平均（add-suggestion-generation-timer
                           改訂、design.md Decision 7）。LATESTはレビュー中のジョブの
                           累計レビュー時間（キュー待機/AI処理時間を含まない）。
@@ -2708,8 +2711,9 @@ export default function TextCorrectionApp() {
                           highlights={targetHighlights}
                         />
                         
-                        {/* Offline mode toggle */}
-                        <div className="flex items-center justify-between p-3 bg-surface-container border border-outline-variant rounded-lg">
+                        {/* Offline mode toggle。ラベルとバッジを1行に収めるには
+                            narrow端末の幅が足りないので折り返させる。 */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-surface-container border border-outline-variant rounded-lg">
                           <div className="flex items-center gap-2">
                             <Checkbox
                               id="offline-mode"

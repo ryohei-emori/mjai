@@ -73,7 +73,10 @@ export function ExemplarTextCard({
             >
               expand_more
             </span>
-            <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
+            {/* Truncates rather than pushing the row wider: the heading is fixed
+                text the user can predict, where the badges beside it are the
+                part that says something about their own input. */}
+            <CardTitle className="min-w-0 truncate text-label-caps tracking-wider text-on-surface-variant uppercase">
               EXEMPLAR TEXT (模範回答訳文)
               <span className="ml-2 normal-case tracking-normal text-metadata text-on-surface-variant/70">
                 任意
