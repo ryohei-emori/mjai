@@ -169,6 +169,27 @@ a {
 }
 
 @layer utilities {
+  /* Shell height. `dvh` tracks the viewport the browser is actually showing —
+     it shrinks for mobile address bars and, with
+     `interactive-widget=resizes-content` (see layout.tsx), for the on-screen
+     keyboard — where `vh` reports the largest possible viewport and leaves the
+     bottom of the app behind browser chrome.
+
+     The `vh` declaration is a real fallback, not decoration: the shell is a
+     flex column whose panes take their height from it, so a browser that drops
+     an unknown `dvh` value would collapse the workspace rather than degrade it.
+     Written as a declaration pair instead of Tailwind's `h-screen h-dvh`
+     because that pair's winner depends on utility ordering in the generated
+     sheet, which is not something the shell's height should rest on. */
+  .h-viewport {
+    height: 100vh;
+    height: 100dvh;
+  }
+  .min-h-viewport {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
   /* Used by HighlightedTextarea's backdrop layer: scrollTop/scrollLeft are
      mirrored from the real textarea via JS, so no visible/interactive
      scrollbar is needed on this layer. */

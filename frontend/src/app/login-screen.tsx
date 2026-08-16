@@ -44,7 +44,7 @@ export function LoginScreen() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+    <div className="min-h-viewport flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <Card className="max-w-md w-full">
         <CardHeader className="text-center">
           <span className="material-symbols-outlined md-48 mx-auto mb-4 text-md3-primary">auto_awesome</span>

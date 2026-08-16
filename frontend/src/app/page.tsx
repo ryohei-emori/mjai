@@ -2192,7 +2192,7 @@ export default function TextCorrectionApp() {
   // 認証状態を確認中はローディング表示
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-container-low">
+      <div className="min-h-viewport flex items-center justify-center bg-surface-container-low">
         <span className="material-symbols-outlined md-48 animate-spin text-md3-primary">progress_activity</span>
       </div>
     )
@@ -2204,7 +2204,7 @@ export default function TextCorrectionApp() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-surface-container-low">
+    <div className="h-viewport flex flex-col bg-surface-container-low">
       {/* TopAppBar */}
       <header className="h-16 bg-surface border-b border-outline-variant flex items-center px-4 gap-4 flex-shrink-0 z-50">
         {/* Session pane trigger — 全ブレークポイントで常に見えるので一覧が
@@ -2406,8 +2406,11 @@ export default function TextCorrectionApp() {
           Sheetがバックドロップ・Esc・フォーカストラップ・トリガーへの
           フォーカス復帰を提供する（design.md Decision 2）。 */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-80 p-0 bg-surface">
-          <SheetHeader className="p-4 pr-12 border-b border-outline-variant">
+        {/* 320px端末では w-80 が画面幅と同じになり、閉じるための背景タップ域が
+            消えるので 85vw で頭打ちにする。高さはSheetが fixed inset-y-0 なので
+            ICB基準で、モバイルのブラウザUIを跨がない。 */}
+        <SheetContent side="left" className="w-[min(20rem,85vw)] p-0 bg-surface flex flex-col">
+          <SheetHeader className="p-4 pr-12 border-b border-outline-variant flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
               <SheetTitle className="text-headline-md text-on-surface">セッション</SheetTitle>
               {isLgScreen && (
@@ -2425,9 +2428,11 @@ export default function TextCorrectionApp() {
               )}
             </div>
           </SheetHeader>
-          <div className="p-4">
-            <div className="mb-4">{sessionSearchInput}</div>
-            <ScrollArea className="h-[calc(100vh-12rem)]">{sessionListItems}</ScrollArea>
+          <div className="p-4 flex-1 min-h-0 flex flex-col">
+            <div className="mb-4 flex-shrink-0">{sessionSearchInput}</div>
+            {/* 高さはflexから導く。`calc(100vh-12rem)` はヘッダー等の高さを
+                決め打ちしていたため、ブラウザUIの分だけ下端が切れていた。 */}
+            <ScrollArea className="flex-1 min-h-0">{sessionListItems}</ScrollArea>
           </div>
         </SheetContent>
       </Sheet>
@@ -2455,8 +2460,8 @@ export default function TextCorrectionApp() {
             {/* Center Pane - Editor */}
             <main className="flex-1 overflow-y-auto p-4 lg:p-6">
               {!currentSession ? (
-                <div className="flex items-center justify-center min-h-[calc(100vh-8rem)]">
-                  <Card className="max-w-md w-full mx-4 bg-surface border-outline-variant">
+                <div className="flex items-center justify-center min-h-full">
+                  <Card className="max-w-md w-full bg-surface border-outline-variant">
                     <CardHeader className="text-center">
                       <span className="material-symbols-outlined md-48 mx-auto mb-4 text-md3-primary">description</span>
                       <CardTitle className="text-headline-md text-on-surface">セッションを開始</CardTitle>
