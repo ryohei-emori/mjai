@@ -41,3 +41,10 @@
 - [x] 6.1 Record in `docs/UI-DESIGN.md`: `color-scheme: light` + `.token-scrollbar`, `Badge` as non-interactive, the New Session pairing, and English-only chrome
 - [x] 6.2 Update tests that name renamed labels (`apiError.test.tsx`, `exemplar-text-card.test.tsx`, `job-queue-carousel.test.tsx`)
 - [x] 6.3 `npm run lint`, `npm test`, `npm run build` in `frontend/`
+
+## 7. Custom scale tokens survive class merging
+
+- [x] 7.1 Teach `cn` in `frontend/src/lib/utils.ts` the project's custom `fontSize` and `spacing` scales via `extendTailwindMerge`, so `text-body-base` is classified as a size and no longer displaces `text-on-primary` on the New Session button
+- [x] 7.2 Cover the New Session composition and a spacing token with a unit test on `cn`
+- [x] 7.3 Record the rule in `docs/UI-DESIGN.md` beside the typography scale: a custom scale value must be registered with `tailwind-merge` or it is merged as a colour
+- [x] 7.4 Re-run `npm run lint`, `npm test`, `npm run build` in `frontend/`

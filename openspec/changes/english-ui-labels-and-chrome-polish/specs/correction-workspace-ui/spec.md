@@ -61,6 +61,23 @@ The New Session control in the top bar SHALL be typeset from the documented typo
 - **THEN** the New Session button's label is set at the `body-base` size with semibold weight
 - **AND** no new typography value outside the documented scale is introduced
 
+#### Scenario: Label and icon carry the on-primary colour
+- **WHEN** the New Session button renders on its `md3-primary` background
+- **THEN** both the `add` icon and the `New Session` label are painted `on-primary`
+- **AND** neither falls back to the default body foreground colour
+
+### Requirement: Class Merging Preserves Both a Scale Token and a Colour
+Composing a custom typography or spacing token with a colour utility on one element SHALL keep both. The class-merge helper SHALL be taught the project's custom scales so a token such as `text-body-base` is treated as a size, not as a colour that displaces `text-on-primary`.
+
+#### Scenario: A component composes a size token and a text colour
+- **WHEN** a call site passes `text-<scale-token>` together with `text-<colour>` through the shared `cn` helper
+- **THEN** the merged class string retains the scale token and the colour
+- **AND** it drops only the base size the token is meant to override
+
+#### Scenario: A component composes a custom spacing token
+- **WHEN** a call site passes a spacing utility built on a custom scale value, such as `p-gutter`, over a default-scale one
+- **THEN** the merged class string keeps the custom-scale utility and drops the default-scale utility it conflicts with
+
 ### Requirement: Provider Reporting Is Not Duplicated
 Which provider produced a round of proposals SHALL be reported on the job card that produced it, and the model that wrote them on the suggestion panel's provenance caption. It SHALL NOT additionally be reported beside the offline-mode control, where it duplicated both.
 

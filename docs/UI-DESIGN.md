@@ -112,6 +112,19 @@ font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'S
 
 **Emphasising a control uses a scale token, not a new size.** The wide-viewport New Session button pairs `text-body-base` (16px) with `font-semibold`, overriding the `size="sm"` default so the primary action in the TopAppBar reads as primary. The token supplies weight 400, so the explicit `font-semibold` is what carries the emphasis — keep both. Below `sm` the button is icon-only and the pairing does not apply.
 
+### Custom Scale Values Must Be Registered With `tailwind-merge`
+
+Every token in the table above lives under `theme.extend` in `tailwind.config.js`, which Tailwind understands and `tailwind-merge` does not. An unrecognised `text-*` value falls through to the **colour** group, so `cn("text-on-primary", "text-body-base")` resolves as two colours and keeps only the last — dropping the colour and leaving the element on the default body foreground. That is what turned the New Session button's `add` icon and label black once `text-body-base` was added beside `text-on-primary`.
+
+`frontend/src/lib/utils.ts` therefore builds `cn` with `extendTailwindMerge`, declaring the custom `text` (typography) and `spacing` scales. **Adding a value to either scale in `tailwind.config.js` means adding it there too**, or it silently merges as a colour again. `frontend/src/lib/__tests__/classMerge.test.ts` guards the pairing.
+
+Consequences worth knowing:
+
+- A token composed with a colour now keeps both, so `text-<token> text-<colour>` is the normal way to write it — no inline `style` colour is needed to protect the size. The two inline colours in `highlighted-textarea.tsx` remain for a different reason (the backdrop layer needs a transparent textarea colour, not a utility).
+- A token now correctly displaces the base size it was meant to override: `CardTitle`/`CardDescription`, `Label` and `Button` call sites that pass a scale token render at that token's size and line height rather than the shadcn default.
+
+**Colour on a filled control is part of the variant's pairing.** A filled button carries its background and its foreground together — `bg-md3-primary text-on-primary` — and Material Symbols icons inside it inherit that `color`, so the icon needs no colour class of its own. Never leave a filled surface without an explicit `text-on-*`: the shadcn `default` variant's `text-primary-foreground` is displaced by any `text-*` the call site passes.
+
 ### UI Language
 
 **Chrome is English**; content is not. Labels, buttons, placeholders, badges, `aria-label`s, tooltips, toasts and empty states are English throughout (OpenSpec change `english-ui-labels-and-chrome-polish`). Three categories are deliberately excluded and must stay as they are:
