@@ -14,18 +14,22 @@ import {
 } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { settingsAPI, type PromptSettingsResponse } from "@/app/api"
+import { PROMPT_COMPOSITION_STEPS } from "@/lib/promptComposition"
 
 /**
  * Editor for the shared AI-correction prompt (top-bar settings).
  *
  * The prompt is one global record: everyone sees and edits the same text, and it
  * lives in Postgres so it survives logout instead of being re-entered per
- * session. Only the rules body is editable — the backend always appends the JSON
- * output contract, so a bad edit can lower critique quality but cannot break
- * parsing.
+ * session. Only the rules body is editable — the JSON output contract is always
+ * appended by code on both the cloud and offline paths, so a bad edit can lower
+ * critique quality but cannot break parsing.
  *
  * Loads on open (not on mount) so a user who never opens settings pays nothing,
  * and so reopening always shows what is actually stored rather than stale text.
+ *
+ * Copy is English because the people who tune critique quality read the prompt
+ * itself, which is Chinese, and were reading Japanese chrome around it.
  */
 export const PROMPT_MAX_LENGTH = 20000
 
@@ -63,7 +67,7 @@ export function PromptSettingsDialog({
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setError(e instanceof Error ? e.message : "プロンプトの読み込みに失敗しました")
+        setError(e instanceof Error ? e.message : "Failed to load the prompt.")
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false)
@@ -78,12 +82,12 @@ export function PromptSettingsDialog({
   const isTooLong = trimmed.length > PROMPT_MAX_LENGTH
   const isUnchanged = settings ? draft === settings.systemPrompt : true
   const validationMessage = isEmpty
-    ? "プロンプトを空にはできません。"
+    ? "The prompt cannot be empty."
     : isTooLong
-      ? `${PROMPT_MAX_LENGTH.toLocaleString()}文字以内にしてください（現在 ${trimmed.length.toLocaleString()}文字）。`
+      ? `Keep the prompt within ${PROMPT_MAX_LENGTH.toLocaleString()} characters (currently ${trimmed.length.toLocaleString()}).`
       : null
   // A failed load leaves the editor empty, which would otherwise report
-  // "空にはできません" and hide the reason the prompt never arrived.
+  // "cannot be empty" and hide the reason the prompt never arrived.
   const message = error || validationMessage
   const canSave = !isLoading && !isSaving && !isUnchanged && !validationMessage
 
@@ -94,11 +98,11 @@ export function PromptSettingsDialog({
       const saved = await settingsAPI.updatePrompt(trimmed)
       setSettings(saved)
       setDraft(saved.systemPrompt)
-      onSaved?.("添削プロンプトを保存しました。次の生成から適用されます。")
+      onSaved?.("System prompt saved. It applies from the next generation.")
       onOpenChange(false)
     } catch (e: unknown) {
       // Keep the edited text so a failed save never costs the user their work.
-      setError(e instanceof Error ? e.message : "プロンプトの保存に失敗しました")
+      setError(e instanceof Error ? e.message : "Failed to save the prompt.")
     } finally {
       setIsSaving(false)
     }
@@ -116,9 +120,11 @@ export function PromptSettingsDialog({
       setSettings(reset)
       setDraft(reset.systemPrompt)
       setConfirmingReset(false)
-      onSaved?.("既定のプロンプトに戻しました。")
+      onSaved?.("Reset to the default prompt.")
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "既定に戻せませんでした")
+      setError(
+        e instanceof Error ? e.message : "Failed to reset to the default prompt.",
+      )
     } finally {
       setIsSaving(false)
     }
@@ -126,36 +132,62 @@ export function PromptSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent aria-describedby="prompt-settings-description">
+      <DialogContent size="wide" aria-describedby="prompt-settings-description">
         <DialogHeader>
           <div className="flex items-center gap-2 flex-wrap">
-            <DialogTitle>添削プロンプト</DialogTitle>
+            <DialogTitle>System Prompt</DialogTitle>
             {settings && (
               <Badge
                 variant={settings.isCustomized ? "default" : "secondary"}
                 className="text-xs"
               >
-                {settings.isCustomized ? "カスタム" : "既定"}
+                {settings.isCustomized ? "Custom" : "Default"}
               </Badge>
             )}
           </div>
           <DialogDescription id="prompt-settings-description">
-            AI提案の指示文です。全ユーザー共通で保存され、ログインし直しても入力し直す必要はありません。
-            出力形式（JSON）の指定はシステム側で常に付加されるため、ここには書く必要がありません。
+            System prompt for AI suggestions. Shared across all users and
+            sessions, so it survives signing out. The JSON output format is
+            always appended automatically — you do not need to write it here.
           </DialogDescription>
         </DialogHeader>
 
         {settings?.isCustomized && (settings.updatedBy || settings.updatedAt) && (
           <p className="text-metadata text-on-surface-variant">
-            最終更新: {settings.updatedBy || "不明なユーザー"}
+            Last updated by {settings.updatedBy || "unknown user"}
             {settings.updatedAt
               ? ` / ${new Date(settings.updatedAt).toLocaleString()}`
               : ""}
           </p>
         )}
 
+        {/* Answers "where does EXEMPLAR TEXT go?" — the editor shows one field,
+            while what reaches the model is this field plus five other pieces.
+            The order comes from PROMPT_COMPOSITION_STEPS, which the prompt
+            builders are tested against, so this cannot quietly go stale. */}
+        <details className="rounded-lg border border-outline-variant bg-surface-container-low px-3 py-2">
+          <summary className="cursor-pointer text-body-sm text-on-surface">
+            How your prompt is assembled
+          </summary>
+          <ol className="mt-2 space-y-1.5">
+            {PROMPT_COMPOSITION_STEPS.map((step, index) => (
+              <li key={step.id} className="text-metadata text-on-surface-variant">
+                <span className="font-medium text-on-surface">
+                  {index + 1}. {step.label}
+                </span>
+                {step.conditional && (
+                  <span className="ml-1 text-on-surface-variant">
+                    (only when EXEMPLAR TEXT is filled in)
+                  </span>
+                )}
+                <span className="block">{step.detail}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+
         <Textarea
-          aria-label="添削プロンプト"
+          aria-label="System prompt"
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value)
@@ -166,20 +198,17 @@ export function PromptSettingsDialog({
           // Takes whatever height the dialog has left rather than claiming a
           // share of the viewport: `45vh`/`55vh` ignored the header, footer and
           // counters above and below it, which on a phone with the keyboard open
-          // pushed the save button out of the dialog entirely.
-          className="flex-1 min-h-[8rem] overflow-y-auto font-mono text-body-sm leading-relaxed bg-surface-container border-outline-variant"
+          // pushed the save button out of the dialog entirely. The floor is what
+          // it may not shrink past, so the tall one is behind `sm:` — raising it
+          // unconditionally would put the footer back below the fold.
+          className="flex-1 min-h-[12rem] sm:min-h-[24rem] overflow-y-auto font-mono text-body-sm leading-relaxed bg-surface-container border-outline-variant"
         />
 
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <p className="text-metadata text-on-surface-variant">
-            {isLoading
-              ? "読み込み中..."
-              : `${trimmed.length.toLocaleString()} / ${PROMPT_MAX_LENGTH.toLocaleString()} 文字`}
-          </p>
-          <p className="text-metadata text-on-surface-variant">
-            オフラインモード（WebLLM）は端末内の専用プロンプトを使うため、この設定は適用されません。
-          </p>
-        </div>
+        <p className="text-metadata text-on-surface-variant">
+          {isLoading
+            ? "Loading..."
+            : `${trimmed.length.toLocaleString()} / ${PROMPT_MAX_LENGTH.toLocaleString()} characters`}
+        </p>
 
         {message && (
           <p role="alert" className="text-body-sm text-red-600">
@@ -194,7 +223,7 @@ export function PromptSettingsDialog({
             onClick={handleReset}
             disabled={isLoading || isSaving || (!settings?.isCustomized && !confirmingReset)}
           >
-            {confirmingReset ? "本当に既定に戻す" : "既定に戻す"}
+            {confirmingReset ? "Confirm Reset" : "Reset to Default"}
           </Button>
           <Button
             type="button"
@@ -202,10 +231,10 @@ export function PromptSettingsDialog({
             onClick={() => onOpenChange(false)}
             disabled={isSaving}
           >
-            キャンセル
+            Cancel
           </Button>
           <Button type="button" onClick={handleSave} disabled={!canSave}>
-            {isSaving ? "保存中..." : "保存"}
+            {isSaving ? "Saving..." : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>

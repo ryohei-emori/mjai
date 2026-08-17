@@ -77,9 +77,9 @@ export function ExemplarTextCard({
                 text the user can predict, where the badges beside it are the
                 part that says something about their own input. */}
             <CardTitle className="min-w-0 truncate text-label-caps tracking-wider text-on-surface-variant uppercase">
-              EXEMPLAR TEXT (模範回答訳文)
+              EXEMPLAR TEXT (REFERENCE TRANSLATION)
               <span className="ml-2 normal-case tracking-normal text-metadata text-on-surface-variant/70">
-                任意
+                optional
               </span>
             </CardTitle>
             {/* 閉じている間に入力内容が黙って隠れないよう、入力済みであることを
@@ -87,10 +87,10 @@ export function ExemplarTextCard({
             {!open && hasValue && (
               <>
                 <Badge className="bg-session-complete text-white text-xs font-medium shrink-0">
-                  入力あり
+                  Filled
                 </Badge>
                 <span className="normal-case tracking-normal text-metadata text-on-surface-variant shrink-0">
-                  {value.length}文字
+                  {value.length} chars
                 </span>
               </>
             )}
@@ -99,8 +99,8 @@ export function ExemplarTextCard({
             <button
               onClick={() => value && onCopy(value)}
               className="p-1.5 rounded hover:bg-surface-container transition-colors shrink-0 touch-target"
-              title="コピー"
-              aria-label="模範回答訳文をコピー"
+              title="Copy"
+              aria-label="Copy exemplar text"
             >
               <span className="material-symbols-outlined md-18 text-on-surface-variant">
                 content_copy
@@ -112,7 +112,7 @@ export function ExemplarTextCard({
       {open && (
         <CardContent id={CONTENT_ID}>
           <Textarea
-            placeholder="模範回答の訳文があれば貼り付けてください（任意）。AIは対比の参考にのみ使い、丸写しの添削はしません..."
+            placeholder="Optional: paste a known-good translation. The AI uses it only to calibrate meaning and register — it never asks you to copy it..."
             value={value}
             onChange={(e) => onChange(e.target.value)}
             className="min-h-[140px] text-body-base leading-relaxed bg-surface-container border-outline-variant"

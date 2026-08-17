@@ -7,6 +7,7 @@
 
 import {
   SYSTEM_PROMPT,
+  OUTPUT_CONTRACT,
   EXEMPLAR_REFERENCE_RULES,
   FEW_SHOT_EXAMPLES,
   SECTION_ORIGINAL,
@@ -28,7 +29,37 @@ export type PromptInput = {
    */
   exemplarTranslation?: string;
   instructionPrompt?: string;
+  /**
+   * The stored shared correction prompt, when the operator has customized it.
+   * Replaces the built-in rules body; the output contract and the few-shot
+   * example are still supplied by code. Empty or absent keeps the built-in
+   * offline prompt, which is deliberately condensed for a 7B model.
+   */
+  systemPromptOverride?: string;
 };
+
+/**
+ * Compose the system section, mirroring `build_system_prompt` in
+ * backend/app/llm/prompts.py: rules body, then the exemplar rules when an
+ * exemplar was supplied, then the code-owned output contract.
+ *
+ * With no override the result is `SYSTEM_PROMPT` (plus the exemplar rules),
+ * where the contract already sits inside the built-in text — so an offline user
+ * who never customized the prompt gets exactly what they got before.
+ */
+export function buildSystemPrompt(
+  exemplarTranslation?: string,
+  systemPromptOverride?: string,
+): string {
+  const exemplar = (exemplarTranslation || "").trim();
+  const override = (systemPromptOverride || "").trim();
+  const exemplarRules = exemplar ? "\n" + EXEMPLAR_REFERENCE_RULES : "";
+
+  if (!override) {
+    return SYSTEM_PROMPT + exemplarRules;
+  }
+  return override + exemplarRules + "\n" + OUTPUT_CONTRACT;
+}
 
 /**
  * Build the complete prompt for WebLLM chat completion
@@ -37,10 +68,10 @@ export type PromptInput = {
 export function buildPrompt(input: PromptInput): string {
   const exemplar = (input.exemplarTranslation || "").trim();
 
-  let prompt = SYSTEM_PROMPT;
-  if (exemplar) {
-    prompt += "\n" + EXEMPLAR_REFERENCE_RULES;
-  }
+  let prompt = buildSystemPrompt(
+    input.exemplarTranslation,
+    input.systemPromptOverride,
+  );
   prompt += "\n" + FEW_SHOT_EXAMPLES + "\n";
   prompt += `${SECTION_PROBLEM}\n`;
   prompt += `${SECTION_ORIGINAL}\n${input.originalText}\n\n`;

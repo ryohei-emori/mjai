@@ -148,12 +148,12 @@ export function JobQueueCarousel<T>({
       {hasOverflow && (
         <div className="flex items-center justify-between gap-2">
           <p className="text-metadata text-on-surface-variant">
-            横スライドで他のジョブを表示
+            Slide sideways for more jobs
           </p>
           <div className="flex items-center gap-1">
             <button
               type="button"
-              aria-label="前のジョブへ"
+              aria-label="Previous jobs"
               disabled={!canScrollPrev}
               onClick={() => scrollByPage(-1)}
               className="p-1 rounded-full text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
@@ -162,7 +162,7 @@ export function JobQueueCarousel<T>({
             </button>
             <button
               type="button"
-              aria-label="次のジョブへ"
+              aria-label="Next jobs"
               disabled={!canScrollNext}
               onClick={() => scrollByPage(1)}
               className="p-1 rounded-full text-on-surface-variant hover:bg-surface-container transition-colors disabled:opacity-50 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"

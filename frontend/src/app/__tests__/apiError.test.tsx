@@ -90,28 +90,28 @@ test("WebGPU非対応時にボタンが無効化され、メッセージが表�
 
   // ログイン済み状態に遷移するまで待機
   await waitFor(() => {
-    expect(screen.getByText("新しいセッション作成")).toBeInTheDocument();
+    expect(screen.getByText("Create a new session")).toBeInTheDocument();
   });
 
   // セッション作成
-  fireEvent.click(screen.getByText("新しいセッション作成"));
+  fireEvent.click(screen.getByText("Create a new session"));
 
   // セッション作成が完了し、テキスト入力欄が表示されるまで待機
   await waitFor(() => {
-    expect(screen.getByPlaceholderText("原文テキストをここに貼り付けてください...")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Paste the source text here...")).toBeInTheDocument();
   });
 
   // テキスト入力
-  fireEvent.change(screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the source text here..."), {
     target: { value: "今日は天気がいいです" },
   });
-  fireEvent.change(screen.getByPlaceholderText("添削対象テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the text you want corrected here..."), {
     target: { value: "今日は天気が良いです" },
   });
 
   // WebGPU非対応メッセージが表示されることを確認
   await waitFor(() => {
-    expect(screen.getByText("AI提案機能を利用できません")).toBeInTheDocument();
+    expect(screen.getByText("AI suggestions cannot be generated.")).toBeInTheDocument();
   });
 
   // AI提案生成ボタンはAPI経由で利用可能なため、有効のままであることを確認
@@ -120,7 +120,7 @@ test("WebGPU非対応時にボタンが無効化され、メッセージが表�
   expect(generateButton).not.toBeDisabled();
 
   // オフラインモードのチェックボックスは無効化されていることを確認
-  const offlineModeCheckbox = screen.getByLabelText("オフラインモード（WebLLM）");
+  const offlineModeCheckbox = screen.getByLabelText("Offline Mode (WebLLM)");
   expect(offlineModeCheckbox).toBeDisabled();
 });
 

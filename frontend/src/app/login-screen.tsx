@@ -49,19 +49,19 @@ export function LoginScreen() {
         <CardHeader className="text-center">
           <span className="material-symbols-outlined md-48 mx-auto mb-4 text-md3-primary">auto_awesome</span>
           <CardTitle className="text-headline-lg text-on-surface">MJAI</CardTitle>
-          <CardDescription>続けるにはGoogleアカウントでログインしてください</CardDescription>
+          <CardDescription>Sign in with your Google account to continue</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={handleSignIn} disabled={isSigningIn} className="w-full" size="lg">
             {isSigningIn ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                リダイレクト中...
+                Redirecting...
               </>
             ) : (
               <>
                 <GoogleLogo className="w-[18px] h-[18px] mr-2" />
-                Googleでログイン
+                Sign in with Google
               </>
             )}
           </Button>

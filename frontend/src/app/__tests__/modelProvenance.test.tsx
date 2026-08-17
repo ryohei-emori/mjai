@@ -104,26 +104,26 @@ async function generateOnce() {
     </AuthProvider>,
   )
 
-  await waitFor(() => expect(screen.getByText("新しいセッション作成")).toBeInTheDocument())
-  fireEvent.click(screen.getByText("新しいセッション作成"))
+  await waitFor(() => expect(screen.getByText("Create a new session")).toBeInTheDocument())
+  fireEvent.click(screen.getByText("Create a new session"))
 
   await waitFor(() =>
     expect(
-      screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."),
+      screen.getByPlaceholderText("Paste the source text here..."),
     ).toBeInTheDocument(),
   )
-  fireEvent.change(screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the source text here..."), {
     target: { value: "多伦多大学的研究者对比了三十种灵长类动物的睡眠数据" },
   })
-  fireEvent.change(screen.getByPlaceholderText("添削対象テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the text you want corrected here..."), {
     target: { value: "トロント大学の研究者は３０種類の霊長類動物の睡眠データを比較し" },
   })
 
   fireEvent.click(screen.getByRole("button", { name: /Generate AI Suggestions/i }))
 
   // The completed job must be confirmed before the suggestions panel renders.
-  await waitFor(() => expect(screen.getByText("確認")).toBeInTheDocument())
-  fireEvent.click(screen.getByText("確認"))
+  await waitFor(() => expect(screen.getByText("Review")).toBeInTheDocument())
+  fireEvent.click(screen.getByText("Review"))
   await waitFor(() => expect(screen.getByText("AI Suggestions")).toBeInTheDocument())
 }
 
@@ -150,9 +150,9 @@ test("caption names the model that answered, and the round records it", async ()
   expect(screen.getByTestId("suggestion-model-caption")).toHaveTextContent(
     "gemini-3.7-flash used",
   )
-  // クラウドAPI / ローカルAI badge is driven by the same completion path.
-  expect(screen.getByText("クラウドAPI")).toBeInTheDocument()
-
+  // The provider badge this used to assert was removed as redundant with the
+  // per-round job cards; `lastSuggestionSource` now only reaches the DB, which
+  // the assertion below covers.
   expect(postedHistoryBody()).toMatchObject({
     status: "pending",
     provider: "api",

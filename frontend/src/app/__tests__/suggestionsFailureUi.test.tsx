@@ -109,24 +109,24 @@ test("failed job names each provider that declined and its key count", async () 
     </AuthProvider>,
   )
 
-  await waitFor(() => expect(screen.getByText("新しいセッション作成")).toBeInTheDocument())
-  fireEvent.click(screen.getByText("新しいセッション作成"))
+  await waitFor(() => expect(screen.getByText("Create a new session")).toBeInTheDocument())
+  fireEvent.click(screen.getByText("Create a new session"))
 
   await waitFor(() =>
     expect(
-      screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."),
+      screen.getByPlaceholderText("Paste the source text here..."),
     ).toBeInTheDocument(),
   )
-  fireEvent.change(screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the source text here..."), {
     target: { value: "多伦多大学的研究者对比了三十种灵长类动物的睡眠数据" },
   })
-  fireEvent.change(screen.getByPlaceholderText("添削対象テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the text you want corrected here..."), {
     target: { value: "トロント大学の研究者は３０種類の霊長類動物の睡眠データを比較し" },
   })
 
   fireEvent.click(screen.getByRole("button", { name: /Generate AI Suggestions/i }))
 
-  await waitFor(() => expect(screen.getByText("失敗")).toBeInTheDocument())
+  await waitFor(() => expect(screen.getByText("Failed")).toBeInTheDocument())
 
   // Both the toast and the failed job card carry it: the toast is missed if the
   // user looks away, and the card is what they come back to.

@@ -65,7 +65,7 @@ test("未認証の場合はログイン画面が表示され、保護されたAP
   );
 
   await waitFor(() => {
-    expect(screen.getByText("Googleでログイン")).toBeInTheDocument();
+    expect(screen.getByText("Sign in with Google")).toBeInTheDocument();
   });
 
   // ログイン画面ではセッション一覧などの保護APIを呼び出さない
@@ -90,8 +90,8 @@ test("認証済みの場合はログイン画面を表示せず、通常のワ�
   );
 
   await waitFor(() => {
-    expect(screen.getByText("新しいセッション作成")).toBeInTheDocument();
+    expect(screen.getByText("Create a new session")).toBeInTheDocument();
   });
 
-  expect(screen.queryByText("Googleでログイン")).not.toBeInTheDocument();
+  expect(screen.queryByText("Sign in with Google")).not.toBeInTheDocument();
 });

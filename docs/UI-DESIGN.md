@@ -110,6 +110,18 @@ font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'S
 
 > **Note**: All typography tokens include explicit `fontWeight` values in `tailwind.config.js`. The typography classes apply both size and weight automatically.
 
+**Emphasising a control uses a scale token, not a new size.** The wide-viewport New Session button pairs `text-body-base` (16px) with `font-semibold`, overriding the `size="sm"` default so the primary action in the TopAppBar reads as primary. The token supplies weight 400, so the explicit `font-semibold` is what carries the emphasis — keep both. Below `sm` the button is icon-only and the pairing does not apply.
+
+### UI Language
+
+**Chrome is English**; content is not. Labels, buttons, placeholders, badges, `aria-label`s, tooltips, toasts and empty states are English throughout (OpenSpec change `english-ui-labels-and-chrome-polish`). Three categories are deliberately excluded and must stay as they are:
+
+- **AI critique output** — `reason` / `overallComment` are Simplified Chinese by prompt design.
+- **User input** — source, target and exemplar text, and session names.
+- **Prompt and parser internals** — the prompt section headers in `webllm/prompts/templates.ts`, `instructionPrompt`, and the `抽出できませんでした` parser sentinel `page.tsx` matches on. These are protocol, not copy; translating them changes model behaviour or silently breaks a match.
+
+Japanese code comments are unaffected — they document intent for maintainers rather than address the user.
+
 ### Font Rendering
 
 ```css
@@ -299,9 +311,31 @@ collapsed                                        expanded
 
 - **Disclosure control**: the header row is a `button` with `aria-expanded` and `aria-controls`, carrying an `expand_more` glyph at `md-18` that flips via the existing `transition-transform` + `rotate-180`. The copy button stays **outside** that button so it remains independently clickable while collapsed.
 - **No height animation**: the textarea is conditionally rendered, not CSS-hidden — matching every other disclosure in this codebase (`showCustomForm`, the bell panel) and keeping the field out of the tab order while collapsed. There is no collapse-transition token in this document to draw on.
-- **Content indicator**: when collapsed and non-blank, the header shows a `入力あり` `Badge` in the existing `bg-session-complete text-white` pair plus a character count in `text-metadata text-on-surface-variant`, so entered text is never silently hidden. Both disappear when expanded, where the text speaks for itself.
+- **Content indicator**: when collapsed and non-blank, the header shows a `Filled` `Badge` in the existing `bg-session-complete text-white` pair plus a `N chars` count in `text-metadata text-on-surface-variant`, so entered text is never silently hidden. Both disappear when expanded, where the text speaks for itself.
 - **Padding**: `CardHeader` keeps its `pb-3` override only while expanded; collapsed it falls back to the default symmetric `p-6`.
 - **Persistence**: `mjai-exemplar-card-open` (`"1"` / `"0"`) in `localStorage`. Anything else, including unreadable storage, reads as collapsed. Collapsing never touches the value, its per-session draft persistence, or its inclusion in generation.
+
+### Scroll Surfaces
+
+Scrollbars are chrome and follow the outline tokens like every other rule and rail. Three things make this non-obvious, and all three are load-bearing:
+
+1. **`html { color-scheme: light }`, unconditionally** (`globals.css`). `darkMode: ["class"]` and the `.dark` token block exist for shadcn compatibility, but nothing ever applies that class. The previous `@media (prefers-color-scheme: dark)` rule therefore told the browser to paint UA surfaces — **scrollbars above all** — for a dark UI that never renders, which is why they came out black inside a light app. Do not reintroduce the media query without a real dark theme.
+2. **`::-webkit-scrollbar*`, not `scrollbar-color`.** The standard property sends Chrome back to macOS overlay scrollbars, which hides the rail the carousel deliberately shows. Both utilities use the `-webkit-` route so the whole app has one mechanism rather than two that disagree on the same machine. Firefox keeps its own scrollbar, now light.
+
+| Utility | Applied to | Rail |
+|---|---|---|
+| `.job-carousel-track` | Job Queue carousel track only | Hairline — a row of cards, always visible as a "this scrolls" cue. **Does not set `scrollbar-width: thin`**, on purpose |
+| `.token-scrollbar` | Editor pane, review pane, bell notification list | `10px`, thumb `--outline-variant` → `--outline` on hover, `border: 2px solid transparent` + `background-clip: content-box` to inset the thumb without shrinking its hit area |
+
+3. **Radix `ScrollArea`** (session list) hides the native scrollbar and draws its own thumb, so neither utility reaches it. Its thumb is `bg-outline-variant hover:bg-outline` — not the legacy shadcn `bg-border`.
+
+### Badges Are Readouts, Not Controls
+
+`Badge` carries no `onClick` anywhere in this app. shadcn's variants ship a `hover:bg-*/80`, and with `--primary` at `0 0% 9%` that turned the timing, count and status badges near-black under the cursor while promising an interaction that does not exist. Those hover backgrounds are **removed from `badgeVariants`** rather than from call sites: a call site passing its own `bg-…` overrides the base colour through `tailwind-merge` but not the `hover:` variant, which lives in a different modifier group.
+
+`transition-colors` stays — badges whose colour tracks state (the LATEST review timer moving between live, paused and completed) still need it. An intentionally clickable badge must ask for hover explicitly.
+
+The same rule applies to the non-interactive timing readouts (`628.0s`, `AVG`, `—`): no hover background and no `cursor: pointer`. Genuinely interactive surfaces — job cards, suggestion cards, session entries, notification rows — keep theirs.
 
 ### Session Card
 
@@ -324,13 +358,13 @@ The Job Queue panel in the right pane presents jobs as a **horizontally sliding 
 ```
 ┌──────────────────────────────────────────────┐
 │ JOB QUEUE                        [3 Active]  │
-│ APIモード: 並列処理（最大30件同時）…            │
-│ 横スライドで他のジョブを表示           ‹  ›   │
+│ API mode: up to 30 generations in parallel   │
+│ Slide sideways for more jobs           ‹  ›   │
 │ ┌────────────┬────────────┬──┐              │
-│ │ ⟳ 処理中   │ ✓ 完了     │▒▒│ ← peek + fade │
+│ │ ⟳ Processing│ ✓ Completed│▒▒│ ← peek+fade  │
 │ │ 翻訳文…    │ 翻訳文…    │  │              │
 │ │ 09:12      │ 09:10→09:11│  │              │
-│ │            │ ✓ 確認     │  │              │
+│ │            │ ✓ Review   │  │              │
 │ └────────────┴────────────┴──┘              │
 │ ▬ ○ ○                        ← page dots    │
 └──────────────────────────────────────────────┘
@@ -343,7 +377,7 @@ The Job Queue panel in the right pane presents jobs as a **horizontally sliding 
 | Cue | Implementation |
 |---|---|
 | Arrow buttons | `chevron_left` / `chevron_right` at `md-20`, `rounded-full` with `hover:bg-surface-container` (same icon-button pattern as the TopAppBar), `disabled` + `opacity-50` at each end |
-| Hint text | `text-metadata text-on-surface-variant` — 「横スライドで他のジョブを表示」 |
+| Hint text | `text-metadata text-on-surface-variant` — `Slide sideways for more jobs` |
 | Page indicator | `h-1.5 rounded-full` dots, active `w-4 bg-md3-primary` / inactive `w-1.5 bg-outline-variant`; switches to `N / M` `text-metadata` past 6 pages |
 | Edge fade + peek | `w-6` `bg-gradient-to-r/l from-surface to-transparent`, `pointer-events-none`, rendered only on the side that has more content; card widths reserve 28px so the next card peeks in |
 
@@ -358,7 +392,7 @@ The track keeps a **visible thin native scrollbar** (`.job-carousel-track` in `g
 | ~544–600px (maximum) | ~460–516px | 2 (~240px each) |
 | Full-width mobile / very wide | ≥ ~720px | 3 (capped) |
 
-**Accessibility.** The track is `role="group"` with `aria-label="ジョブキュー一覧（横スライド）"` and `tabIndex={0}`; `ArrowLeft`/`ArrowRight` slide it while focus is inside, except when the event came from an `input`/`textarea`/contenteditable (the page's textareas must keep their caret keys). Arrows carry `aria-label="前のジョブへ"` / `"次のジョブへ"`. Interactive elements use `focus-visible:ring-2 focus-visible:ring-md3-primary`. Completed job cards keep their existing `role="button"` / `tabIndex={0}` / Enter-Space HITL confirm behaviour, and the browser scrolls a Tab-focused off-screen card into view.
+**Accessibility.** The track is `role="group"` with `aria-label="Job queue (slides horizontally)"` and `tabIndex={0}`; `ArrowLeft`/`ArrowRight` slide it while focus is inside, except when the event came from an `input`/`textarea`/contenteditable (the page's textareas must keep their caret keys). Arrows carry `aria-label="Previous jobs"` / `"Next jobs"`. Interactive elements use `focus-visible:ring-2 focus-visible:ring-md3-primary`. Completed job cards keep their existing `role="button"` / `tabIndex={0}` / Enter-Space HITL confirm behaviour, and the browser scrolls a Tab-focused off-screen card into view.
 
 ### Correction Label (shared card headings)
 
@@ -438,30 +472,47 @@ The AI Suggestions panel header states which model wrote the suggestions on scre
 - Label while waiting: `保存中...`
 - Interaction: clipboard copy + local UI commit run first; server history/proposal persistence continues in the background with separate success/failure toasts (see OpenSpec change `async-confirm-copy-background-save`).
 
-### Prompt Settings Dialog (centered modal)
+### Dialog Widths
 
-The shared AI-correction prompt editor, opened from the TopAppBar gear.
+`components/ui/dialog.tsx` is a Radix Dialog wrapper sibling to `sheet.tsx`. Sheets are edge-anchored and `w-72`-narrow, which does not suit long-form content, so this one is centered. Width is a **named `size`**, not a per-call-site value, so the second long-form editor is sized like the first:
+
+| `size` | Width | Use for |
+|---|---|---|
+| `prose` (default) | `max-w-3xl` | Confirmations, short explanations — content read as prose, where a reading measure helps |
+| `wide` | `max-w-5xl` | Long-form editors, where a reading measure works against the user |
+
+A reading width is the wrong default for an editor: the correction prompt is thousands of characters of dense rules, and wrapping that into a prose column makes it unreviewable — the complaint that introduced `wide`. Pick a size; do not pass `className="max-w-…"` at the call site.
+
+Shared by both sizes: `w-[calc(100vw-2rem)]` (so a phone gets edge margins rather than the max width), `max-h-[90%]`, `flex flex-col gap-4 overflow-y-auto`, `rounded-lg border-outline-variant bg-surface p-4 sm:p-6`, overlay `bg-black/80`. See the fixed-element height note near the end of this document for why `max-h-[90%]` rather than `90vh`.
+
+**Long-form editor input**: `flex-1 min-h-[12rem] sm:min-h-[24rem] overflow-y-auto`. `flex-1` lets the input take the height the dialog has left; the floor is what it may **not** shrink past. The tall floor is behind `sm:` on purpose — raising it unconditionally puts the footer buttons back below the fold on a phone with the on-screen keyboard open, which is exactly the bug `responsive-mobile-correction-ui` fixed.
+
+### Prompt Settings Dialog (centered modal, `size="wide"`)
+
+The shared AI-correction prompt editor, opened from the TopAppBar gear. Its copy is **English**: the operators who tune critique quality are reading a Chinese prompt, and Japanese chrome around it helped no one.
 
 ```
-┌──────────────────────────────────────────────┐
-│ 添削プロンプト  [既定|カスタム]            ✕ │
-│ AI提案の指示文です。全ユーザー共通で…        │
-│ 最終更新: owner@example.com / 2026-08-16 …   │
-│ ┌──────────────────────────────────────────┐ │
-│ │ (monospace textarea, 45–55vh, scrolls)   │ │
-│ └──────────────────────────────────────────┘ │
-│ 1,234 / 20,000 文字     オフラインモードは… │
-│ ⚠ inline validation / error                  │
-│         [既定に戻す] [キャンセル] [保存]     │
-└──────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ System Prompt  [Default|Custom]                          ✕ │
+│ System prompt for AI suggestions. Shared across all users   │
+│ and sessions… The JSON output format is always appended…    │
+│ Last updated by owner@example.com / 2026-08-16 …            │
+│ ▸ How your prompt is assembled                             │
+│ ┌────────────────────────────────────────────────────────┐ │
+│ │ (monospace textarea, flex-1, tall floor on ≥sm)        │ │
+│ └────────────────────────────────────────────────────────┘ │
+│ 1,234 / 20,000 characters                                   │
+│ ⚠ inline validation / error                                 │
+│   [Reset to Default]        [Cancel]              [Save]    │
+└────────────────────────────────────────────────────────────┘
 ```
 
-- **New primitive**: `components/ui/dialog.tsx` — a Radix Dialog wrapper sibling to `sheet.tsx`. Sheets are edge-anchored and `w-72`-narrow, which does not suit long-form prose, so this one is centered: `max-w-3xl`, `max-h-[90vh]`, `rounded-lg border-outline-variant bg-surface p-6`, overlay `bg-black/80`
-- Textarea: `font-mono text-body-sm`, `min-h-[45vh] max-h-[55vh] overflow-y-auto`, `bg-surface-container border-outline-variant`
-- Badge in the header shows 既定 (`secondary`) or カスタム (`default`); attribution line below the description uses `text-metadata text-on-surface-variant` and appears only when customized
-- Character count and the offline-mode note share one `text-metadata` row; the note discloses that WebLLM uses its own built-in prompt
+- Textarea: `font-mono text-body-sm leading-relaxed`, the long-form editor input sizing above, `bg-surface-container border-outline-variant`
+- Badge in the header shows `Default` (`secondary`) or `Custom` (`default`); attribution line below the description uses `text-metadata text-on-surface-variant` and appears only when customized
+- **Assembly disclosure**: a collapsed `<details>` (`border-outline-variant bg-surface-container-low`) listing, in order, the pieces of the full prompt — the edited body, exemplar rules, JSON contract, built-in example, then SOURCE / EXEMPLAR / TARGET. It exists because the editor shows one field while seven pieces reach the model, so "where does EXEMPLAR TEXT go?" had no answer on screen. Steps come from `lib/promptComposition.ts`, which the prompt builders are tested against; the two exemplar steps are labelled *only when EXEMPLAR TEXT is filled in*
+- Character count sits alone on a `text-metadata` row. There is **no** offline-mode note: the stored prompt now governs offline generation too, so the old disclaimer was false
 - One `role="alert"` line carries either validation feedback or a request error; a load failure takes precedence over "empty" so the reason the prompt never arrived is not masked
-- Save is disabled until the text both changed and validates; 既定に戻す requires a second click (label becomes 本当に既定に戻す) before it deletes the stored row
+- Save is disabled until the text both changed and validates; `Reset to Default` requires a second click (label becomes `Confirm Reset`) before it deletes the stored row
 - Loads on open, not on mount, so reopening always reflects what is actually stored
 
 ### Bell Shake Animation
@@ -480,6 +531,23 @@ CSS animation triggered when a job **completes** (transitions to `completed` / b
   animation: bell-shake 0.6s ease-in-out;
 }
 ```
+
+### Browser Notifications Toggle (notifications panel)
+
+A `Desktop notifications` checkbox at the head of the bell panel, below its subtitle (OpenSpec change `add-browser-job-notifications`). It is the **second** channel for one event — the bell above is the first — so the two never fire together.
+
+- **Suppressed while the tab is visible.** The bell badge and shake are already on screen there, and a second signal for the same event is noise. Anything other than `document.visibilityState === 'visible'` is a case where the bell cannot be seen.
+- **Permission is requested from the toggle's change handler and nowhere else.** Never on page load: an unprompted permission dialog is the fastest route to an origin the user has blocked forever, and a denial cannot be undone from the page.
+- **Three states**, all rendered in place rather than hidden:
+
+| Permission | Rendering |
+|---|---|
+| `default` / `granted` | Checkbox enabled, `text-metadata` hint explaining the background-tab rule |
+| `denied` | Checkbox **disabled**, hint points at browser settings — the page cannot recover this itself |
+| `unsupported` | No checkbox; one `text-metadata` line stating the browser cannot show them |
+
+- **Persistence**: `mjai-browser-notifications` (`"1"` / `"0"`) in `localStorage`, matching the flat `mjai-*` naming of `mjai-session-pane-mode` and `mjai-exemplar-card-open`. Unreadable storage reads as **off** — for this preference, off is also the privacy-preserving answer, and storage we cannot read is not evidence of consent. The preference is only stored as on once permission is actually `granted`, so a dismissed prompt leaves the checkbox unticked rather than ticked and silent.
+- **Copy is English**, like the rest of the chrome. Activating a notification focuses the tab and opens that job's HITL review; a job no longer in the queue is dropped silently.
 
 ---
 

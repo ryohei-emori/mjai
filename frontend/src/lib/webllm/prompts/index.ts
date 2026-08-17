@@ -11,7 +11,13 @@
  * Changes here do NOT require a backend deploy - only frontend rebuild.
  */
 
-export { SYSTEM_PROMPT, EXEMPLAR_REFERENCE_RULES } from './system';
+export {
+  SYSTEM_PROMPT,
+  SYSTEM_PROMPT_HEAD,
+  SYSTEM_PROMPT_TAIL,
+  OUTPUT_CONTRACT,
+  EXEMPLAR_REFERENCE_RULES,
+} from './system';
 export { FEW_SHOT_EXAMPLES } from './fewShot';
 export {
   SECTION_ORIGINAL,

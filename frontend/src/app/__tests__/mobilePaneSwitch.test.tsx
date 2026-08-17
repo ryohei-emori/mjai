@@ -88,11 +88,11 @@ function routeApi() {
 }
 
 function paneSwitch() {
-  return screen.getByRole("group", { name: "表示するペーン" })
+  return screen.getByRole("group", { name: "Visible pane" })
 }
 
-/** Scoped to the switch, so `編集` cannot match an edit control elsewhere. */
-function paneButton(name: "編集" | "添削案") {
+/** Scoped to the switch, so `TEXT` cannot match an edit control elsewhere. */
+function paneButton(name: "TEXT" | "SUGGESTIONS") {
   return within(paneSwitch()).getByRole("button", { name: new RegExp(`^${name}`) })
 }
 
@@ -107,25 +107,25 @@ function renderApp() {
 
 async function startSession() {
   renderApp()
-  await waitFor(() => expect(screen.getByText("新しいセッション作成")).toBeInTheDocument())
-  fireEvent.click(screen.getByText("新しいセッション作成"))
+  await waitFor(() => expect(screen.getByText("Create a new session")).toBeInTheDocument())
+  fireEvent.click(screen.getByText("Create a new session"))
   await waitFor(() =>
     expect(
-      screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."),
+      screen.getByPlaceholderText("Paste the source text here..."),
     ).toBeInTheDocument(),
   )
 }
 
 async function generateAndConfirm() {
-  fireEvent.change(screen.getByPlaceholderText("原文テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the source text here..."), {
     target: { value: "多伦多大学的研究者对比了三十种灵长类动物的睡眠数据" },
   })
-  fireEvent.change(screen.getByPlaceholderText("添削対象テキストをここに貼り付けてください..."), {
+  fireEvent.change(screen.getByPlaceholderText("Paste the text you want corrected here..."), {
     target: { value: "トロント大学の研究者は３０種類の霊長類動物の睡眠データを比較し" },
   })
   fireEvent.click(screen.getByRole("button", { name: /Generate AI Suggestions/i }))
-  await waitFor(() => expect(screen.getByText("確認")).toBeInTheDocument())
-  fireEvent.click(screen.getByText("確認"))
+  await waitFor(() => expect(screen.getByText("Review")).toBeInTheDocument())
+  fireEvent.click(screen.getByText("Review"))
   await waitFor(() => expect(screen.getByText("AI Suggestions")).toBeInTheDocument())
 }
 
@@ -143,8 +143,8 @@ test("there is nothing to switch between until a session is open", async () => {
   routeApi()
   renderApp()
 
-  await waitFor(() => expect(screen.getByText("セッションを開始")).toBeInTheDocument())
-  expect(screen.queryByRole("group", { name: "表示するペーン" })).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.getByText("Start a session")).toBeInTheDocument())
+  expect(screen.queryByRole("group", { name: "Visible pane" })).not.toBeInTheDocument()
 })
 
 test("a session opens on the editor, and the switch moves between the two panes", async () => {
@@ -152,28 +152,28 @@ test("a session opens on the editor, and the switch moves between the two panes"
   await startSession()
 
   expect(paneSwitch()).toBeInTheDocument()
-  expect(paneButton("編集")).toHaveAttribute("aria-pressed", "true")
-  expect(paneButton("添削案")).toHaveAttribute("aria-pressed", "false")
+  expect(paneButton("TEXT")).toHaveAttribute("aria-pressed", "true")
+  expect(paneButton("SUGGESTIONS")).toHaveAttribute("aria-pressed", "false")
 
-  fireEvent.click(paneButton("添削案"))
-  expect(paneButton("添削案")).toHaveAttribute("aria-pressed", "true")
-  expect(paneButton("編集")).toHaveAttribute("aria-pressed", "false")
+  fireEvent.click(paneButton("SUGGESTIONS"))
+  expect(paneButton("SUGGESTIONS")).toHaveAttribute("aria-pressed", "true")
+  expect(paneButton("TEXT")).toHaveAttribute("aria-pressed", "false")
 
-  fireEvent.click(paneButton("編集"))
-  expect(paneButton("編集")).toHaveAttribute("aria-pressed", "true")
+  fireEvent.click(paneButton("TEXT"))
+  expect(paneButton("TEXT")).toHaveAttribute("aria-pressed", "true")
 })
 
 test("confirming a completed job brings the review pane forward", async () => {
   routeApi()
   await startSession()
-  expect(paneButton("編集")).toHaveAttribute("aria-pressed", "true")
+  expect(paneButton("TEXT")).toHaveAttribute("aria-pressed", "true")
 
   await generateAndConfirm()
 
-  expect(paneButton("添削案")).toHaveAttribute("aria-pressed", "true")
-  expect(paneButton("編集")).toHaveAttribute("aria-pressed", "false")
+  expect(paneButton("SUGGESTIONS")).toHaveAttribute("aria-pressed", "true")
+  expect(paneButton("TEXT")).toHaveAttribute("aria-pressed", "false")
   // The switch also reports what is waiting in the pane that is off screen.
-  expect(paneButton("添削案")).toHaveTextContent("1")
+  expect(paneButton("SUGGESTIONS")).toHaveTextContent("1")
 })
 
 test("a proposal can be selected with one activation, and deselected with another", async () => {
@@ -182,21 +182,21 @@ test("a proposal can be selected with one activation, and deselected with anothe
   await generateAndConfirm()
 
   // Double-click remains the desktop route; this is the one a thumb can take.
-  const select = screen.getByRole("button", { name: "この提案を選択" })
+  const select = screen.getByRole("button", { name: "Select this suggestion" })
   expect(select).toHaveAttribute("aria-pressed", "false")
 
   fireEvent.click(select)
-  const deselect = screen.getByRole("button", { name: "この提案の選択を解除" })
+  const deselect = screen.getByRole("button", { name: "Deselect this suggestion" })
   expect(deselect).toHaveAttribute("aria-pressed", "true")
   // Selection order is what the save step reads, so it has to be assigned.
-  expect(screen.getByText("選択済み: 1/3+")).toBeInTheDocument()
+  expect(screen.getByText("Selected: 1/3+")).toBeInTheDocument()
 
   fireEvent.click(deselect)
-  expect(screen.getByRole("button", { name: "この提案を選択" })).toHaveAttribute(
+  expect(screen.getByRole("button", { name: "Select this suggestion" })).toHaveAttribute(
     "aria-pressed",
     "false",
   )
-  expect(screen.getByText("選択済み: 0/3+")).toBeInTheDocument()
+  expect(screen.getByText("Selected: 0/3+")).toBeInTheDocument()
 })
 
 test("the drawer carries the section tabs, and choosing one closes it", async () => {
@@ -207,7 +207,7 @@ test("the drawer carries the section tabs, and choosing one closes it", async ()
   Object.defineProperty(window, "innerWidth", { value: 375, configurable: true })
   await startSession()
 
-  fireEvent.click(screen.getByRole("button", { name: "セッション一覧を開く" }))
+  fireEvent.click(screen.getByRole("button", { name: "Open the session list" }))
   const drawer = await screen.findByRole("dialog")
 
   // Both copies of the tab list are in the DOM at once — which one is on screen
@@ -216,6 +216,6 @@ test("the drawer carries the section tabs, and choosing one closes it", async ()
 
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
   expect(
-    screen.getByText("この機能は現在開発中です。今後のアップデートをお待ちください。"),
+    screen.getByText("This feature is still in development. Watch for a future update."),
   ).toBeInTheDocument()
 })

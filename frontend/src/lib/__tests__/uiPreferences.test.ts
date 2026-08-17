@@ -1,13 +1,16 @@
 import {
+  BROWSER_NOTIFICATIONS_STORAGE_KEY,
   EXEMPLAR_CARD_STORAGE_KEY,
   LG_BREAKPOINT_PX,
   SESSION_PANE_STORAGE_KEY,
   defaultSessionPaneMode,
   dockSessionPaneState,
   isPaneDocked,
+  loadBrowserNotificationsEnabled,
   loadExemplarCardOpen,
   loadSessionPaneMode,
   resolveSessionPaneMode,
+  saveBrowserNotificationsEnabled,
   saveExemplarCardOpen,
   saveSessionPaneMode,
   toggleSessionPaneState,
@@ -209,6 +212,46 @@ describe("exemplar card disclosure preference", () => {
     withBrokenStorage(() => {
       expect(loadExemplarCardOpen()).toBe(false)
       expect(() => saveExemplarCardOpen(true)).not.toThrow()
+    })
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+})
+
+describe("browser notification preference", () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  it("is off until the user turns it on", () => {
+    expect(loadBrowserNotificationsEnabled()).toBe(false)
+  })
+
+  it("round-trips an enabled preference", () => {
+    saveBrowserNotificationsEnabled(true)
+
+    expect(window.localStorage.getItem(BROWSER_NOTIFICATIONS_STORAGE_KEY)).toBe("1")
+    expect(loadBrowserNotificationsEnabled()).toBe(true)
+  })
+
+  it("round-trips being turned back off", () => {
+    saveBrowserNotificationsEnabled(true)
+    saveBrowserNotificationsEnabled(false)
+
+    expect(loadBrowserNotificationsEnabled()).toBe(false)
+  })
+
+  it("treats a malformed stored value as off rather than as consent", () => {
+    window.localStorage.setItem(BROWSER_NOTIFICATIONS_STORAGE_KEY, "true")
+
+    expect(loadBrowserNotificationsEnabled()).toBe(false)
+  })
+
+  it("falls back to off and does not throw when storage is unavailable", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {})
+    withBrokenStorage(() => {
+      expect(loadBrowserNotificationsEnabled()).toBe(false)
+      expect(() => saveBrowserNotificationsEnabled(true)).not.toThrow()
     })
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()

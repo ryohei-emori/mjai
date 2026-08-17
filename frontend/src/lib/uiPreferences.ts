@@ -22,6 +22,7 @@ export type SessionPaneMode = 'docked' | 'floating'
 
 export const SESSION_PANE_STORAGE_KEY = 'mjai-session-pane-mode'
 export const EXEMPLAR_CARD_STORAGE_KEY = 'mjai-exemplar-card-open'
+export const BROWSER_NOTIFICATIONS_STORAGE_KEY = 'mjai-browser-notifications'
 export const LG_BREAKPOINT_PX = 1024
 
 export function defaultSessionPaneMode(viewportWidth: number): SessionPaneMode {
@@ -110,5 +111,29 @@ export function saveExemplarCardOpen(open: boolean): void {
     window.localStorage.setItem(EXEMPLAR_CARD_STORAGE_KEY, open ? '1' : '0')
   } catch (error) {
     console.warn('[persistence] Failed to save exemplar card state:', error)
+  }
+}
+
+/**
+ * Whether completed generations may be announced outside the tab
+ * (`add-browser-job-notifications`).
+ *
+ * Off unless explicitly turned on, so an unreadable value reads as off: for this
+ * preference "off" is also the privacy-preserving answer, and storage we cannot
+ * read cannot be evidence of consent.
+ */
+export function loadBrowserNotificationsEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(BROWSER_NOTIFICATIONS_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveBrowserNotificationsEnabled(enabled: boolean): void {
+  try {
+    window.localStorage.setItem(BROWSER_NOTIFICATIONS_STORAGE_KEY, enabled ? '1' : '0')
+  } catch (error) {
+    console.warn('[persistence] Failed to save browser notification preference:', error)
   }
 }

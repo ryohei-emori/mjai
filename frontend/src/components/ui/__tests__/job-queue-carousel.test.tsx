@@ -41,7 +41,7 @@ function renderCarousel(list = items) {
     <JobQueueCarousel
       items={list}
       getKey={(item) => item.id}
-      ariaLabel="ジョブキュー一覧（横スライド）"
+      ariaLabel="Job queue (slides horizontally)"
       renderItem={(item) => <div>{item.label}</div>}
     />,
   )
@@ -62,7 +62,7 @@ describe("JobQueueCarousel", () => {
     stubTrackMetrics({ clientWidth: 300, scrollWidth: 300 })
     renderCarousel()
 
-    expect(screen.getByRole("group", { name: "ジョブキュー一覧（横スライド）" })).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "Job queue (slides horizontally)" })).toBeInTheDocument()
     expect(screen.getByText("ジョブA")).toBeInTheDocument()
     expect(screen.getByText("ジョブB")).toBeInTheDocument()
     expect(screen.getByText("ジョブC")).toBeInTheDocument()
@@ -72,30 +72,30 @@ describe("JobQueueCarousel", () => {
     stubTrackMetrics({ clientWidth: 900, scrollWidth: 900 })
     renderCarousel()
 
-    expect(screen.queryByRole("button", { name: "次のジョブへ" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "前のジョブへ" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Next jobs" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Previous jobs" })).not.toBeInTheDocument()
   })
 
   it("exposes labelled arrows and disables the one at the current edge", () => {
     stubTrackMetrics({ clientWidth: 300, scrollWidth: 900 })
     renderCarousel()
 
-    expect(screen.getByRole("button", { name: "前のジョブへ" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "次のジョブへ" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Previous jobs" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Next jobs" })).toBeEnabled()
   })
 
   it("scrolls forward by about one visible width when next is activated", () => {
     stubTrackMetrics({ clientWidth: 300, scrollWidth: 900 })
     renderCarousel()
 
-    fireEvent.click(screen.getByRole("button", { name: "次のジョブへ" }))
+    fireEvent.click(screen.getByRole("button", { name: "Next jobs" }))
     expect(scrollBy).toHaveBeenCalledWith({ left: 300, behavior: "smooth" })
   })
 
   it("slides the track with ArrowRight / ArrowLeft", () => {
     stubTrackMetrics({ clientWidth: 300, scrollWidth: 900 })
     renderCarousel()
-    const track = screen.getByRole("group", { name: "ジョブキュー一覧（横スライド）" })
+    const track = screen.getByRole("group", { name: "Job queue (slides horizontally)" })
 
     fireEvent.keyDown(track, { key: "ArrowRight" })
     expect(scrollBy).toHaveBeenLastCalledWith({ left: 300, behavior: "smooth" })
@@ -110,7 +110,7 @@ describe("JobQueueCarousel", () => {
       <JobQueueCarousel
         items={items}
         getKey={(item) => item.id}
-        ariaLabel="ジョブキュー一覧（横スライド）"
+        ariaLabel="Job queue (slides horizontally)"
         renderItem={(item) => <textarea defaultValue={item.label} aria-label={item.label} />}
       />,
     )
@@ -126,7 +126,7 @@ describe("JobQueueCarousel", () => {
       <JobQueueCarousel
         items={items}
         getKey={(item) => item.id}
-        ariaLabel="ジョブキュー一覧（横スライド）"
+        ariaLabel="Job queue (slides horizontally)"
         renderItem={(item) => (
           <div
             role="button"

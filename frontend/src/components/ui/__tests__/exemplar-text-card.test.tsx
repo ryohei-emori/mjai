@@ -7,8 +7,8 @@ describe("ExemplarTextCard", () => {
   it("renders the bilingual English-primary header and an optional marker", () => {
     render(<ExemplarTextCard value="" onChange={() => {}} />)
 
-    expect(screen.getByText(/EXEMPLAR TEXT \(模範回答訳文\)/)).toBeInTheDocument()
-    expect(screen.getByText("任意")).toBeInTheDocument()
+    expect(screen.getByText(/EXEMPLAR TEXT \(REFERENCE TRANSLATION\)/)).toBeInTheDocument()
+    expect(screen.getByText("optional")).toBeInTheDocument()
   })
 
   it("reports every keystroke to onChange so no explicit save is needed", () => {
@@ -29,14 +29,14 @@ describe("ExemplarTextCard", () => {
   it("omits the copy button when no onCopy handler is given", () => {
     render(<ExemplarTextCard value="模範の訳文" onChange={() => {}} open />)
 
-    expect(screen.queryByTitle("コピー")).not.toBeInTheDocument()
+    expect(screen.queryByTitle("Copy")).not.toBeInTheDocument()
   })
 
   it("copies the current value when the copy button is used", () => {
     const onCopy = jest.fn()
     render(<ExemplarTextCard value="模範の訳文" onChange={() => {}} onCopy={onCopy} open />)
 
-    fireEvent.click(screen.getByTitle("コピー"))
+    fireEvent.click(screen.getByTitle("Copy"))
 
     expect(onCopy).toHaveBeenCalledWith("模範の訳文")
   })
@@ -45,7 +45,7 @@ describe("ExemplarTextCard", () => {
     const onCopy = jest.fn()
     render(<ExemplarTextCard value="" onChange={() => {}} onCopy={onCopy} open />)
 
-    fireEvent.click(screen.getByTitle("コピー"))
+    fireEvent.click(screen.getByTitle("Copy"))
 
     expect(onCopy).not.toHaveBeenCalled()
   })
@@ -87,20 +87,20 @@ describe("ExemplarTextCard", () => {
     it("indicates entered content while collapsed", () => {
       render(<ExemplarTextCard value="模範の訳文" onChange={() => {}} />)
 
-      expect(screen.getByText("入力あり")).toBeInTheDocument()
-      expect(screen.getByText("5文字")).toBeInTheDocument()
+      expect(screen.getByText("Filled")).toBeInTheDocument()
+      expect(screen.getByText("5 chars")).toBeInTheDocument()
     })
 
     it("shows no content indicator for a blank field", () => {
       render(<ExemplarTextCard value="   " onChange={() => {}} />)
 
-      expect(screen.queryByText("入力あり")).not.toBeInTheDocument()
+      expect(screen.queryByText("Filled")).not.toBeInTheDocument()
     })
 
     it("drops the content indicator once expanded, where the text itself is visible", () => {
       render(<ExemplarTextCard value="模範の訳文" onChange={() => {}} open />)
 
-      expect(screen.queryByText("入力あり")).not.toBeInTheDocument()
+      expect(screen.queryByText("Filled")).not.toBeInTheDocument()
       expect(screen.getByRole("textbox")).toHaveValue("模範の訳文")
     })
 
@@ -121,7 +121,7 @@ describe("ExemplarTextCard", () => {
       const onCopy = jest.fn()
       render(<ExemplarTextCard value="模範の訳文" onChange={() => {}} onCopy={onCopy} />)
 
-      fireEvent.click(screen.getByTitle("コピー"))
+      fireEvent.click(screen.getByTitle("Copy"))
 
       expect(onCopy).toHaveBeenCalledWith("模範の訳文")
     })

@@ -23,6 +23,7 @@ import {
   historyAPI,
   proposalAPI,
   suggestionsAPI,
+  settingsAPI,
   describeSuggestionsFailure,
 } from "./api"
 import { useAuth } from "./auth-provider"
@@ -44,11 +45,20 @@ import {
 } from "@/lib/jobQueue/ordering"
 import { deriveCorrectionLabel } from "@/lib/correctionLabel"
 import {
+  getNotificationPermission,
+  requestNotificationPermission,
+  shouldShowBrowserNotification,
+  showJobCompletedNotification,
+  type BrowserNotificationPermission,
+} from "@/lib/browserNotifications"
+import {
   dockSessionPaneState,
   isPaneDocked,
   LG_BREAKPOINT_PX,
+  loadBrowserNotificationsEnabled,
   loadExemplarCardOpen,
   loadSessionPaneMode,
+  saveBrowserNotificationsEnabled,
   saveExemplarCardOpen,
   saveSessionPaneMode,
   toggleSessionPaneState,
@@ -65,6 +75,27 @@ async function generateWebLLMSuggestions(
 ): ReturnType<typeof import("@/lib/webllm/engine").generateSuggestions> {
   const { generateSuggestions } = await import("@/lib/webllm/engine")
   return generateSuggestions(...args)
+}
+
+/**
+ * The shared prompt for an offline generation, or undefined to keep WebLLM's
+ * built-in one.
+ *
+ * Only a *customized* prompt overrides: `getPrompt()` returns the cloud default
+ * when nothing is stored, and handing ~5,000 characters of cloud-oriented rules
+ * to a 7B model would be a large unrequested quality change for every offline
+ * user who never touched settings. A failed fetch degrades the same way —
+ * offline mode is exactly where that request is most likely to fail, and a
+ * settings outage must not become a generation outage.
+ */
+async function loadSharedPromptOverride(): Promise<string | undefined> {
+  try {
+    const settings = await settingsAPI.getPrompt()
+    return settings.isCustomized ? settings.systemPrompt : undefined
+  } catch (e) {
+    console.warn("[suggestions] shared prompt unavailable; using the built-in offline prompt:", e)
+    return undefined
+  }
 }
 
 type ActiveNav = 'sessions' | 'dashboard' | 'archive'
@@ -360,7 +391,7 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
         <div className="flex items-center gap-2">
           <span className={`material-symbols-outlined md-18 animate-spin ${textClass}`}>progress_activity</span>
           <span className={`text-body-sm font-medium ${textClass}`}>
-            {diagnostics?.phaseLabel || (status.state === "loading" ? "準備中" : status.state === "generating" ? "分析中" : "処理中")}
+            {diagnostics?.phaseLabel || (status.state === "loading" ? "Preparing" : status.state === "generating" ? "Analyzing" : "Working")}
           </span>
         </div>
         <div className="flex items-center gap-2 text-metadata">
@@ -389,10 +420,10 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
       {diagnostics && (
         <div className={`flex gap-4 text-metadata ${textMutedClass} mt-2`}>
           <span>
-            現在フェーズ: {formatElapsedTime(diagnostics.currentPhaseElapsedMs)}
+            Current phase: {formatElapsedTime(diagnostics.currentPhaseElapsedMs)}
           </span>
           <span>
-            合計: {formatElapsedTime(diagnostics.totalElapsedMs)}
+            Total: {formatElapsedTime(diagnostics.totalElapsedMs)}
           </span>
         </div>
       )}
@@ -400,14 +431,14 @@ function AIDiagnosticsPanel({ status }: { status: EngineStatus }) {
       {/* Timeout info - shown instead of generic error for timeout cases */}
       {diagnostics?.timeoutPhase && (
         <div className="mt-2 p-2 bg-red-100 rounded text-metadata text-red-800">
-          <strong>タイムアウト:</strong> {PHASE_LABELS[diagnostics.timeoutPhase]} フェーズでタイムアウトしました
+          <strong>Timed out:</strong> the {PHASE_LABELS[diagnostics.timeoutPhase]} phase exceeded its time limit
         </div>
       )}
       
       {/* Error message - only show if NOT a timeout (timeoutPhase already shows the info) */}
       {status.state === "error" && !diagnostics?.timeoutPhase && (
         <div className="mt-2 p-2 bg-red-100 rounded text-metadata text-red-800">
-          <strong>エラー:</strong> {"error" in status ? status.error : "不明なエラー"}
+          <strong>Error:</strong> {"error" in status ? status.error : "Unknown error"}
         </div>
       )}
       
@@ -442,6 +473,21 @@ export default function TextCorrectionApp() {
   // History round saved before provenance was recorded.
   const [lastSuggestionModel, setLastSuggestionModel] = useState<string | null>(null)
   const [promptSettingsOpen, setPromptSettingsOpen] = useState(false)
+  // Browser notifications (add-browser-job-notifications). SSR-safe defaults:
+  // off and `'default'`, corrected by the mount effect. Permission is state
+  // rather than read inline because turning it on has to re-render the toggle
+  // into its blocked form when the user dismisses the browser's prompt.
+  const [browserNotificationsEnabled, setBrowserNotificationsEnabled] = useState(false)
+  // `processJobAsync` is a dependency of the queue-draining effects, so reading
+  // the preference from state would rebuild it — and re-run those effects —
+  // every time the toggle moves. The value is only ever read at the instant a
+  // job finishes, so a ref is both sufficient and inert.
+  const browserNotificationsEnabledRef = useRef(false)
+  const [notificationPermission, setNotificationPermission] =
+    useState<BrowserNotificationPermission>('default')
+  // Set by a notification click; consumed by an effect below `confirmJob`,
+  // which is defined later in this component.
+  const [notificationJobId, setNotificationJobId] = useState<string | null>(null)
   const [jobQueue, setJobQueue] = useState<QueuedJob[]>([])
   // 「確定してコピー・保存」の二重送信を防止し、1生成ラウンドにつき
   // 添削データ(History)エントリが1件だけ作成されることを保証する
@@ -506,6 +552,11 @@ export default function TextCorrectionApp() {
 
       setSessionPaneMode(loadSessionPaneMode())
       setIsExemplarCardOpen(loadExemplarCardOpen())
+      // Reading the current permission is passive — it never prompts.
+      const notificationsEnabled = loadBrowserNotificationsEnabled()
+      setBrowserNotificationsEnabled(notificationsEnabled)
+      browserNotificationsEnabledRef.current = notificationsEnabled
+      setNotificationPermission(getNotificationPermission())
 
       // Detect screen size
       const checkScreenSize = () => setIsLgScreen(window.innerWidth >= LG_BREAKPOINT_PX)
@@ -673,8 +724,8 @@ export default function TextCorrectionApp() {
     )
 
     toast({
-      title: "処理開始",
-      description: `ジョブ ${jobId.slice(-4)} を処理中...`,
+      title: "Processing",
+      description: `Job ${jobId.slice(-4)} started...`,
     })
 
     try {
@@ -688,11 +739,18 @@ export default function TextCorrectionApp() {
         // WebLLM ONLY when オフラインモード is explicitly ON (no API auto-fallback).
         source = 'webllm'
         if (!webgpuSupported) {
-          throw new Error(webgpuUnsupportedReason || "WebGPU非対応")
+          throw new Error(webgpuUnsupportedReason || "WebGPU is not available")
         }
 
+        const systemPromptOverride = await loadSharedPromptOverride()
         const data = await generateWebLLMSuggestions(
-          { originalText, targetText, exemplarTranslation, instructionPrompt: "CCTalkからの添削指示" },
+          {
+            originalText,
+            targetText,
+            exemplarTranslation,
+            instructionPrompt: "CCTalkからの添削指示",
+            systemPromptOverride,
+          },
           (status) => setWebllmStatus(status)
         )
         suggestions = data.suggestions.map(s => ({ ...s, selected: false }))
@@ -752,9 +810,27 @@ export default function TextCorrectionApp() {
       }, 600)
 
       toast({
-        title: "完了",
-        description: `ジョブ ${jobId.slice(-4)} が完了しました`,
+        title: "Completed",
+        description: `Job ${jobId.slice(-4)} finished`,
       })
+
+      // Second channel for the same event, for when the bell above cannot be
+      // seen. Suppressed while the tab is visible — see
+      // shouldShowBrowserNotification, which owns the whole policy.
+      if (
+        shouldShowBrowserNotification({
+          enabled: browserNotificationsEnabledRef.current,
+          permission: getNotificationPermission(),
+          documentVisibility:
+            typeof document === 'undefined' ? 'unknown' : document.visibilityState,
+        })
+      ) {
+        showJobCompletedNotification({
+          label: deriveCorrectionLabel({ targetText, originalText }).text,
+          jobId,
+          onActivate: setNotificationJobId,
+        })
+      }
 
       // Shared DB: persist pending history + proposals so other envs can see them
       if (sessionIdForPersist) {
@@ -808,16 +884,16 @@ export default function TextCorrectionApp() {
         } catch (persistError) {
           console.error("[processJobAsync] Failed to persist pending suggestions:", persistError)
           toast({
-            title: "DB同期失敗",
+            title: "Sync failed",
             description:
-              "提案は表示されていますが、共有DBへの保存に失敗しました。この端末のジョブは残っています。",
+              "The suggestions are shown, but saving them to the shared database failed. The job remains on this device.",
             variant: "destructive",
           })
         }
       }
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "不明なエラー"
+      const errorMessage = error instanceof Error ? error.message : "Unknown error"
       
       setJobQueue(prev => prev.map(j => 
         j.id === jobId 
@@ -826,8 +902,8 @@ export default function TextCorrectionApp() {
       ))
 
       toast({
-        title: "エラー",
-        description: `ジョブ ${jobId.slice(-4)}: ${errorMessage}`,
+        title: "Error",
+        description: `Job ${jobId.slice(-4)}: ${errorMessage}`,
         variant: "destructive",
       })
     }
@@ -841,8 +917,8 @@ export default function TextCorrectionApp() {
     // 400エラーになるため、事前にガードする
     if (!currentSession.originalText.trim()) {
       toast({
-        title: "原文テキストが未入力です",
-        description: "AI提案を生成する前に「原文テキスト」を入力してください。",
+        title: "Source text is empty",
+        description: "Enter the source text before generating AI suggestions.",
         variant: "destructive",
       })
       return false
@@ -853,8 +929,8 @@ export default function TextCorrectionApp() {
     
     if (currentQueueSize >= MAX_QUEUE_SIZE) {
       toast({
-        title: "キュー上限",
-        description: `キューの上限（${MAX_QUEUE_SIZE}件）に達しています。処理完了後に追加してください。`,
+        title: "Queue is full",
+        description: `The queue is at its limit of ${MAX_QUEUE_SIZE}. Add more once some finish.`,
         variant: "destructive",
       })
       return false
@@ -886,8 +962,8 @@ export default function TextCorrectionApp() {
     }
     
     toast({
-      title: "キューに追加",
-      description: `ジョブをキューに追加しました`,
+      title: "Queued",
+      description: "The generation was added to the queue",
     })
     
     return true
@@ -990,7 +1066,7 @@ export default function TextCorrectionApp() {
             status: status === "failed" ? "failed" : "completed",
             suggestions: status === "failed" ? undefined : aiSuggestions,
             overallComment: overall,
-            error: status === "failed" ? overall || "生成に失敗しました" : undefined,
+            error: status === "failed" ? overall || "Generation failed" : undefined,
             queuedAt: ts,
             completedAt: ts,
             source: history.provider === "webllm" ? "webllm" : "api",
@@ -1109,7 +1185,7 @@ export default function TextCorrectionApp() {
     
     if (hasActiveJobs) {
       const confirmed = window.confirm(
-        '処理中または待機中のジョブがあります。セッションを切り替えると、これらのジョブは中断されます。続行しますか？'
+        'Some jobs are still queued or processing. Switching sessions will interrupt them. Continue?'
       )
       if (!confirmed) return
       
@@ -1165,8 +1241,8 @@ export default function TextCorrectionApp() {
         }
         if (draft.suggestions.length > 0) {
           toast({
-            title: "Draftを復元しました",
-            description: "前回保存されなかったAI提案（Draft状態）を復元しました",
+            title: "Draft restored",
+            description: "Restored the AI suggestions that were never saved",
           })
         }
       }
@@ -1175,8 +1251,8 @@ export default function TextCorrectionApp() {
       if (restoredJobs.length > 0) {
         setJobQueue(restoredJobs)
         toast({
-          title: "ジョブキューを復元しました",
-          description: `${restoredJobs.length}件のジョブを復元しました（中断されていた処理は再開待ちに戻しました）`,
+          title: "Job queue restored",
+          description: `Restored ${restoredJobs.length} job(s); interrupted runs were returned to the queue`,
         })
       }
     }
@@ -1368,8 +1444,8 @@ export default function TextCorrectionApp() {
   const confirmJob = useCallback((job: QueuedJob) => {
     if (!currentSession || job.status !== 'completed') {
       toast({
-        title: "エラー",
-        description: "確認するジョブが見つかりません",
+        title: "Error",
+        description: "No job to review was found",
         variant: "destructive",
       })
       return
@@ -1388,10 +1464,10 @@ export default function TextCorrectionApp() {
       // Distinguish between parse failure and "no issues found"
       const isParseFailure = job.overallComment?.includes("抽出できませんでした")
       const errorMessage = isParseFailure
-        ? "AI応答のパースに失敗しました。再度お試しください。"
+        ? "The AI response could not be parsed. Please try again."
         : job.overallComment
-          ? `AIが問題を検出しませんでした: ${job.overallComment}`
-          : "このジョブにはAI提案がありません"
+          ? `The AI found no issues: ${job.overallComment}`
+          : "This job has no AI suggestions"
       
       console.warn("[confirmJob] No suggestions found:", {
         isParseFailure,
@@ -1399,7 +1475,7 @@ export default function TextCorrectionApp() {
       })
       
       toast({
-        title: isParseFailure ? "パースエラー" : "提案なし",
+        title: isParseFailure ? "Parse error" : "No suggestions",
         description: errorMessage,
         variant: isParseFailure ? "destructive" : "default",
       })
@@ -1434,11 +1510,30 @@ export default function TextCorrectionApp() {
     setConfirmingHistoryIndex(null)
     
     toast({
-      title: "確認中",
-      description: `${job.suggestions.length}件のAI提案をロードしました。内容を確認してください。`,
+      title: "Reviewing",
+      description: `Loaded ${job.suggestions.length} AI suggestion(s) for review.`,
     })
   }, [currentSession, toast, updateCurrentSession])
 
+  /**
+   * Routes a notification click into the HITL review for that job.
+   *
+   * Deferred through state rather than calling `confirmJob` from the click
+   * handler because the notification is created inside `processJobAsync`, which
+   * closes over a much older render — `confirmJob` captured there would review
+   * against a stale session. Reading it here, after `confirmJob` is defined,
+   * always uses the current one.
+   *
+   * A job that is no longer in the queue (session switched, queue cleared) is
+   * dropped silently: the notification outlived what it pointed at, and there is
+   * nothing the user could act on.
+   */
+  useEffect(() => {
+    if (!notificationJobId) return
+    const job = jobQueue.find((j) => j.id === notificationJobId)
+    setNotificationJobId(null)
+    if (job?.status === 'completed') confirmJob(job)
+  }, [notificationJobId, jobQueue, confirmJob])
 
   // セッション一覧をAPIから取得
   // 注意: このuseEffectは認証状態(session)の参照が変わるたびに再実行される
@@ -1492,7 +1587,7 @@ export default function TextCorrectionApp() {
   // セッション作成をAPIに保存
   const createNewSession = async () => {
     try {
-      const newSessionData = await sessionAPI.createSession(`セッション ${sessions.length + 1}`)
+      const newSessionData = await sessionAPI.createSession(`Session ${sessions.length + 1}`)
       const newSession: Session = {
         id: newSessionData.sessionId,
         name: newSessionData.name,
@@ -1512,8 +1607,8 @@ export default function TextCorrectionApp() {
     } catch (error) {
       console.error("Failed to create session:", error)
       toast({
-        title: "エラー",
-        description: "セッションの作成に失敗しました",
+        title: "Error",
+        description: "Failed to create the session",
         variant: "destructive",
       })
     }
@@ -1535,8 +1630,8 @@ export default function TextCorrectionApp() {
     } catch (error) {
       console.error("Failed to delete session:", error)
       toast({
-        title: "エラー",
-        description: "セッションの削除に失敗しました",
+        title: "Error",
+        description: "Failed to delete the session",
         variant: "destructive",
       })
     }
@@ -1608,8 +1703,8 @@ export default function TextCorrectionApp() {
   const addCustomCorrection = () => {
     if (!currentSession || !customCorrection.original || !customCorrection.reason) {
       toast({
-        title: "入力エラー",
-        description: "すべての項目を入力してください",
+        title: "Incomplete input",
+        description: "Fill in every field",
         variant: "destructive",
       })
       return
@@ -1633,8 +1728,8 @@ export default function TextCorrectionApp() {
     setSelectionCounter(newCounter)
 
     toast({
-      title: "修正内容を追加しました",
-      description: "カスタム修正内容が追加され、自動的に選択されました",
+      title: "Correction added",
+      description: "Your custom correction was added and selected",
     })
   }
 
@@ -1653,17 +1748,17 @@ export default function TextCorrectionApp() {
     setShowCustomForm(true)
   }
 
-  const copyToClipboard = async (text: string, description: string = "クリップボードにコピーしました") => {
+  const copyToClipboard = async (text: string, description: string = "Copied to the clipboard") => {
     try {
       await navigator.clipboard.writeText(text)
       toast({
-        title: "コピー完了",
+        title: "Copied",
         description,
       })
     } catch {
       toast({
-        title: "コピー失敗",
-        description: "クリップボードへのコピーに失敗しました",
+        title: "Copy failed",
+        description: "Could not copy to the clipboard",
         variant: "destructive",
       })
     }
@@ -1686,8 +1781,8 @@ export default function TextCorrectionApp() {
 
     if (selectedSuggestions.length < 3) {
       toast({
-        title: "選択不足",
-        description: "3つ以上の修正内容を選択してください",
+        title: "Not enough selected",
+        description: "Select at least three corrections",
         variant: "destructive",
       })
       return
@@ -1698,8 +1793,8 @@ export default function TextCorrectionApp() {
     // （ブラウザ上は「Failed to fetch」としか見えない）。ここで先に検知する。
     if (!currentSession.originalText.trim() || !currentSession.targetText.trim()) {
       toast({
-        title: "テキストが空です",
-        description: "原文と添削対象テキストの両方が必要です",
+        title: "Text is empty",
+        description: "Both the source text and the target text are required",
         variant: "destructive",
       })
       return
@@ -1735,8 +1830,8 @@ export default function TextCorrectionApp() {
         await navigator.clipboard.writeText(combinedComment)
       } catch {
         toast({
-          title: "コピー失敗",
-          description: "クリップボードへのコピーに失敗しました",
+          title: "Copy failed",
+          description: "Could not copy to the clipboard",
           variant: "destructive",
         })
         return
@@ -1842,8 +1937,8 @@ export default function TextCorrectionApp() {
       setSelectionCounter(0)
 
       toast({
-        title: "コピー完了",
-        description: "修正内容をクリップボードにコピーしました。サーバーへ保存しています...",
+        title: "Copied",
+        description: "Corrections copied to the clipboard. Saving to the server...",
       })
 
       // 3) バックグラウンドで履歴/提案を永続化
@@ -1914,7 +2009,7 @@ export default function TextCorrectionApp() {
 
           const savedHistory = await historyAPI.createHistory(historyData)
           if (!savedHistory?.historyId) {
-            throw new Error("履歴の保存に失敗しました（historyIdが返却されませんでした）")
+            throw new Error("Failed to save the history (no historyId was returned)")
           }
           resolvedHistoryId = savedHistory.historyId
 
@@ -1953,19 +2048,19 @@ export default function TextCorrectionApp() {
         }
 
         toast({
-          title: "保存完了",
+          title: "Saved",
           description:
             jobIdToConfirm !== null
-              ? "ジョブを確認済みにし、サーバーに保存しました。"
+              ? "The job was marked reviewed and saved to the server."
               : historyIndexToConfirm !== null
-                ? "履歴を確認済みにし、サーバーに保存しました。"
-                : "修正内容をサーバーに保存しました。",
+                ? "The history was marked reviewed and saved to the server."
+                : "The corrections were saved to the server.",
         })
       } catch (saveError) {
         console.error("Failed to save corrections:", saveError)
         toast({
-          title: "保存失敗",
-          description: "コピーは完了しましたが、サーバーへの保存に失敗しました",
+          title: "Save failed",
+          description: "The copy succeeded, but saving to the server failed",
           variant: "destructive",
         })
       }
@@ -2002,8 +2097,8 @@ export default function TextCorrectionApp() {
     setShowCustomForm(true)
 
     toast({
-      title: "確認中",
-      description: "履歴データをロードしました。内容を確認して「確定してコピー・保存」を実行してください。",
+      title: "Reviewing",
+      description: "History loaded. Review it, then use Confirm & copy.",
     })
   }
 
@@ -2026,14 +2121,14 @@ export default function TextCorrectionApp() {
       }
 
       toast({
-        title: "アーカイブ完了",
-        description: "添削データをアーカイブしました",
+        title: "Archived",
+        description: "The correction round was archived",
       })
     } catch (error) {
       console.error("Failed to archive history:", error)
       toast({
-        title: "エラー",
-        description: "添削データのアーカイブに失敗しました",
+        title: "Error",
+        description: "Failed to archive the correction round",
         variant: "destructive",
       })
     }
@@ -2119,7 +2214,7 @@ export default function TextCorrectionApp() {
                 e.stopPropagation()
                 deleteSession(s.id)
               }}
-              aria-label={`セッション「${s.name}」を削除`}
+              aria-label={`Delete session ${s.name}`}
               className="can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity p-1 h-auto touch-target"
             >
               <span className="material-symbols-outlined md-18 text-on-surface-variant">delete</span>
@@ -2130,7 +2225,7 @@ export default function TextCorrectionApp() {
       {filteredSessions.length === 0 && (
         <div className="text-center py-8 text-on-surface-variant">
           <span className="material-symbols-outlined md-36 mx-auto mb-2 opacity-50">description</span>
-          <p className="text-body-sm">セッションがありません</p>
+          <p className="text-body-sm">No sessions yet</p>
         </div>
       )}
     </div>
@@ -2138,7 +2233,7 @@ export default function TextCorrectionApp() {
 
   const sessionSearchInput = (
     <Input
-      placeholder="セッションを検索..."
+      placeholder="Search sessions..."
       value={sessionSearch}
       onChange={(e) => setSessionSearch(e.target.value)}
       className="bg-surface-container border-outline-variant"
@@ -2171,7 +2266,7 @@ export default function TextCorrectionApp() {
   // 「平均」はこのブラウザセッション中に確定保存された全ジョブ（＝レビュー
   // 作業時間）の単純平均（セッション切り替えでリセットされる、design.md
   // Decision 2、この平均の算出方法自体は変更なし）。
-  const formatJobDuration = (seconds: number) => `${seconds.toFixed(1)}秒`
+  const formatJobDuration = (seconds: number) => `${seconds.toFixed(1)}s`
 
   const latestCompletedTiming = jobTimingHistory.length > 0 ? jobTimingHistory[jobTimingHistory.length - 1] : null
   const latestJobDurationSeconds = confirmingJobId
@@ -2198,7 +2293,7 @@ export default function TextCorrectionApp() {
           </span>
           <CardTitle className="text-headline-md text-on-surface">{title}</CardTitle>
           <CardDescription className="text-body-sm text-on-surface-variant">
-            この機能は現在開発中です。今後のアップデートをお待ちください。
+            This feature is still in development. Watch for a future update.
           </CardDescription>
         </CardHeader>
         <CardContent className="text-center">
@@ -2244,17 +2339,17 @@ export default function TextCorrectionApp() {
           className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
           title={
             isSessionPaneDocked
-              ? 'セッション一覧をたたむ'
+              ? 'Undock the session list'
               : sidebarOpen
-                ? 'セッション一覧を閉じる'
-                : 'セッション一覧を開く'
+                ? 'Close the session list'
+                : 'Open the session list'
           }
           aria-label={
             isSessionPaneDocked
-              ? 'セッション一覧をたたむ'
+              ? 'Undock the session list'
               : sidebarOpen
-                ? 'セッション一覧を閉じる'
-                : 'セッション一覧を開く'
+                ? 'Close the session list'
+                : 'Open the session list'
           }
           aria-expanded={isSessionPaneDocked || sidebarOpen}
         >
@@ -2269,7 +2364,7 @@ export default function TextCorrectionApp() {
         {/* Navigation Tabs — below md the bar cannot hold three of these plus
             the account and action icons, so they move into the session drawer
             rather than overflowing off the right edge. */}
-        <nav className="hidden md:flex items-center gap-1 ml-4" aria-label="セクション">
+        <nav className="hidden md:flex items-center gap-1 ml-4" aria-label="Sections">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
@@ -2290,7 +2385,7 @@ export default function TextCorrectionApp() {
         <Button
           onClick={createNewSession}
           size="sm"
-          className="ml-auto hidden sm:flex bg-md3-primary text-on-primary hover:bg-md3-primary/90 font-semibold"
+          className="ml-auto hidden sm:flex bg-md3-primary text-on-primary hover:bg-md3-primary/90 font-semibold text-body-base"
         >
           <span className="material-symbols-outlined md-18 mr-1">add</span>
           New Session
@@ -2310,8 +2405,8 @@ export default function TextCorrectionApp() {
             <button
               type="button"
               className={`p-2 rounded-full hover:bg-surface-container transition-colors relative touch-target ${bellShake ? 'bell-shake' : ''}`}
-              title="完了通知"
-              aria-label="完了通知"
+              title="Completed notifications"
+              aria-label="Completed notifications"
               aria-expanded={bellPanelOpen}
               aria-haspopup="true"
               onClick={() => setBellPanelOpen((open) => !open)}
@@ -2327,22 +2422,76 @@ export default function TextCorrectionApp() {
               <div
                 className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-surface border border-outline-variant z-50"
                 role="menu"
-                aria-label="完了ジョブ一覧"
+                aria-label="Completed jobs"
               >
                 <div className="px-3 py-2 border-b border-outline-variant">
                   <p className="text-label-caps tracking-wider text-on-surface-variant uppercase">
                     Notifications
                   </p>
                   <p className="text-metadata text-on-surface-variant mt-0.5">
-                    確認待ちの完了ジョブ
+                    Completed jobs awaiting review
                   </p>
+                </div>
+                {/* Permission is requested from this handler and nowhere else,
+                    so it always follows a deliberate click. Asking on page load
+                    is the fastest way to a permanently blocked origin, and a
+                    denial cannot be undone from the page. */}
+                <div className="px-3 py-2 border-b border-outline-variant">
+                  {notificationPermission === 'unsupported' ? (
+                    <p className="text-metadata text-on-surface-variant">
+                      This browser cannot show desktop notifications.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="browser-notifications"
+                          checked={browserNotificationsEnabled}
+                          disabled={notificationPermission === 'denied'}
+                          onCheckedChange={async (checked) => {
+                            const enable = checked === true
+                            if (!enable) {
+                              setBrowserNotificationsEnabled(false)
+                              browserNotificationsEnabledRef.current = false
+                              saveBrowserNotificationsEnabled(false)
+                              return
+                            }
+                            const permission =
+                              getNotificationPermission() === 'granted'
+                                ? 'granted'
+                                : await requestNotificationPermission()
+                            setNotificationPermission(permission)
+                            const granted = permission === 'granted'
+                            // Storing the preference only when it can take
+                            // effect keeps the checkbox honest: a dismissed
+                            // prompt leaves it unticked rather than ticked and
+                            // silent.
+                            setBrowserNotificationsEnabled(granted)
+                            browserNotificationsEnabledRef.current = granted
+                            saveBrowserNotificationsEnabled(granted)
+                          }}
+                        />
+                        <Label
+                          htmlFor="browser-notifications"
+                          className="text-body-sm text-on-surface cursor-pointer"
+                        >
+                          Desktop notifications
+                        </Label>
+                      </div>
+                      <p className="text-metadata text-on-surface-variant mt-1">
+                        {notificationPermission === 'denied'
+                          ? 'Blocked by your browser. Allow notifications for this site in your browser settings.'
+                          : 'Notifies you when a job finishes while this tab is in the background.'}
+                      </p>
+                    </>
+                  )}
                 </div>
                 {completedJobs.length === 0 ? (
                   <p className="px-3 py-6 text-body-sm text-on-surface-variant text-center">
-                    確認待ちの完了ジョブはありません
+                    No completed jobs awaiting review
                   </p>
                 ) : (
-                  <ul className="py-1 max-h-80 overflow-y-auto">
+                  <ul className="token-scrollbar py-1 max-h-80 overflow-y-auto">
                     {completedJobs.map((job) => {
                       const time = job.completedAt ?? job.queuedAt
                       const snippet = deriveCorrectionLabel(job).text
@@ -2362,7 +2511,7 @@ export default function TextCorrectionApp() {
                                 check_circle
                               </span>
                               <Badge variant="outline" className="text-xs font-medium">
-                                完了
+                                Completed
                               </Badge>
                               <span className="text-metadata text-on-surface-variant ml-auto">
                                 {time.toLocaleTimeString()}
@@ -2385,8 +2534,8 @@ export default function TextCorrectionApp() {
           <button
             onClick={() => setPromptSettingsOpen(true)}
             className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
-            title="設定"
-            aria-label="設定"
+            title="Settings"
+            aria-label="Settings"
           >
             <span className="material-symbols-outlined md-24 text-on-surface-variant">settings</span>
           </button>
@@ -2412,8 +2561,8 @@ export default function TextCorrectionApp() {
             <button
               onClick={() => signOut()}
               className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target"
-              title="ログアウト"
-              aria-label="ログアウト"
+              title="Sign out"
+              aria-label="Sign out"
             >
               <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
             </button>
@@ -2431,14 +2580,14 @@ export default function TextCorrectionApp() {
         <SheetContent side="left" className="w-[min(20rem,85vw)] p-0 bg-surface flex flex-col">
           <SheetHeader className="p-4 pr-12 border-b border-outline-variant flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
-              <SheetTitle className="text-headline-md text-on-surface">セッション</SheetTitle>
+              <SheetTitle className="text-headline-md text-on-surface">Sessions</SheetTitle>
               {isLgScreen && (
                 <button
                   type="button"
                   onClick={dockSessionPane}
                   className="p-2 rounded-full hover:bg-surface-container transition-colors focus-visible:ring-2 focus-visible:ring-md3-primary touch-target"
-                  title="セッション一覧を左に固定する"
-                  aria-label="セッション一覧を左に固定する"
+                  title="Dock the session list to the left"
+                  aria-label="Dock the session list to the left"
                 >
                   <span className="material-symbols-outlined md-20 text-on-surface-variant">
                     dock_to_left
@@ -2452,7 +2601,7 @@ export default function TextCorrectionApp() {
               ドロワーが本文を覆い続けないよう閉じる。 */}
           <nav
             className="md:hidden px-4 pt-4 flex flex-col gap-1 flex-shrink-0"
-            aria-label="セクション"
+            aria-label="Sections"
           >
             {NAV_ITEMS.map((item) => (
               <button
@@ -2500,8 +2649,8 @@ export default function TextCorrectionApp() {
             <button
               onClick={() => signOut()}
               className="p-2 rounded-full hover:bg-surface-container transition-colors touch-target flex-shrink-0"
-              title="ログアウト"
-              aria-label="ログアウト"
+              title="Sign out"
+              aria-label="Sign out"
             >
               <span className="material-symbols-outlined md-24 text-on-surface-variant">logout</span>
             </button>
@@ -2520,7 +2669,7 @@ export default function TextCorrectionApp() {
           {isSessionPaneDocked && (
             <aside
               className="hidden lg:flex lg:flex-col w-72 bg-surface border-r border-outline-variant flex-shrink-0"
-              aria-label="セッション一覧"
+              aria-label="Session list"
             >
               <div className="p-4 border-b border-outline-variant">{sessionSearchInput}</div>
               <ScrollArea className="flex-1 p-4">{sessionListItems}</ScrollArea>
@@ -2537,7 +2686,7 @@ export default function TextCorrectionApp() {
               <div
                 className="lg:hidden flex-shrink-0 flex gap-1 border-b border-outline-variant bg-surface px-3 py-2"
                 role="group"
-                aria-label="表示するペーン"
+                aria-label="Visible pane"
               >
                 <button
                   type="button"
@@ -2549,7 +2698,7 @@ export default function TextCorrectionApp() {
                       : 'text-on-surface-variant hover:bg-surface-container font-normal'
                   }`}
                 >
-                  編集
+                  TEXT
                 </button>
                 <button
                   type="button"
@@ -2561,7 +2710,7 @@ export default function TextCorrectionApp() {
                       : 'text-on-surface-variant hover:bg-surface-container font-normal'
                   }`}
                 >
-                  添削案
+                  SUGGESTIONS
                   {/* What is waiting in the pane you cannot currently see. */}
                   {reviewPaneCount > 0 && (
                     <Badge className="bg-surface-container text-on-surface-variant text-xs font-medium">
@@ -2574,7 +2723,7 @@ export default function TextCorrectionApp() {
 
             {/* Center Pane - Editor */}
             <main
-              className={`flex-1 min-h-0 overflow-y-auto p-4 lg:p-6 ${
+              className={`token-scrollbar flex-1 min-h-0 overflow-y-auto p-4 lg:p-6 ${
                 mobilePane === 'editor' ? 'block' : 'hidden'
               } lg:block`}
             >
@@ -2583,14 +2732,14 @@ export default function TextCorrectionApp() {
                   <Card className="max-w-md w-full bg-surface border-outline-variant">
                     <CardHeader className="text-center">
                       <span className="material-symbols-outlined md-48 mx-auto mb-4 text-md3-primary">description</span>
-                      <CardTitle className="text-headline-md text-on-surface">セッションを開始</CardTitle>
+                      <CardTitle className="text-headline-md text-on-surface">Start a session</CardTitle>
                       <CardDescription className="text-body-sm text-on-surface-variant">
-                        新しいセッションを作成して添削を開始しましょう
+                        Create a new session to start correcting
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
                       <Button onClick={createNewSession} className="w-full bg-md3-primary text-on-primary hover:bg-md3-primary/90" size="lg">
-                        新しいセッション作成
+                        Create a new session
                       </Button>
                     </CardContent>
                   </Card>
@@ -2608,7 +2757,7 @@ export default function TextCorrectionApp() {
                         that width the timings wrap to their own line instead. */}
                     <div className="min-w-0 flex-1 basis-48">
                       <h2 className="text-headline-lg text-on-surface truncate">{currentSession.name}</h2>
-                      <p className="text-metadata text-on-surface-variant truncate">作成日: {currentSession.createdAt.toLocaleString()}</p>
+                      <p className="text-metadata text-on-surface-variant truncate">Created: {currentSession.createdAt.toLocaleString()}</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                       {/* レビュー作業時間タイマー＋平均（add-suggestion-generation-timer
@@ -2655,13 +2804,13 @@ export default function TextCorrectionApp() {
                       <CardHeader className="pb-3">
                         <div className="flex items-center justify-between">
                           <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
-                            SOURCE TEXT (原文)
+                            SOURCE TEXT
                           </CardTitle>
                           <button
-                            onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText, "原文がクリップボードにコピーされました")}
+                            onClick={() => currentSession?.originalText && copyToClipboard(currentSession.originalText, "Source text copied to the clipboard")}
                             className="p-1.5 rounded hover:bg-surface-container transition-colors touch-target"
-                            title="コピー"
-                            aria-label="原文をコピー"
+                            title="Copy"
+                            aria-label="Copy source text"
                           >
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                           </button>
@@ -2669,7 +2818,7 @@ export default function TextCorrectionApp() {
                       </CardHeader>
                       <CardContent>
                         <HighlightedTextarea
-                          placeholder="原文テキストをここに貼り付けてください..."
+                          placeholder="Paste the source text here..."
                           value={currentSession.originalText}
                           onChange={(e) => updateCurrentSession({ originalText: e.target.value })}
                           className="min-h-[180px] text-body-base leading-relaxed bg-surface-container border-outline-variant"
@@ -2683,7 +2832,7 @@ export default function TextCorrectionApp() {
                       value={currentSession.exemplarTranslation}
                       onChange={(value) => updateCurrentSession({ exemplarTranslation: value })}
                       onCopy={(value) =>
-                        copyToClipboard(value, "模範回答訳文がクリップボードにコピーされました")
+                        copyToClipboard(value, "Exemplar text copied to the clipboard")
                       }
                       open={isExemplarCardOpen}
                       onOpenChange={handleExemplarCardOpenChange}
@@ -2694,13 +2843,13 @@ export default function TextCorrectionApp() {
                       <CardHeader className="pb-3">
                         <div className="flex items-center justify-between">
                           <CardTitle className="text-label-caps tracking-wider text-on-surface-variant uppercase">
-                            TARGET TEXT (翻訳/編集)
+                            TARGET TEXT
                           </CardTitle>
                           <button
-                            onClick={() => currentSession?.targetText && copyToClipboard(currentSession.targetText, "添削対象テキストがクリップボードにコピーされました")}
+                            onClick={() => currentSession?.targetText && copyToClipboard(currentSession.targetText, "Target text copied to the clipboard")}
                             className="p-1.5 rounded hover:bg-surface-container transition-colors touch-target"
-                            title="コピー"
-                            aria-label="添削対象テキストをコピー"
+                            title="Copy"
+                            aria-label="Copy target text"
                           >
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                           </button>
@@ -2708,7 +2857,7 @@ export default function TextCorrectionApp() {
                       </CardHeader>
                       <CardContent className="space-y-4">
                         <HighlightedTextarea
-                          placeholder="添削対象テキストをここに貼り付けてください..."
+                          placeholder="Paste the text you want corrected here..."
                           value={currentSession.targetText}
                           onChange={(e) => updateCurrentSession({ targetText: e.target.value })}
                           onSelect={handleTargetTextSelect}
@@ -2716,8 +2865,13 @@ export default function TextCorrectionApp() {
                           highlights={targetHighlights}
                         />
                         
-                        {/* Offline mode toggle。ラベルとバッジを1行に収めるには
-                            narrow端末の幅が足りないので折り返させる。 */}
+                        {/* Offline mode toggle. The provider badge that used to sit
+                            on the right was dropped: it reported the transport of
+                            the *last* generation, while the job cards already carry
+                            that per round, so on a queue of several it contradicted
+                            whichever card the user was reading.
+                            `lastSuggestionSource` still feeds the saved
+                            `llmProvider`. */}
                         <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-surface-container border border-outline-variant rounded-lg">
                           <div className="flex items-center gap-2">
                             <Checkbox
@@ -2727,24 +2881,19 @@ export default function TextCorrectionApp() {
                               disabled={webgpuSupported === false}
                             />
                             <Label htmlFor="offline-mode" className="text-body-sm text-on-surface cursor-pointer">
-                              オフラインモード（WebLLM）
+                              Offline Mode (WebLLM)
                             </Label>
                           </div>
-                          {lastSuggestionSource && (
-                            <Badge variant={lastSuggestionSource === "api" ? "default" : "secondary"} className="text-xs">
-                              {lastSuggestionSource === "api" ? "クラウドAPI" : "ローカルAI"}
-                            </Badge>
-                          )}
                         </div>
                         
                         {/* WebGPU unsupported message */}
                         {webgpuSupported === false && (
                           <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-body-sm text-yellow-800">
-                            <p className="font-medium">オフラインモード利用不可</p>
+                            <p className="font-medium">Offline mode unavailable</p>
                             <p className="text-metadata mt-1">{webgpuUnsupportedReason}</p>
-                            <p className="text-metadata mt-1">クラウドAPIが利用できない場合、</p>
-                            <p className="text-metadata">AI提案機能を利用できません</p>
-                            <p className="text-metadata mt-1">手動でカスタム修正を追加してください。</p>
+                            <p className="text-metadata mt-1">If the cloud API is also unavailable,</p>
+                            <p className="text-metadata">AI suggestions cannot be generated.</p>
+                            <p className="text-metadata mt-1">Add custom corrections by hand instead.</p>
                           </div>
                         )}
                         
@@ -2784,7 +2933,7 @@ export default function TextCorrectionApp() {
                                     </Badge>
                                   )}
                                   {offlineMode && !isEngineReady() && (
-                                    <span className="ml-1 text-metadata">（初回DL）</span>
+                                    <span className="ml-1 text-metadata">(first download)</span>
                                   )}
                                 </>
                               )
@@ -2803,14 +2952,14 @@ export default function TextCorrectionApp() {
             <div
               className={`hidden lg:flex items-center justify-center w-1.5 cursor-col-resize hover:bg-md3-primary/30 transition-colors flex-shrink-0 ${isResizing ? 'bg-md3-primary/50' : 'bg-transparent hover:bg-outline-variant/50'}`}
               onPointerDown={handleResizeStart}
-              title="ドラッグしてリサイズ"
+              title="Drag to resize"
             >
               <div className="w-0.5 h-16 bg-outline-variant/60 rounded-full" />
             </div>
 
             {/* Right Pane - Job Queue + Suggestions (Desktop: side panel with resizable width, Mobile: below editor) */}
             <aside
-              className={`w-full flex-1 min-h-0 lg:flex-none bg-surface border-outline-variant overflow-y-auto ${
+              className={`token-scrollbar w-full flex-1 min-h-0 lg:flex-none bg-surface border-outline-variant overflow-y-auto ${
                 mobilePane === 'review' ? 'block' : 'hidden'
               } lg:block`}
               style={isLgScreen ? { width: rightPaneWidth } : undefined}
@@ -2830,8 +2979,8 @@ export default function TextCorrectionApp() {
                       </div>
                       <CardDescription className="text-metadata text-on-surface-variant mt-1">
                         {offlineMode 
-                          ? "WebLLMモード: 逐次処理（1件ずつ）" 
-                          : `APIモード: 並列処理（最大${MAX_CONCURRENT_API_JOBS}件同時）`}
+                          ? "WebLLM mode: one generation at a time" 
+                          : `API mode: up to ${MAX_CONCURRENT_API_JOBS} generations in parallel`}
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -2841,7 +2990,7 @@ export default function TextCorrectionApp() {
                       <JobQueueCarousel
                         items={orderedJobQueue}
                         getKey={(job) => job.id}
-                        ariaLabel="ジョブキュー一覧（横スライド）"
+                        ariaLabel="Job queue (slides horizontally)"
                         renderItem={(job) => {
                           const isClickable = job.status === 'completed' && job.suggestions
                           return (
@@ -2883,9 +3032,9 @@ export default function TextCorrectionApp() {
                                   job.status === 'completed' ? 'outline' :
                                   job.status === 'failed' ? 'destructive' : 'secondary'
                                 } className="text-xs">
-                                  {job.status === 'processing' ? '処理中' :
-                                   job.status === 'completed' ? '完了' :
-                                   job.status === 'failed' ? '失敗' : '待機中'}
+                                  {job.status === 'processing' ? 'Processing' :
+                                   job.status === 'completed' ? 'Completed' :
+                                   job.status === 'failed' ? 'Failed' : 'Queued'}
                                 </Badge>
                                 {job.source && (
                                   <Badge variant="outline" className="text-xs">
@@ -2913,7 +3062,7 @@ export default function TextCorrectionApp() {
                               {isClickable && (
                                 <div className="mt-2 flex items-center text-body-sm text-session-complete font-medium">
                                   <span className="material-symbols-outlined md-18 mr-1">check_circle</span>
-                                  確認
+                                  Review
                                 </div>
                               )}
                               {job.status === 'failed' && (
@@ -2927,7 +3076,7 @@ export default function TextCorrectionApp() {
                                   }}
                                 >
                                   <span className="material-symbols-outlined md-18 mr-1">refresh</span>
-                                  再試行
+                                  Retry
                                 </Button>
                               )}
                             </div>
@@ -2969,11 +3118,11 @@ export default function TextCorrectionApp() {
                       )}
                       <div className="flex items-center gap-2 flex-wrap mt-2">
                         <Badge className={canSave ? "bg-session-complete text-white" : "bg-surface-container text-on-surface-variant"}>
-                          選択済み: {selectedCount}/3+
+                          Selected: {selectedCount}/3+
                         </Badge>
                         {canSave && (
                           <Badge className="bg-session-complete text-white text-xs">
-                            保存可能
+                            Ready to save
                           </Badge>
                         )}
                       </div>
@@ -2990,14 +3139,14 @@ export default function TextCorrectionApp() {
                               ? 'bg-primary-container border-md3-primary'
                               : 'border-outline-variant hover:bg-surface-container'
                           }`}
-                          title="ダブルクリック、または右上の選択ボタンで選択/選択解除"
+                          title="Double-click, or use the select button, to select or deselect"
                         >
                           <div className="flex-1 min-w-0 space-y-2">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <span className="text-label-caps text-on-surface-variant uppercase">
                                   Option {String.fromCharCode(65 + index)}
-                                  {suggestion.isCustom && ' (カスタム)'}
+                                  {suggestion.isCustom && ' (custom)'}
                                 </span>
                                 {suggestion.selected && suggestion.selectedOrder && (
                                   <Badge variant="outline" className="text-xs px-1 py-0">
@@ -3012,11 +3161,11 @@ export default function TextCorrectionApp() {
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation()
-                                    copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "提案内容がクリップボードにコピーされました")
+                                    copyToClipboard(`${suggestion.original}\n${suggestion.reason}`, "Suggestion copied to the clipboard")
                                   }}
                                   className="p-1 rounded hover:bg-surface-container-high touch-target"
-                                  title="コピー"
-                                  aria-label="この提案をコピー"
+                                  title="Copy"
+                                  aria-label="Copy this suggestion"
                                 >
                                   <span className="material-symbols-outlined md-18 text-on-surface-variant">content_copy</span>
                                 </button>
@@ -3026,8 +3175,8 @@ export default function TextCorrectionApp() {
                                     toggleSuggestionSelection(suggestion.id)
                                   }}
                                   className="p-1 rounded hover:bg-surface-container-high touch-target"
-                                  title={suggestion.selected ? "選択解除" : "選択"}
-                                  aria-label={suggestion.selected ? "この提案の選択を解除" : "この提案を選択"}
+                                  title={suggestion.selected ? "Deselect" : "Select"}
+                                  aria-label={suggestion.selected ? "Deselect this suggestion" : "Select this suggestion"}
                                   aria-pressed={suggestion.selected}
                                 >
                                   <span className={`material-symbols-outlined md-18 ${suggestion.selected ? 'text-session-complete' : 'text-on-surface-variant'}`}>
@@ -3038,12 +3187,12 @@ export default function TextCorrectionApp() {
                             </div>
                             {/* Pointed text */}
                             <div className="bg-red-50 p-2 rounded border border-red-200">
-                              <Label className="text-metadata font-medium text-red-600">指摘箇所</Label>
+                              <Label className="text-metadata font-medium text-red-600">Flagged text</Label>
                               <p className="text-body-sm text-red-800 mt-1">{suggestion.original}</p>
                             </div>
                             {/* Reason */}
                             <div className="bg-primary-container/50 p-2 rounded">
-                              <Label className="text-metadata font-medium text-md3-primary">修正コメント</Label>
+                              <Label className="text-metadata font-medium text-md3-primary">Correction comment</Label>
                               {suggestion.selected ? (
                                 <Textarea
                                   ref={(el) => {
@@ -3071,11 +3220,11 @@ export default function TextCorrectionApp() {
                         <div className="border-2 border-dashed border-outline rounded-lg p-3 space-y-3 bg-surface-container">
                           <div className="flex items-center gap-2">
                             <span className="material-symbols-outlined md-18 text-on-surface-variant">add</span>
-                            <Label className="text-body-sm font-medium text-on-surface">修正内容を追加</Label>
+                            <Label className="text-body-sm font-medium text-on-surface">Add a correction</Label>
                           </div>
                           <div>
                             <Label htmlFor="custom-original" className="text-metadata font-medium text-red-600">
-                              修正前のテキスト
+                              Text to correct
                             </Label>
                             <Input
                               id="custom-original"
@@ -3083,13 +3232,13 @@ export default function TextCorrectionApp() {
                               onChange={(e) =>
                                 setCustomCorrection((prev) => ({ ...prev, original: e.target.value }))
                               }
-                              placeholder="修正前のテキストを入力"
+                              placeholder="Enter the text to correct"
                               className="mt-1 bg-surface border-outline-variant"
                             />
                           </div>
                           <div>
                             <Label htmlFor="custom-reason" className="text-metadata font-medium text-md3-primary">
-                              修正コメント
+                              Correction comment
                             </Label>
                             <Textarea
                               id="custom-reason"
@@ -3097,13 +3246,13 @@ export default function TextCorrectionApp() {
                               onChange={(e) =>
                                 setCustomCorrection((prev) => ({ ...prev, reason: e.target.value }))
                               }
-                              placeholder="修正コメントを入力"
+                              placeholder="Enter the correction comment"
                               className="min-h-[60px] mt-1 bg-surface border-outline-variant"
                             />
                           </div>
                           <Button onClick={addCustomCorrection} size="sm" className="w-full bg-md3-primary text-on-primary">
                             <span className="material-symbols-outlined md-18 mr-1">add</span>
-                            修正内容を追加
+                            Add a correction
                           </Button>
                         </div>
                       )}
@@ -3113,13 +3262,13 @@ export default function TextCorrectionApp() {
                         <div className="border rounded-lg p-3 bg-primary-container/30 border-md3-primary/30">
                           <div className="flex items-center gap-2 mb-2">
                             <span className="material-symbols-outlined md-18 text-md3-primary">chat</span>
-                            <Label className="text-body-sm font-medium text-on-primary-container">全体総括コメント</Label>
+                            <Label className="text-body-sm font-medium text-on-primary-container">Overall comment</Label>
                           </div>
                           <Textarea
                             value={currentSession.overallComment}
                             onChange={(e) => updateCurrentSession({ overallComment: e.target.value })}
                             className="min-h-[80px] bg-surface border-outline-variant"
-                            placeholder="全体的な総括コメントを入力してください..."
+                            placeholder="Enter an overall comment..."
                           />
                         </div>
                       )}
@@ -3137,7 +3286,7 @@ export default function TextCorrectionApp() {
                         >
                           {isSaving ? "progress_activity" : "content_copy"}
                         </span>
-                        {isSaving ? "保存中..." : `確定してコピー・保存 (${selectedCount}/3)`}
+                        {isSaving ? "Saving..." : `Confirm & copy (${selectedCount}/3)`}
                       </Button>
                     </CardContent>
                   </Card>
@@ -3197,7 +3346,7 @@ export default function TextCorrectionApp() {
                                     </Badge>
                                   ) : (
                                     <Badge variant="outline" className="text-on-surface-variant border-outline text-xs font-medium shrink-0">
-                                      未確認
+                                      Unconfirmed
                                     </Badge>
                                   )}
                                 </div>
@@ -3210,8 +3359,8 @@ export default function TextCorrectionApp() {
                                   variant={data.confirmed ? "ghost" : "outline"} 
                                   size="sm"
                                   className="h-8 px-2 touch-target"
-                                  title="確認"
-                                  aria-label="この履歴を確認"
+                                  title="Review"
+                                  aria-label="Review this round"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleRestore()
@@ -3225,8 +3374,8 @@ export default function TextCorrectionApp() {
                                   variant="outline"
                                   size="sm"
                                   className="h-8 px-2 touch-target"
-                                  title="アーカイブ"
-                                  aria-label="この履歴をアーカイブ"
+                                  title="Archive"
+                                  aria-label="Archive this round"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     archiveHistoryRound(data, index)
@@ -3254,7 +3403,7 @@ export default function TextCorrectionApp() {
       <PromptSettingsDialog
         open={promptSettingsOpen}
         onOpenChange={setPromptSettingsOpen}
-        onSaved={(description) => toast({ title: "設定", description })}
+        onSaved={(description) => toast({ title: "Settings", description })}
       />
     </div>
   )

@@ -1,4 +1,10 @@
-import { buildPrompt, buildChatMessages } from "../prompt";
+import { buildPrompt, buildChatMessages, buildSystemPrompt } from "../prompt";
+import {
+  SYSTEM_PROMPT,
+  SYSTEM_PROMPT_HEAD,
+  SYSTEM_PROMPT_TAIL,
+  OUTPUT_CONTRACT,
+} from "../prompts";
 
 describe("buildPrompt", () => {
   it("builds prompt with originalText and targetText", () => {
@@ -89,6 +95,79 @@ describe("buildPrompt", () => {
 
       expect(prompt).toContain("＞\n模範の訳文です\n\n");
     });
+  });
+});
+
+describe("shared prompt override (systemPromptOverride)", () => {
+  const baseInput = { originalText: "テスト", targetText: "测试" };
+
+  it("keeps the built-in offline prompt intact when the parts are reassembled", () => {
+    // The split exists so an override can replace the rules without taking the
+    // JSON contract with it. If reassembly drifted, every offline user without a
+    // custom prompt would silently get a different prompt than the one measured
+    // against Mistral 7B.
+    expect(SYSTEM_PROMPT).toBe(
+      `${SYSTEM_PROMPT_HEAD}${OUTPUT_CONTRACT}\n${SYSTEM_PROMPT_TAIL}`,
+    );
+    expect(SYSTEM_PROMPT).toContain(
+      "中译日文学/学术翻译校对。只输出JSON，禁止其他文字。",
+    );
+    expect(SYSTEM_PROMPT.startsWith("意味の不一致、文法、流暢さ、スペルミス")).toBe(
+      true,
+    );
+  });
+
+  it("leaves the prompt byte-identical when no override is supplied", () => {
+    // The backward-compat guarantee: an offline user who never customized the
+    // shared prompt must get exactly the prompt they got before it could reach
+    // this path.
+    const baseline = buildPrompt(baseInput);
+
+    expect(buildPrompt({ ...baseInput, systemPromptOverride: undefined })).toBe(
+      baseline,
+    );
+    expect(buildPrompt({ ...baseInput, systemPromptOverride: "" })).toBe(baseline);
+    expect(buildPrompt({ ...baseInput, systemPromptOverride: "  \n " })).toBe(
+      baseline,
+    );
+    expect(baseline).toContain(SYSTEM_PROMPT);
+  });
+
+  it("replaces the rules body but keeps the code-owned contract and example", () => {
+    const prompt = buildPrompt({
+      ...baseInput,
+      systemPromptOverride: "只指出助词错误。",
+    });
+
+    expect(prompt).toContain("只指出助词错误。");
+    expect(prompt).toContain(OUTPUT_CONTRACT);
+    // The example is appended by code, so an override cannot drop it.
+    expect(prompt).toContain('输出：{"suggestions"');
+    // The built-in rules are what the override replaces.
+    expect(prompt).not.toContain(SYSTEM_PROMPT_TAIL);
+  });
+
+  it("appends the contract last so an override cannot bury it", () => {
+    const prompt = buildSystemPrompt(undefined, "OPERATOR_RULES");
+
+    expect(prompt).toBe(`OPERATOR_RULES\n${OUTPUT_CONTRACT}`);
+  });
+
+  it("keeps the exemplar rules between the override and the contract", () => {
+    const prompt = buildSystemPrompt("模範の訳文です", "OPERATOR_RULES");
+
+    expect(prompt.indexOf("OPERATOR_RULES")).toBeLessThan(
+      prompt.indexOf("MUST仍以原文为判断依据"),
+    );
+    expect(prompt.indexOf("MUST仍以原文为判断依据")).toBeLessThan(
+      prompt.indexOf(OUTPUT_CONTRACT),
+    );
+  });
+
+  it("trims the override so stored whitespace cannot detach the contract", () => {
+    expect(buildSystemPrompt(undefined, "  OPERATOR_RULES  ")).toBe(
+      `OPERATOR_RULES\n${OUTPUT_CONTRACT}`,
+    );
   });
 });
 

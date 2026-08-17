@@ -14,7 +14,7 @@
  */
 
 /** 訳文も原文も空のときに見出しへ出すプレースホルダ。 */
-export const EMPTY_CORRECTION_LABEL = '(空のテキスト)'
+export const EMPTY_CORRECTION_LABEL = '(empty text)'
 
 /**
  * ラベルに載せる最大文字数（コードポイント単位）。

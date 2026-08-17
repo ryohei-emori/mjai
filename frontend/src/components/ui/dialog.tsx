@@ -33,10 +33,26 @@ const DialogOverlay = React.forwardRef<
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
+/**
+ * Named dialog widths (see docs/UI-DESIGN.md → Dialog Widths). `prose` is the
+ * reading width for confirmations and short explanations; `wide` is for
+ * long-form editors, where a reading measure works against the user — the
+ * correction prompt is thousands of characters of dense rules, and wrapping it
+ * into a column makes it unreviewable.
+ */
+const DIALOG_SIZES = {
+  prose: "max-w-3xl",
+  wide: "max-w-5xl",
+} as const
+
+export type DialogSize = keyof typeof DIALOG_SIZES
+
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    size?: DialogSize
+  }
+>(({ className, children, size = "prose", ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -52,7 +68,8 @@ const DialogContent = React.forwardRef<
         // cover: once a flexible child has shrunk to its own floor there is
         // nothing left to give, and without a scroll the footer's buttons would
         // simply be unreachable.
-        "fixed left-1/2 top-1/2 z-50 flex max-h-[90%] w-[calc(100vw-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-y-auto rounded-lg border border-outline-variant bg-surface p-4 sm:p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        "fixed left-1/2 top-1/2 z-50 flex max-h-[90%] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-y-auto rounded-lg border border-outline-variant bg-surface p-4 sm:p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        DIALOG_SIZES[size],
         className
       )}
       {...props}
@@ -62,7 +79,7 @@ const DialogContent = React.forwardRef<
           the 44px minimum where the pointer cannot hover. */}
       <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none touch-target">
         <X className="h-4 w-4" />
-        <span className="sr-only">閉じる</span>
+        <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPortal>

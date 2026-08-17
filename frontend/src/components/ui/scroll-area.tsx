@@ -40,7 +40,10 @@ const ScrollBar = React.forwardRef<
     )}
     {...props}
   >
-    <ScrollAreaPrimitive.ScrollAreaThumb className="relative flex-1 rounded-full bg-border" />
+    {/* Radix hides the native scrollbar and draws this thumb, so it is the
+        session list's scrollbar. `bg-border` is a legacy shadcn token; the
+        outline pair is what docs/UI-DESIGN.md specifies for rules and rails. */}
+    <ScrollAreaPrimitive.ScrollAreaThumb className="relative flex-1 rounded-full bg-outline-variant hover:bg-outline transition-colors" />
   </ScrollAreaPrimitive.ScrollAreaScrollbar>
 ))
 ScrollBar.displayName = ScrollAreaPrimitive.ScrollAreaScrollbar.displayName
