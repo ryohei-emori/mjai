@@ -375,7 +375,7 @@ async def delete_prompt_setting_route():
 async def generate_ai_suggestions(payload: dict = Body(...)):
     """
     Generate AI correction suggestions using cloud LLM providers.
-    Primary: Gemini, then Groq, then Cloudflare Workers AI.
+    Primary: private Codex CLI API when configured, then Gemini, Groq, and Cloudflare Workers AI.
     WebLLM remains available on frontend as offline fallback.
     """
     from .llm import generate_suggestions
@@ -401,6 +401,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
     target_text = payload.get("targetText", "")
     # Optional 模範回答訳文: reference calibration only, never required.
     exemplar_translation = (payload.get("exemplarTranslation") or "").strip()
+    codex_model = (payload.get("codexModel") or "").strip() or None
     
     if not original_text or not target_text:
         return JSONResponse(
@@ -422,6 +423,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 target_text,
                 exemplar_translation,
                 system_prompt_override,
+                codex_model=codex_model,
                 deadline_monotonic=deadline_monotonic,
             )
         finally:
@@ -465,6 +467,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "groq_error": e.groq_error,
                 "cf_error": e.cf_error,
                 "gemini_error": getattr(e, "gemini_error", None),
+                "codex_error": getattr(e, "codex_error", None),
                 "fallback_available": True,
                 "rate_limited": bool(getattr(e, "rate_limited", False)),
                 "timed_out": bool(getattr(e, "timed_out", False)),

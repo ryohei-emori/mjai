@@ -1,6 +1,6 @@
 """
 AI suggestions generation with provider failover.
-Gemini (primary) -> Groq (secondary) -> Cloudflare Workers AI (tertiary).
+Private Codex CLI API (primary when configured) -> Gemini -> Groq -> Cloudflare Workers AI.
 
 Two independent, composable retry axes exist across this module and its
 providers:
@@ -139,6 +139,14 @@ from .gemini_provider import (
     GeminiServerError,
     GeminiTimeoutError,
 )
+from .codexcli_provider import (
+    call_codexcli,
+    get_codexcli_model,
+    is_codexcli_configured,
+    CODEXCLI_MIN_SLICE_S,
+    CODEXCLI_TIMEOUT,
+    CodexCLIError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,11 +230,13 @@ class SuggestionsError(Exception):
         groq_pool_size: int = 0,
         cf_pool_size: int = 0,
         gemini_pool_size: int = 0,
+        codex_error: Optional[str] = None,
     ):
         super().__init__(message)
         self.groq_error = groq_error
         self.cf_error = cf_error
         self.gemini_error = gemini_error
+        self.codex_error = codex_error
         self.rate_limited = rate_limited
         # Distinguishes "ran out of wall-clock budget" from "every provider
         # refused", which need different advice (retry vs check keys/quota).
@@ -262,7 +272,12 @@ def are_providers_configured() -> bool:
     groq_key = get_groq_api_key()
     cf_account, cf_token = get_cloudflare_credentials()
     gemini_key = get_gemini_api_key()
-    return bool(groq_key) or (bool(cf_account) and bool(cf_token)) or bool(gemini_key)
+    return (
+        bool(groq_key)
+        or (bool(cf_account) and bool(cf_token))
+        or bool(gemini_key)
+        or is_codexcli_configured()
+    )
 
 
 def _content_usable(result: ParsedResponse) -> bool:
@@ -531,10 +546,11 @@ def _unusable_reason(result: ParsedResponse) -> str:
 async def _generate_suggestions_once(
     messages: list[dict],
     *,
+    codex_model: Optional[str] = None,
     deadline_monotonic: Optional[float],
 ) -> GenerationOutcome:
     """
-    Single generate+parse pass: Gemini → Groq → Cloudflare on network
+    Single generate+parse pass: Codex CLI → Gemini → Groq → Cloudflare on network
     failure *or* unusable content (same-pass salvage).
 
     May return an outcome whose body is itself a parse failure or still fails
@@ -550,6 +566,7 @@ async def _generate_suggestions_once(
     groq_error: Optional[str] = None
     cf_error: Optional[str] = None
     gemini_error: Optional[str] = None
+    codex_error: Optional[str] = None
     best_soft: Optional[GenerationOutcome] = None
     budget_constrained = False
     gemini_pool_size, groq_pool_size, cf_pool_size = _pool_sizes()
@@ -559,6 +576,32 @@ async def _generate_suggestions_once(
         groq_pool_size,
         cf_pool_size,
     )
+
+    # The private host is the preferred provider when configured. It is kept
+    # opt-in so existing Vercel deployments retain the old cloud-only chain.
+    if is_codexcli_configured():
+        try:
+            logger.info("Attempting private Codex CLI API inference first...")
+            codex_output = await call_codexcli(
+                messages,
+                model=codex_model,
+                deadline_monotonic=deadline_monotonic,
+            )
+            raw_output, codex_model = _text_and_model(
+                codex_output, get_codexcli_model()
+            )
+            codex_result = parse_model_output(raw_output)
+            codex_outcome = GenerationOutcome(codex_result, "codex-cli", codex_model)
+            if _content_usable(codex_result):
+                return codex_outcome
+            codex_error = f"Codex CLI API content unusable: {_unusable_reason(codex_result)}"
+            best_soft = codex_outcome
+            logger.warning(codex_error)
+        except CodexCLIError as e:
+            codex_error = str(e)
+            if "insufficient request time" in codex_error:
+                budget_constrained = True
+            logger.warning("Codex CLI API failed; falling back to cloud providers: %s", e)
 
     plan = _plan_providers()
     gemini_budget = _phase_budget(
@@ -779,6 +822,7 @@ async def _generate_suggestions_once(
         groq_error=groq_error,
         cf_error=cf_error,
         gemini_error=gemini_error,
+        codex_error=codex_error,
         rate_limited=rate_limited,
         # Both can be true — a rate-limited primary that also ate the budget.
         # The flags are reported as facts; the client picks which advice leads.
@@ -809,6 +853,7 @@ async def generate_suggestions(
     target_text: str,
     exemplar_translation: Optional[str] = None,
     system_prompt_override: Optional[str] = None,
+    codex_model: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
 ) -> dict:
     """
@@ -852,7 +897,7 @@ async def generate_suggestions(
     """
     if not are_providers_configured():
         raise NoProvidersConfiguredError(
-            "No LLM providers configured. Set GROQ_API_KEY(S), "
+            "No LLM providers configured. Set CODEXCLI_API_URL + CODEXCLI_API_TOKEN, GROQ_API_KEY(S), "
             "CLOUDFLARE_ACCOUNT_ID(S) + CLOUDFLARE_API_TOKEN(S), "
             "or GEMINI_API_KEY(S)."
         )
@@ -899,6 +944,7 @@ async def generate_suggestions(
         try:
             outcome = await _generate_suggestions_once(
                 messages,
+                codex_model=codex_model,
                 deadline_monotonic=deadline_monotonic,
             )
         except SuggestionsError:
