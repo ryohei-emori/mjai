@@ -490,6 +490,9 @@ export const suggestionsAPI = {
           `API Error: ${asyncResponse.status}${asyncText ? ` - ${asyncText.slice(0, 200)}` : ""}`,
         );
       }
+      if (asyncBody?.status === "completed") {
+        return asyncBody as SuggestionsResponse;
+      }
       const taskId = typeof asyncBody?.taskId === "string" ? asyncBody.taskId : "";
       if (!taskId) {
         throw new SuggestionsAPIError(502, null, "Codex async API returned no taskId");

@@ -491,6 +491,7 @@ async def start_async_codex_suggestions(payload: dict = Body(...)):
         submit_codexcli_task,
     )
     from .llm.prompts import build_messages
+    from .llm.local_fastpath import try_local_fastpath
     from .prompt_settings import SETTING_KEY, prompt_override_from_row
     from .llm.provider_health import load_shared_state
 
@@ -498,6 +499,9 @@ async def start_async_codex_suggestions(payload: dict = Body(...)):
     target_text = payload.get("targetText", "")
     if not original_text or not target_text:
         return JSONResponse(status_code=400, content={"error": "originalText and targetText are required"})
+    fast_result = try_local_fastpath(original_text, target_text)
+    if fast_result is not None:
+        return {"status": "completed", **fast_result}
     if not is_codexcli_configured():
         return JSONResponse(status_code=404, content={"error": "Codex CLI API is not configured"})
     setting_row, _ = await load_shared_state(SETTING_KEY)
