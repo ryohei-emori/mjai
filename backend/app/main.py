@@ -408,7 +408,7 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
             status_code=400,
             content={"error": "originalText and targetText are required", "fallback_available": True}
         )
-    
+
     try:
         # One connection for both: the stored prompt (missing/unreadable => the
         # built-in default) and what earlier requests learned about which
@@ -477,6 +477,74 @@ async def generate_ai_suggestions(payload: dict = Body(...)):
                 "message": client_message,
             }
         )
+
+
+# Long-running Codex path. Each request is short; the browser polls the task
+# until the host-side CLI has produced the final JSON.
+@router.post("/suggestions/async")
+async def start_async_codex_suggestions(payload: dict = Body(...)):
+    from fastapi.responses import JSONResponse
+    from .llm.codexcli_provider import (
+        CodexCLIError,
+        get_codexcli_model,
+        is_codexcli_configured,
+        submit_codexcli_task,
+    )
+    from .llm.prompts import build_messages
+    from .prompt_settings import SETTING_KEY, prompt_override_from_row
+    from .llm.provider_health import load_shared_state
+
+    original_text = payload.get("originalText", "")
+    target_text = payload.get("targetText", "")
+    if not original_text or not target_text:
+        return JSONResponse(status_code=400, content={"error": "originalText and targetText are required"})
+    if not is_codexcli_configured():
+        return JSONResponse(status_code=404, content={"error": "Codex CLI API is not configured"})
+    setting_row, _ = await load_shared_state(SETTING_KEY)
+    messages = build_messages(
+        original_text,
+        target_text,
+        (payload.get("exemplarTranslation") or "").strip(),
+        prompt_override_from_row(setting_row),
+    )
+    requested_model = (payload.get("codexModel") or "").strip() or None
+    try:
+        task_id = await submit_codexcli_task(messages, model=requested_model)
+    except CodexCLIError as exc:
+        return JSONResponse(status_code=502, content={"error": "Codex CLI task submission failed", "codex_error": str(exc)})
+    return {
+        "status": "pending",
+        "taskId": task_id,
+        "llmProvider": "codex-cli",
+        "llmModel": get_codexcli_model(requested_model),
+    }
+
+
+@router.get("/suggestions/async/{task_id}")
+async def get_async_codex_suggestions(task_id: str):
+    from fastapi.responses import JSONResponse
+    from .llm.codexcli_provider import CodexCLIError, get_codexcli_model, get_codexcli_task
+
+    try:
+        task = await get_codexcli_task(task_id)
+    except CodexCLIError as exc:
+        return JSONResponse(status_code=502, content={"error": str(exc), "codex_error": str(exc)})
+    state = task.get("state")
+    if state in {"queued", "running"}:
+        return {"status": "pending", "taskId": task_id, "state": state}
+    if state != "completed":
+        detail = task.get("error") or task.get("stderr") or state or "unknown"
+        return JSONResponse(status_code=502, content={"error": "Codex CLI task failed", "codex_error": str(detail)})
+    output = task.get("output_json")
+    if not isinstance(output, dict):
+        return JSONResponse(status_code=502, content={"error": "Codex CLI returned invalid JSON", "codex_error": "output_json was not an object"})
+    return {
+        **output,
+        "llmProvider": "codex-cli",
+        "llmModel": task.get("model") or get_codexcli_model(),
+        "status": "completed",
+        "taskId": task_id,
+    }
 
 
 # ルーターをアプリに含める（/health を除く全ルートに get_current_user 依存関係が適用される）

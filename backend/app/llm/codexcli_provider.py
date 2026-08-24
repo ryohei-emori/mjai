@@ -110,11 +110,9 @@ async def call_codexcli(
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-            response = await client.post(f"{base_url}/v1/tasks", headers=headers, json=payload)
-            response.raise_for_status()
-            task_id = response.json().get("task_id")
-            if not task_id:
-                raise CodexCLIError("Codex CLI API returned no task_id")
+            task_id = await submit_codexcli_task(
+                messages, model=model, client=client, headers=headers
+            )
 
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -142,3 +140,67 @@ async def call_codexcli(
         raise CodexCLIError(f"Codex CLI API request failed: {exc}") from exc
 
     raise CodexCLIError("Codex CLI API task timed out")
+
+
+async def submit_codexcli_task(
+    messages: list[dict[str, str]],
+    *,
+    model: Optional[str] = None,
+    client: httpx.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
+) -> str:
+    """Submit a task without waiting for the Codex CLI process to finish."""
+    base_url = get_codexcli_url()
+    token = get_codexcli_token()
+    if not base_url or not token:
+        raise CodexCLIError("Codex CLI API is not configured")
+    payload = {
+        "prompt": _prompt_from_messages(messages),
+        "model": get_codexcli_model(model),
+        "sandbox": "read-only",
+        "output_schema": CODEXCLI_OUTPUT_SCHEMA,
+    }
+    own_client = client is None
+    request_headers = headers or {"Authorization": f"Bearer {token}"}
+    try:
+        if own_client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as owned:
+                response = await owned.post(
+                    f"{base_url}/v1/tasks", headers=request_headers, json=payload
+                )
+        else:
+            response = await client.post(
+                f"{base_url}/v1/tasks", headers=request_headers, json=payload
+            )
+        response.raise_for_status()
+        task_id = response.json().get("task_id")
+        if not task_id:
+            raise CodexCLIError("Codex CLI API returned no task_id")
+        return str(task_id)
+    except CodexCLIError:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise CodexCLIError(f"Codex CLI API submit failed: {exc}") from exc
+
+
+async def get_codexcli_task(task_id: str) -> dict[str, Any]:
+    """Fetch one task status for the async MJAI polling path."""
+    base_url = get_codexcli_url()
+    token = get_codexcli_token()
+    if not base_url or not token:
+        raise CodexCLIError("Codex CLI API is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            response = await client.get(
+                f"{base_url}/v1/tasks/{task_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise CodexCLIError("Codex CLI API returned an invalid task status")
+            return payload
+    except CodexCLIError:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise CodexCLIError(f"Codex CLI API status request failed: {exc}") from exc

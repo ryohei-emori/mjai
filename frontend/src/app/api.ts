@@ -450,13 +450,83 @@ export const suggestionsAPI = {
     targetText: string,
     exemplarTranslation?: string,
   ): Promise<SuggestionsResponse> => {
-    const fullUrl = `${API_BASE_URL}/suggestions`;
     const { data: { session } } = await supabase.auth.getSession();
     const authHeaders: Record<string, string> = session?.access_token
       ? { Authorization: `Bearer ${session.access_token}` }
       : {};
 
     const trimmedExemplar = (exemplarTranslation || "").trim();
+
+    const requestBody = {
+      originalText,
+      targetText,
+      ...(trimmedExemplar ? { exemplarTranslation: trimmedExemplar } : {}),
+    };
+
+    // Codex CLI jobs can legitimately take longer than Vercel's synchronous
+    // function limit. Submit once, then poll short requests until the host
+    // machine returns the final schema-shaped JSON.
+    const asyncResponse = await fetch(`${API_BASE_URL}/suggestions/async`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify(requestBody),
+    });
+    const asyncText = await asyncResponse.text();
+    let asyncBody: Record<string, unknown> | null = null;
+    try {
+      const parsed = asyncText ? JSON.parse(asyncText) : null;
+      asyncBody = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+    } catch {
+      asyncBody = null;
+    }
+    if (asyncResponse.status !== 404) {
+      if (!asyncResponse.ok) {
+        const body = asyncBody && typeof asyncBody === "object"
+          ? (asyncBody as SuggestionsErrorResponse)
+          : null;
+        throw new SuggestionsAPIError(
+          asyncResponse.status,
+          body,
+          `API Error: ${asyncResponse.status}${asyncText ? ` - ${asyncText.slice(0, 200)}` : ""}`,
+        );
+      }
+      const taskId = typeof asyncBody?.taskId === "string" ? asyncBody.taskId : "";
+      if (!taskId) {
+        throw new SuggestionsAPIError(502, null, "Codex async API returned no taskId");
+      }
+      const deadline = Date.now() + 150_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        const pollResponse = await fetch(
+          `${API_BASE_URL}/suggestions/async/${encodeURIComponent(taskId)}`,
+          { headers: authHeaders },
+        );
+        const pollText = await pollResponse.text();
+        let pollBody: Record<string, unknown> | null = null;
+        try {
+          const parsed = pollText ? JSON.parse(pollText) : null;
+          pollBody = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+        } catch {
+          pollBody = null;
+        }
+        if (!pollResponse.ok) {
+          const body = pollBody && typeof pollBody === "object"
+            ? (pollBody as SuggestionsErrorResponse)
+            : null;
+          throw new SuggestionsAPIError(
+            pollResponse.status,
+            body,
+            `API Error: ${pollResponse.status}${pollText ? ` - ${pollText.slice(0, 200)}` : ""}`,
+          );
+        }
+        if (pollBody?.status === "completed") {
+          return pollBody as SuggestionsResponse;
+        }
+      }
+      throw new SuggestionsAPIError(504, null, "Codex CLI generation timed out while polling");
+    }
+
+    const fullUrl = `${API_BASE_URL}/suggestions`;
 
     let response: Response;
     try {
@@ -466,11 +536,7 @@ export const suggestionsAPI = {
           "Content-Type": "application/json",
           ...authHeaders,
         },
-        body: JSON.stringify({
-          originalText,
-          targetText,
-          ...(trimmedExemplar ? { exemplarTranslation: trimmedExemplar } : {}),
-        }),
+        body: JSON.stringify(requestBody),
       });
     } catch (networkError) {
       throw new SuggestionsAPIError(
