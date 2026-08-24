@@ -97,6 +97,7 @@ from .parser import (
     ParsedResponse,
 )
 from .provider_output import ProviderOutput
+from .local_fastpath import try_local_fastpath
 from .key_pool import (
     load_cloudflare_credentials,
     load_gemini_credentials,
@@ -895,6 +896,11 @@ async def generate_suggestions(
             ran out before one answered. Once a body exists it is returned
             instead, even if it fails a content check.
     """
+    fast_result = try_local_fastpath(original_text, target_text)
+    if fast_result is not None:
+        logger.info("Using local fast path for an unambiguous short typo")
+        return fast_result
+
     if not are_providers_configured():
         raise NoProvidersConfiguredError(
             "No LLM providers configured. Set CODEXCLI_API_URL + CODEXCLI_API_TOKEN, GROQ_API_KEY(S), "
