@@ -81,6 +81,9 @@ function routeApi(suggestionsBody: Record<string, unknown>) {
     if (path.endsWith("/histories") && req.method === "POST") {
       return JSON.stringify({ historyId: "hist-1", status: "pending" })
     }
+    if (path.endsWith("/suggestions/async") && req.method === "POST") {
+      return { body: JSON.stringify({ error: "not configured" }), status: 404 }
+    }
     if (path.endsWith("/suggestions")) return JSON.stringify(suggestionsBody)
     if (path.endsWith("/proposals")) return JSON.stringify({ proposalId: "prop-1" })
     return JSON.stringify({})

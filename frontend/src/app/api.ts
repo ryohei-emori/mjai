@@ -4,9 +4,13 @@
 
 import { supabase } from "@/lib/supabaseClient";
 import { notifyUnauthorized } from "@/lib/authEvents";
+import { normalizeApiBase } from "./apiBase";
 
 // API設定
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const configuredApiBase = normalizeApiBase(process.env.NEXT_PUBLIC_API_URL);
+const API_BASE_URL = configuredApiBase || (
+  process.env.NODE_ENV === "production" ? "/api" : "http://localhost:8000"
+);
 
 // デバッグ用ログ
 console.log('=== API Configuration ===');
@@ -438,6 +442,130 @@ export function isSuggestionsAPIError(err: unknown): err is SuggestionsAPIError 
   return err instanceof SuggestionsAPIError;
 }
 
+type AsyncRequestBody = {
+  originalText: string;
+  targetText: string;
+  exemplarTranslation?: string;
+};
+
+function parseObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = text ? JSON.parse(text) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCompletedSuggestions(
+  body: Record<string, unknown> | null,
+): body is Record<string, unknown> & SuggestionsResponse {
+  return body?.status === "completed"
+    && Array.isArray(body.suggestions)
+    && typeof body.overallComment === "string";
+}
+
+function asyncTerminalError(
+  status: number,
+  text: string,
+  body: Record<string, unknown> | null,
+): SuggestionsAPIError {
+  if (status === 401) {
+    if (text.includes("Authentication is not configured")) {
+      return new SuggestionsAPIError(
+        status,
+        null,
+        "サーバー認証設定エラー: バックエンドの環境変数を確認してください",
+      );
+    }
+    notifyUnauthorized();
+  }
+  return new SuggestionsAPIError(
+    status,
+    body as SuggestionsErrorResponse | null,
+    `API Error: ${status}${text ? ` - ${text.slice(0, 200)}` : ""}`,
+  );
+}
+
+function isTerminalSubmissionStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 404;
+}
+
+const ASYNC_POLL_INTERVAL_MS = 2_000;
+const ASYNC_POLL_TIMEOUT_MS = 150_000;
+
+/**
+ * Try the optional long-running Codex transport.
+ *
+ * A null result means its transport failed recoverably and the caller must use
+ * the ordinary cloud-provider endpoint. Client/auth failures are thrown.
+ */
+export async function tryAsyncCodexSuggestions(
+  requestBody: AsyncRequestBody,
+  authHeaders: Record<string, string>,
+  options: {
+    pollIntervalMs?: number;
+    pollTimeoutMs?: number;
+  } = {},
+): Promise<SuggestionsResponse | null> {
+  let asyncResponse: Response;
+  try {
+    asyncResponse = await fetch(`${API_BASE_URL}/suggestions/async`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify(requestBody),
+    });
+  } catch {
+    return null;
+  }
+
+  const asyncText = await asyncResponse.text();
+  const asyncBody = parseObject(asyncText);
+  if (!asyncResponse.ok) {
+    if (isTerminalSubmissionStatus(asyncResponse.status)) {
+      throw asyncTerminalError(
+        asyncResponse.status,
+        asyncText,
+        asyncBody,
+      );
+    }
+    return null;
+  }
+  if (isCompletedSuggestions(asyncBody)) return asyncBody;
+
+  const taskId = typeof asyncBody?.taskId === "string" ? asyncBody.taskId : "";
+  if (!taskId || asyncBody?.status !== "pending") return null;
+
+  const pollIntervalMs = options.pollIntervalMs ?? ASYNC_POLL_INTERVAL_MS;
+  const deadline = Date.now() + (options.pollTimeoutMs ?? ASYNC_POLL_TIMEOUT_MS);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+    let pollResponse: Response;
+    try {
+      pollResponse = await fetch(
+        `${API_BASE_URL}/suggestions/async/${encodeURIComponent(taskId)}`,
+        { headers: authHeaders },
+      );
+    } catch {
+      return null;
+    }
+    const pollText = await pollResponse.text();
+    const pollBody = parseObject(pollText);
+    if (!pollResponse.ok) {
+      if (pollResponse.status === 401 || pollResponse.status === 403) {
+        throw asyncTerminalError(pollResponse.status, pollText, pollBody);
+      }
+      return null;
+    }
+    if (isCompletedSuggestions(pollBody)) return pollBody;
+    if (pollBody?.status !== "pending") return null;
+  }
+  return null;
+}
+
 export const suggestionsAPI = {
   // Generate AI suggestions via backend (Groq/Cloudflare).
   // Uses a dedicated fetch path so 503 bodies (rate_limited / message) are
@@ -463,71 +591,10 @@ export const suggestionsAPI = {
       ...(trimmedExemplar ? { exemplarTranslation: trimmedExemplar } : {}),
     };
 
-    // Codex CLI jobs can legitimately take longer than Vercel's synchronous
-    // function limit. Submit once, then poll short requests until the host
-    // machine returns the final schema-shaped JSON.
-    const asyncResponse = await fetch(`${API_BASE_URL}/suggestions/async`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify(requestBody),
-    });
-    const asyncText = await asyncResponse.text();
-    let asyncBody: Record<string, unknown> | null = null;
-    try {
-      const parsed = asyncText ? JSON.parse(asyncText) : null;
-      asyncBody = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
-    } catch {
-      asyncBody = null;
-    }
-    if (asyncResponse.status !== 404) {
-      if (!asyncResponse.ok) {
-        const body = asyncBody && typeof asyncBody === "object"
-          ? (asyncBody as SuggestionsErrorResponse)
-          : null;
-        throw new SuggestionsAPIError(
-          asyncResponse.status,
-          body,
-          `API Error: ${asyncResponse.status}${asyncText ? ` - ${asyncText.slice(0, 200)}` : ""}`,
-        );
-      }
-      if (asyncBody?.status === "completed") {
-        return asyncBody as SuggestionsResponse;
-      }
-      const taskId = typeof asyncBody?.taskId === "string" ? asyncBody.taskId : "";
-      if (!taskId) {
-        throw new SuggestionsAPIError(502, null, "Codex async API returned no taskId");
-      }
-      const deadline = Date.now() + 150_000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        const pollResponse = await fetch(
-          `${API_BASE_URL}/suggestions/async/${encodeURIComponent(taskId)}`,
-          { headers: authHeaders },
-        );
-        const pollText = await pollResponse.text();
-        let pollBody: Record<string, unknown> | null = null;
-        try {
-          const parsed = pollText ? JSON.parse(pollText) : null;
-          pollBody = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
-        } catch {
-          pollBody = null;
-        }
-        if (!pollResponse.ok) {
-          const body = pollBody && typeof pollBody === "object"
-            ? (pollBody as SuggestionsErrorResponse)
-            : null;
-          throw new SuggestionsAPIError(
-            pollResponse.status,
-            body,
-            `API Error: ${pollResponse.status}${pollText ? ` - ${pollText.slice(0, 200)}` : ""}`,
-          );
-        }
-        if (pollBody?.status === "completed") {
-          return pollBody as SuggestionsResponse;
-        }
-      }
-      throw new SuggestionsAPIError(504, null, "Codex CLI generation timed out while polling");
-    }
+    // Codex is optional: transport/server failures fall through to the cloud
+    // chain, while invalid/authenticated requests remain terminal.
+    const asyncResult = await tryAsyncCodexSuggestions(requestBody, authHeaders);
+    if (asyncResult) return asyncResult;
 
     const fullUrl = `${API_BASE_URL}/suggestions`;
 

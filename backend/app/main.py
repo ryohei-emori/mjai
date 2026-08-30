@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from uuid import uuid4
@@ -47,6 +48,8 @@ from fastapi import APIRouter
 from fastapi import Body, Depends, HTTPException
 
 from .auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 # CORS設定 - 環境変数から自動取得
 def get_cors_origins():
@@ -515,6 +518,7 @@ async def start_async_codex_suggestions(payload: dict = Body(...)):
     try:
         task_id = await submit_codexcli_task(messages, model=requested_model)
     except CodexCLIError as exc:
+        logger.warning("Codex CLI async task submission failed: %s", exc)
         return JSONResponse(status_code=502, content={"error": "Codex CLI task submission failed", "codex_error": str(exc)})
     return {
         "status": "pending",
@@ -532,15 +536,22 @@ async def get_async_codex_suggestions(task_id: str):
     try:
         task = await get_codexcli_task(task_id)
     except CodexCLIError as exc:
+        logger.warning("Codex CLI async task polling failed: %s", exc)
         return JSONResponse(status_code=502, content={"error": str(exc), "codex_error": str(exc)})
     state = task.get("state")
     if state in {"queued", "running"}:
         return {"status": "pending", "taskId": task_id, "state": state}
     if state != "completed":
         detail = task.get("error") or task.get("stderr") or state or "unknown"
+        logger.warning(
+            "Codex CLI async task ended without completion: state=%s detail=%s",
+            state,
+            str(detail)[:500],
+        )
         return JSONResponse(status_code=502, content={"error": "Codex CLI task failed", "codex_error": str(detail)})
     output = task.get("output_json")
     if not isinstance(output, dict):
+        logger.warning("Codex CLI async task returned a non-object output")
         return JSONResponse(status_code=502, content={"error": "Codex CLI returned invalid JSON", "codex_error": "output_json was not an object"})
     return {
         **output,

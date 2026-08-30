@@ -24,6 +24,7 @@ function sentBody(): Record<string, unknown> {
 describe("suggestionsAPI.generate — optional exemplarTranslation", () => {
   beforeEach(() => {
     fetchMock.resetMocks()
+    fetchMock.mockResponseOnce(JSON.stringify({ error: "not configured" }), { status: 404 })
     fetchMock.mockResponseOnce(OK_BODY)
   })
 

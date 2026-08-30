@@ -82,6 +82,9 @@ function routeApi() {
       })
     }
     if (path.endsWith("/histories")) return JSON.stringify([])
+    if (path.endsWith("/suggestions/async") && req.method === "POST") {
+      return { body: JSON.stringify({ error: "not configured" }), status: 404 }
+    }
     if (path.endsWith("/suggestions")) {
       return { body: JSON.stringify(FAILURE_BODY), status: 503 }
     }

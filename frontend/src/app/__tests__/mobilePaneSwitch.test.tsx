@@ -74,6 +74,9 @@ function routeApi() {
     if (path.endsWith("/histories") && req.method === "POST") {
       return JSON.stringify({ historyId: "hist-1", status: "pending" })
     }
+    if (path.endsWith("/suggestions/async") && req.method === "POST") {
+      return { body: JSON.stringify({ error: "not configured" }), status: 404 }
+    }
     if (path.endsWith("/suggestions")) {
       return JSON.stringify({
         suggestions: [

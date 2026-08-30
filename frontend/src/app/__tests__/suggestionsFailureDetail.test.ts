@@ -60,6 +60,7 @@ describe("describeProviderFailures", () => {
 describe("SuggestionsAPIError provider diagnostics", () => {
   beforeEach(() => {
     fetchMock.resetMocks()
+    fetchMock.mockResponseOnce(JSON.stringify({ error: "not configured" }), { status: 404 })
   })
 
   it("carries the breakdown and classifies a Gemini quota failure as rate-limited", async () => {
@@ -141,6 +142,7 @@ describe("SuggestionsAPIError provider diagnostics", () => {
 describe("describeSuggestionsFailure", () => {
   function failure(body: Record<string, unknown>, status = 503) {
     fetchMock.resetMocks()
+    fetchMock.mockResponseOnce(JSON.stringify({ error: "not configured" }), { status: 404 })
     fetchMock.mockResponseOnce(JSON.stringify(body), { status })
     return suggestionsAPI.generate("原文", "対象").catch((e: unknown) => e)
   }
@@ -197,6 +199,7 @@ describe("describeSuggestionsFailure", () => {
     // diagnostics are in the response — the user saw the bare
     // FUNCTION_INVOCATION_TIMEOUT string.
     fetchMock.resetMocks()
+    fetchMock.mockResponseOnce(JSON.stringify({ error: "not configured" }), { status: 404 })
     fetchMock.mockResponseOnce(
       "An error occurred with your deployment\n\nFUNCTION_INVOCATION_TIMEOUT",
       { status: 504 },
